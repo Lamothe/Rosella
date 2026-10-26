@@ -43,6 +43,7 @@ src/Rosella.Protocol/          Wayland wire format + protocol description (embed
 src/Rosella.Transport/         unix sockets, recvmsg/sendmsg, SCM_RIGHTS descriptor passing
 src/Rosella.Server/            display server: sessions, object maps, dispatch, globals
 src/Rosella.Compositor/        the entry point (host process; compositor grows here)
+scripts/                       GDM login-session installer and session wrapper
 tests/Rosella.Protocol.Tests/  unit tests, including golden wire bytes
 tests/Rosella.Server.Tests/    transport + end-to-end handshake tests
 docs/architecture.md           design notes and roadmap
@@ -61,6 +62,16 @@ Note: `dotnet test` run against the `.slnx` at the repo root currently no-ops
 
 Golden-byte tests assume a little-endian host (the wire format is native
 byte order; Rosella targets x86_64/ARM64).
+
+## Running as a login session
+
+`scripts/install-session.sh` publishes Rosella and installs a GDM session
+entry, so "Rosella" appears in the greeter's session chooser alongside GNOME.
+
+**Warning:** until milestone 3 lands output, selecting it boots to a blank
+screen (the compositor runs but renders nothing). Recovery: `Ctrl+Alt+F3`,
+log in, `pkill -f Rosella.Compositor`, or simply pick GNOME at the next
+greeter — it is always offered.
 
 ## Real-client check
 
