@@ -12,11 +12,14 @@ if (args.Contains("--probe", StringComparer.Ordinal))
     return 0;
 }
 
-var displayName = args.Length > 0 ? args[0] : "wayland-0";
+// The display server picks the first free socket (wayland-0 may already be
+// taken by another session's compositor in the same runtime directory).
 var runtimeDirectory = Environment.GetEnvironmentVariable("XDG_RUNTIME_DIR") ?? Path.GetTempPath();
+var displayName = args.Length > 0 ? args[0] : Path.GetFileName(DisplayServer.FindFreeSocketPath(runtimeDirectory));
 var socketPath = Path.Combine(runtimeDirectory, displayName);
 
-using var server = new DisplayServer(socketPath);
+var scene = new Scene();
+using var server = new DisplayServer(socketPath, handlerFactory: new CompositorHandlerFactory(scene));
 server.Start();
 Console.WriteLine($"rosella: display server listening on {socketPath}");
 
@@ -51,7 +54,7 @@ using var device = detection.Value.Device;
 var output = detection.Value.Output;
 Console.WriteLine($"rosella: driving {output.Connector} at {output.Mode} via CRTC {output.CrtcId}");
 
-var scanout = new Scanout(device, output);
+var scanout = new Scanout(device, output, scene);
 try
 {
     scanout.Run(cancellation.Token);
@@ -59,6 +62,12 @@ try
 catch (OperationCanceledException)
 {
     // Shutdown requested: fall through to the restore below.
+}
+catch (Exception exception)
+{
+    // Whatever went wrong, the previous display state must be restored and
+    // the session must exit so the greeter can recover.
+    Console.Error.WriteLine($"rosella: scanout failed: {exception.Message}");
 }
 
 scanout.Dispose(); // restores the previous display state

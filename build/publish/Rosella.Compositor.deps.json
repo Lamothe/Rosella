@@ -9,6 +9,7 @@
     ".NETCoreApp,Version=v10.0/linux-x64": {
       "Rosella.Compositor/1.0.0": {
         "dependencies": {
+          "Rosella.Drm": "1.0.0",
           "Rosella.Server": "1.0.0",
           "runtimepack.Microsoft.NETCore.App.Runtime.linux-x64": "10.0.12"
         },
@@ -755,6 +756,14 @@
           }
         }
       },
+      "Rosella.Drm/1.0.0": {
+        "runtime": {
+          "Rosella.Drm.dll": {
+            "assemblyVersion": "1.0.0.0",
+            "fileVersion": "1.0.0.0"
+          }
+        }
+      },
       "Rosella.Protocol/1.0.0": {
         "runtime": {
           "Rosella.Protocol.dll": {
@@ -796,6 +805,11 @@
     },
     "runtimepack.Microsoft.NETCore.App.Runtime.linux-x64/10.0.12": {
       "type": "runtimepack",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "Rosella.Drm/1.0.0": {
+      "type": "project",
       "serviceable": false,
       "sha512": ""
     },

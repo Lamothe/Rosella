@@ -18,14 +18,23 @@ public sealed class DisplayServer : IDisposable
     private Task _acceptTask = Task.CompletedTask;
     private bool _disposed;
 
-    public DisplayServer(string socketPath, IReadOnlyList<Global>? globals = null)
+    public DisplayServer(string socketPath, IReadOnlyList<Global>? globals = null, IGlobalHandlerFactory? handlerFactory = null)
     {
         ArgumentException.ThrowIfNullOrEmpty(socketPath);
         SocketPath = socketPath;
         Globals = globals ?? StandardGlobals.Create();
+        HandlerFactory = handlerFactory;
 
         if (File.Exists(socketPath))
         {
+            // Only stale sockets may be replaced: unlinking a live compositor's
+            // socket (e.g. GNOME's wayland-0 in the same runtime directory)
+            // would silently redirect its future clients here.
+            if (IsLiveSocket(socketPath))
+            {
+                throw new InvalidOperationException($"a compositor is already listening on {socketPath}");
+            }
+
             File.Delete(socketPath);
         }
 
@@ -38,9 +47,45 @@ public sealed class DisplayServer : IDisposable
         _token = _cancellation.Token;
     }
 
+    /// <summary>
+    /// Returns the first usable socket path in <paramref name="directory"/>
+    /// (name-0, name-1, …): free, or stale and therefore reclaimable.
+    /// </summary>
+    public static string FindFreeSocketPath(string directory, string name = "wayland")
+    {
+        for (var number = 0; number < 32; number++)
+        {
+            var path = Path.Combine(directory, $"{name}-{number}");
+            if (!File.Exists(path) || !IsLiveSocket(path))
+            {
+                return path;
+            }
+        }
+
+        throw new InvalidOperationException($"no free {name} socket in {directory}");
+    }
+
+    /// <summary>True when something is accepting connections on the socket path.</summary>
+    private static bool IsLiveSocket(string socketPath)
+    {
+        try
+        {
+            using var probe = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+            probe.Connect(new UnixDomainSocketEndPoint(socketPath));
+            return true;
+        }
+        catch (SocketException)
+        {
+            return false; // connection refused: the file is a stale socket
+        }
+    }
+
     public string SocketPath { get; }
 
     public IReadOnlyList<Global> Globals { get; }
+
+    /// <summary>The compositor's handler factory, or null for all-stub behaviour.</summary>
+    public IGlobalHandlerFactory? HandlerFactory { get; }
 
     /// <summary>Starts accepting clients in the background.</summary>
     public void Start()
@@ -137,7 +182,7 @@ public sealed class DisplayServer : IDisposable
     private void RunSession(Socket socket)
     {
         using var connection = new WireConnection(socket);
-        var session = new ClientSession(connection, ProtocolDescription.Core, Globals, _token);
+        var session = new ClientSession(connection, ProtocolDescription.Core, Globals, _token, HandlerFactory);
         session.Run();
     }
 }

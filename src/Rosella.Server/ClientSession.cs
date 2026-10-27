@@ -25,15 +25,22 @@ public sealed class ClientSession
     private readonly CancellationToken _token;
     private readonly MessageStream _stream = new();
     private readonly Dictionary<uint, ServerObject> _objects = new();
+    private readonly object _gate = new();
     private readonly ServerObject _display;
     private uint _serial;
 
-    public ClientSession(WireConnection connection, ProtocolDescription protocol, IReadOnlyList<Global> globals, CancellationToken token)
+    public ClientSession(
+        WireConnection connection,
+        ProtocolDescription protocol,
+        IReadOnlyList<Global> globals,
+        CancellationToken token,
+        IGlobalHandlerFactory? handlerFactory = null)
     {
         _connection = connection ?? throw new ArgumentNullException(nameof(connection));
         Protocol = protocol ?? throw new ArgumentNullException(nameof(protocol));
         Globals = globals ?? throw new ArgumentNullException(nameof(globals));
         _token = token;
+        HandlerFactory = handlerFactory;
 
         var displayInterface = protocol.FindInterface("wl_display")
             ?? throw new InvalidOperationException("the protocol has no wl_display interface");
@@ -45,10 +52,25 @@ public sealed class ClientSession
 
     public IReadOnlyList<Global> Globals { get; }
 
+    /// <summary>The compositor's handler factory, or null for all-stub behaviour.</summary>
+    public IGlobalHandlerFactory? HandlerFactory { get; }
+
     /// <summary>Returns the next event serial, as used by wl_callback.done.</summary>
     public uint NextSerial()
     {
-        return ++_serial;
+        lock (_gate)
+        {
+            return ++_serial;
+        }
+    }
+
+    /// <summary>Looks up an object by id.</summary>
+    public bool TryGetObject(uint id, out ServerObject target)
+    {
+        lock (_gate)
+        {
+            return _objects.TryGetValue(id, out target!);
+        }
     }
 
     /// <summary>Runs the request loop until the client disconnects or is cancelled.</summary>
@@ -100,11 +122,33 @@ public sealed class ClientSession
         }
         finally
         {
+            DisposeHandlers();
             _stream.Dispose();
         }
     }
 
-    /// <summary>Sends an event on <paramref name="target"/> by event name.</summary>
+    /// <summary>
+    /// Releases handler-owned resources when the session ends (mappings, for
+    /// one). Object ids are gone with the connection, so nothing is reported.
+    /// </summary>
+    private void DisposeHandlers()
+    {
+        ServerObject[] objects;
+        lock (_gate)
+        {
+            objects = _objects.Values.ToArray();
+        }
+
+        foreach (var target in objects)
+        {
+            (target.Handler as IDisposable)?.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// Sends an event on <paramref name="target"/> by event name. Thread-safe:
+    /// handlers and the render loop both send events.
+    /// </summary>
     public void SendEvent(ServerObject target, string eventName, params WireArgument[] arguments)
     {
         var description = target.Interface.Events.FirstOrDefault(e => e.Name == eventName)
@@ -115,7 +159,10 @@ public sealed class ClientSession
                 $"'{target.Interface.Name}.{eventName}' requires version {description.Since} but object {target.Id} is version {target.Version}");
         }
 
-        _connection.Send(MessageEncoder.Encode(target.Id, description.Opcode, description.WireSignature, arguments));
+        lock (_gate)
+        {
+            _connection.Send(MessageEncoder.Encode(target.Id, description.Opcode, description.WireSignature, arguments));
+        }
     }
 
     /// <summary>Reports a protocol violation with wl_display.error.</summary>
@@ -136,29 +183,54 @@ public sealed class ClientSession
             throw new ProtocolErrorException(source.Id, ErrorInvalidObject, $"invalid new id {id}");
         }
 
-        if (_objects.ContainsKey(id))
+        ServerObject target;
+        lock (_gate)
         {
-            throw new ProtocolErrorException(source.Id, ErrorInvalidObject, $"invalid new id {id} (already in use)");
+            if (_objects.ContainsKey(id))
+            {
+                throw new ProtocolErrorException(source.Id, ErrorInvalidObject, $"invalid new id {id} (already in use)");
+            }
+
+            target = new ServerObject(id, interfaceDescription, version, handler);
+            _objects.Add(id, target);
         }
 
-        var target = new ServerObject(id, interfaceDescription, version, handler);
-        _objects.Add(id, target);
         return target;
     }
 
     /// <summary>Destroys an object and, for client-allocated ids, frees the id.</summary>
     public void DestroyObject(ServerObject target)
     {
-        _objects.Remove(target.Id);
-        if (target.Id < ServerIdStart)
+        if (Retire(target) && target.Id < ServerIdStart)
         {
-            SendEvent(_display, "delete_id", WireArgument.UInt32(target.Id));
+            SendDeleteId(target.Id);
         }
+    }
+
+    /// <summary>Removes an object from the map without reporting. True when it was present.</summary>
+    public bool Retire(ServerObject target)
+    {
+        lock (_gate)
+        {
+            return _objects.Remove(target.Id);
+        }
+    }
+
+    /// <summary>Frees a client-allocated id (wl_display.delete_id).</summary>
+    public void SendDeleteId(uint id)
+    {
+        SendEvent(_display, "delete_id", WireArgument.UInt32(id));
     }
 
     private IReadOnlyList<ArgumentType> Resolve(uint objectId, ushort opcode)
     {
-        if (!_objects.TryGetValue(objectId, out var target))
+        ServerObject? target;
+        lock (_gate)
+        {
+            _objects.TryGetValue(objectId, out target);
+        }
+
+        if (target is null)
         {
             // libwayland clients cannot resolve an event naming an id they
             // never created, so violations by unknown objects are reported on
@@ -173,7 +245,12 @@ public sealed class ClientSession
 
     private void Dispatch(DecodedMessage message)
     {
-        var target = _objects[message.ObjectId];
+        ServerObject target;
+        lock (_gate)
+        {
+            target = _objects[message.ObjectId];
+        }
+
         try
         {
             target.Handler.HandleRequest(this, target, message);

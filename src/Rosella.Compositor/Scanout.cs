@@ -13,15 +13,17 @@ internal sealed class Scanout : IDisposable
 
     private readonly DrmDevice _device;
     private readonly DrmOutput _output;
+    private readonly Scene _scene;
     private readonly DrmCrtcState _savedState;
     private readonly DrmDumbBuffer[] _buffers = new DrmDumbBuffer[2];
     private readonly uint[] _framebuffers = new uint[2];
     private bool _disposed;
 
-    public Scanout(DrmDevice device, DrmOutput output)
+    public Scanout(DrmDevice device, DrmOutput output, Scene scene)
     {
         _device = device;
         _output = output;
+        _scene = scene;
         _savedState = device.GetCrtc(output.CrtcId);
         try
         {
@@ -146,6 +148,7 @@ internal sealed class Scanout : IDisposable
             RenderInto(back, frame);
             _device.PageFlip(_output.CrtcId, _framebuffers[back], (ulong)frame);
             WaitForFlip((ulong)frame, token);
+            _scene.CompleteFrame();
             front = back;
             frame++;
         }
@@ -194,7 +197,7 @@ internal sealed class Scanout : IDisposable
     private void RenderInto(int bufferIndex, long frame)
     {
         var buffer = _buffers[bufferIndex];
-        TestPattern.Render(buffer.Pixels, _output.Mode.HDisplay, _output.Mode.VDisplay, checked((int)buffer.Pitch), frame);
+        _scene.Render(buffer.Pixels, _output.Mode.HDisplay, _output.Mode.VDisplay, checked((int)buffer.Pitch), frame);
     }
 
     private void WaitForFlip(ulong userData, CancellationToken token)

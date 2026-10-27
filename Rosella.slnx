@@ -11,4 +11,7 @@
     <Project Path="tests/Rosella.Drm.Tests/Rosella.Drm.Tests.csproj" />
     <Project Path="tests/Rosella.Server.Tests/Rosella.Server.Tests.csproj" />
   </Folder>
+  <Folder Name="/tools/">
+    <Project Path="tools/Rosella.SmokeClient/Rosella.SmokeClient.csproj" />
+  </Folder>
 </Solution>

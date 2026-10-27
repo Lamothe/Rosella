@@ -83,9 +83,16 @@ Verified against libwayland's marshalling code and the protocol docs:
   output (on mercury: the SONY TV at 3840x2160@60) with a software-rendered
   test pattern via a page-flip loop; the previous display state is restored on
   exit. Pending: visual confirmation in the GDM session.
-- **M4 — client buffers**: `wl_shm` and `wl_surface`/`wl_compositor`/
-  `wl_subcompositor`, compositing client surfaces into the scanout.
-- **M5 — xdg-shell**: toplevels, mapping, focus, one hardcoded window policy.
+- **M4 — client buffers**: ✅ real `wl_shm` (client descriptors are dup'd,
+  size-checked with lseek and mapped read-only), `wl_surface` state machine
+  with copy-at-commit content (buffer released immediately after the copy),
+  frame callbacks with protocol-correct payloads, `get_release`/`no_buffer`
+  rules, pool/buffer refcounting so any destruction order is safe, and
+  compositing of client windows over the background. Servers and the render
+  loop share the `Scene` under a strict lock order (scene → surface state →
+  session). Pending: on-screen confirmation in the GDM session.
+- **M5 — xdg-shell**: windows are recognised: mapped/unmapped, positioned
+  (replacing the temporary cascade placement), closed.
 - **M6 — input**: libinput/evdev via a seat, keyboard focus routing, the few
   hardcoded keybindings the DE allows.
 - **M7 — the shell**: bar, app launcher, workspaces, notifications — all in
@@ -122,7 +129,15 @@ Learned from libwayland and verified against real clients:
 - Being the login session means a bug yields a blank screen, not a crash:
   recovery is a VT switch (`Ctrl+Alt+F3`) or picking GNOME at the greeter.
   The flip loop is token-interruptible, so signals cannot wedge it silently.
-- M2's `Rosella.Server` and `Rosella.Transport` have been reviewed twice at
-  the code level and once against libwayland, but only `wayland-info` has been
-  used as a real client so far — toolkits (GTK/Qt) will exercise more of the
-  protocol once M4–M5 land.
+- Known deferred items (accepted for now, revisited with the later
+  milestones): stray descriptors sent by a hostile local client accumulate in
+  the message stream (fd exhaustion); a client that stops reading can stall
+  event sends and briefly stall the scanout thread; a commit landing in the
+  microseconds between render and `CompleteFrame` can get its frame callback
+  fired one frame early; argb8888 alpha is ignored (opaque copy) until
+  blending; a client that truncates its pool file after mapping can still
+  SIGBUS the compositor (the common lying-size case is checked up front).
+- The M2/M3 code has been reviewed three times at the code level; M4 adds the
+  surface layer, reviewed once. Only `wayland-info` and `SmokeClient` have
+  exercised the protocol as clients so far — toolkits (GTK/Qt) will stress it
+  more once xdg-shell lands.

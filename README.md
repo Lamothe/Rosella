@@ -39,8 +39,16 @@ configuration is where desktop environments go to die.
   software-rendered test pattern on the first connected output. `--probe`
   introspects cards/connectors/modes and validates dumb buffers against the
   real driver.
-- **M4 — client buffers**: next. `wl_shm`, `wl_surface`/`wl_compositor`/
-  `wl_subcompositor`, compositing client surfaces into the scanout.
+- **M4 — client buffers** (`Rosella.Compositor` surface layer): done, pending
+  on-screen confirmation. Real `wl_shm` (client descriptors mapped, bounds
+  validated), `wl_compositor`/`wl_surface` state machine (attach/damage/frame/
+  get_release/commit), `wl_buffer` release, and compositing of client windows
+  over the test-pattern background. Content is copied at commit (then the
+  buffer is released); frame callbacks pace clients. Verified end to end over
+  real sockets with descriptor passing, plus `wayland-info` and the bundled
+  `tools/Rosella.SmokeClient`.
+- **M5 — xdg-shell**: next. Windows are recognised: mapped/unmapped, positioned
+  (replacing the temporary cascade placement), closed.
 
 ## Layout
 
@@ -96,7 +104,9 @@ tests dumb-buffer allocation. Read-only apart from that allocation round trip
 
 ## Real-client check
 
-Run the server and point any Wayland client at it:
+Run the compositor and point any Wayland client at it (the compositor prints
+its socket name — it takes the first free `wayland-N`, since another session's
+compositor may already own `wayland-0`):
 
 ```sh
 dotnet run --project src/Rosella.Compositor -- wayland-1
@@ -104,4 +114,15 @@ WAYLAND_DISPLAY=wayland-1 wayland-info
 ```
 
 (`wayland-info` comes from the `wayland-utils` package.)
+
+## Smoke client
+
+`tools/Rosella.SmokeClient` is a dependency-free Wayland client that draws an
+animated window (gradient + moving bar) into an shm buffer, paced by frame
+callbacks. Point it at a running Rosella to put a real client window on the
+scanout:
+
+```sh
+dotnet run --project tools/Rosella.SmokeClient -- wayland-1
+```
 
