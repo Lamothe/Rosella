@@ -366,6 +366,90 @@ public class InputTests
         }
     }
 
+    [Fact]
+    public void Touchpad_FirstFramePlacesWithoutMoving()
+    {
+        using var harness = new Harness();
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtSlot, 0));
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtTrackingId, 7));
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtPositionX, 500));
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtPositionY, 300));
+        Assert.Equal((0, 0), harness.Router.Cursor);
+    }
+
+    [Fact]
+    public void Touchpad_SecondFrameMovesByDelta()
+    {
+        using var harness = new Harness();
+        harness.Router.PlaceCursor(100, 100); // room below the top edge
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtSlot, 0));
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtTrackingId, 7));
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtPositionX, 500));
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtPositionY, 300));
+
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtPositionX, 520));
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtPositionY, 285));
+        Assert.Equal((120, 85), harness.Router.Cursor);
+    }
+
+    [Fact]
+    public void Touchpad_FingerUpStopsMotionAndStrayCoordsAreIgnored()
+    {
+        using var harness = new Harness();
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtSlot, 0));
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtTrackingId, 7));
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtPositionX, 500));
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtPositionY, 300));
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtTrackingId, -1));
+
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtPositionX, 900));
+        Assert.Equal((0, 0), harness.Router.Cursor);
+    }
+
+    [Fact]
+    public void Touchpad_SlotsTrackSeparateFingers()
+    {
+        using var harness = new Harness();
+        // Finger A on slot 0 at (500, 300); finger B on slot 1 at (10, 10).
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtSlot, 0));
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtTrackingId, 7));
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtPositionX, 500));
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtPositionY, 300));
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtSlot, 1));
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtTrackingId, 8));
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtPositionX, 10));
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtPositionY, 10));
+
+        // Slot 0 moves +5; slot 1 stays. Then slot 1 moves +3.
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtSlot, 0));
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtPositionX, 505));
+        Assert.Equal((5, 0), harness.Router.Cursor);
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtSlot, 1));
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtPositionY, 13));
+        Assert.Equal((5, 3), harness.Router.Cursor);
+    }
+
+    [Fact]
+    public void TouchButtonCodes_AreNotKeyboardKeys()
+    {
+        using var harness = new Harness();
+        harness.BindXdg();
+        harness.MapWindow(8, 11, 12);
+        harness.Client.SendRequest(20, "wl_seat", "get_keyboard", WireArgument.NewId(21));
+        harness.Client.RegisterObject(21, "wl_keyboard");
+        harness.RoundTrip();
+        harness.ClickAt(950, 530);
+        harness.Client.ReadUntil(21, "enter");
+
+        // BTN_TOOL_FINGER (325) and BTN_TOUCH (330) are touch state.
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventKey, 325, InputConstants.KeyPressed));
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventKey, 330, InputConstants.KeyPressed));
+        foreach (var (objectId, eventName) in harness.CollectUntilRoundTrip())
+        {
+            Assert.NotEqual((21u, "key"), (objectId, eventName));
+        }
+    }
+
     private static uint PixelAt(byte[] frame, int width, int x, int y)
     {
         return MemoryMarshal.Cast<byte, uint>(frame.AsSpan())[(y * width) + x];

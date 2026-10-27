@@ -75,6 +75,8 @@ public sealed class EvdevDevice : IDisposable
     /// <summary>True if the device reports the given REL_* axis.</summary>
     public bool HasRelative(int code) => HasEventType(InputConstants.EventRelative) && HasBit(GetBits(_fd, InputConstants.EventRelative, 8), code);
 
+    public bool HasAbsolute(int code) => HasEventType(InputConstants.EventAbsolute) && HasBit(GetBits(_fd, InputConstants.EventAbsolute, 8), code);
+
     /// <summary>Takes the device exclusively (EVIOCGRAB 1): no other client sees it.</summary>
     public void Grab() => SetGrab(true);
 

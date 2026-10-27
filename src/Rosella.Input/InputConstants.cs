@@ -38,6 +38,14 @@ public static class InputConstants
     public const ushort ButtonRight = 0x111;
     public const ushort ButtonMiddle = 0x112;
 
+    // Multitouch (protocol B) — bcm5974-class trackpads report finger
+    // positions here instead of relative motion (include/uapi/linux/input-event-codes.h).
+    public const ushort AbsMtSlot = 0x2f;
+    public const ushort AbsMtTrackingId = 0x39;
+    public const ushort AbsMtPositionX = 0x30;
+    public const ushort AbsMtPositionY = 0x31;
+    public const int TrackingIdUp = -1;
+
     // EV_KEY values
     public const int KeyReleased = 0;
     public const int KeyPressed = 1;

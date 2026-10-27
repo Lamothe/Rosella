@@ -25,8 +25,15 @@ public static class DeviceDiscovery
         && (device.HasKey(InputConstants.KeyEnter) || device.HasKey(InputConstants.KeyA));
 
     /// <summary>True for devices that move a cursor: a pointer with X/Y motion.</summary>
+    /// <summary>
+    /// Relative mice/trackpoints, or multitouch trackpads (protocol B: the
+    /// bcm5974-class devices report ABS_MT_POSITION and no REL bits at all).
+    /// </summary>
     public static bool IsPointer(EvdevDevice device) =>
-        device.HasEventType(InputConstants.EventRelative)
-        && device.HasRelative(InputConstants.RelativeX)
-        && device.HasRelative(InputConstants.RelativeY);
+        (device.HasEventType(InputConstants.EventRelative)
+            && device.HasRelative(InputConstants.RelativeX)
+            && device.HasRelative(InputConstants.RelativeY))
+        || (device.HasEventType(InputConstants.EventAbsolute)
+            && device.HasAbsolute(InputConstants.AbsMtPositionX)
+            && device.HasAbsolute(InputConstants.AbsMtPositionY));
 }

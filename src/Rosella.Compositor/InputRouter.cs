@@ -17,6 +17,12 @@ internal sealed class InputRouter
     private readonly HashSet<int> _pressedKeys = new();
     private int _cursorX;
     private int _cursorY;
+
+    // Multitouch slot state (protocol B): slot -> last per-axis position
+    // with per-axis seeding (the first coordinates after finger-down are a
+    // placement, not a delta).
+    private int _mtSlot;
+    private readonly Dictionary<int, (int X, int Y, bool HasX, bool HasY)> _mtFingers = new();
     private bool _capsLocked;
     private bool _numLocked;
     private int _lastDepressed = -1;
@@ -75,16 +81,82 @@ internal sealed class InputRouter
                     SendAxis(axis: 1, value: e.Value * 40, e.TimeMs);
                     break;
 
+                case InputConstants.EventAbsolute:
+                    HandleTouchpadAbs(e);
+                    break;
+
                 case InputConstants.EventKey when e.Code is InputConstants.ButtonLeft
                     or InputConstants.ButtonRight
                     or InputConstants.ButtonMiddle:
                     HandleButton(e);
                     break;
 
+                case InputConstants.EventKey when e.Code >= 0x100:
+                    // Other BTN_* codes (BTN_TOOL_FINGER, BTN_TOUCH, ...) are
+                    // touch state, not keys or buttons: ignored.
+                    break;
+
                 case InputConstants.EventKey:
                     HandleKey(e);
                     break;
             }
+        }
+    }
+
+    /// <summary>
+    /// Multitouch (protocol B) trackpad: ABS_MT_POSITION updates of the
+    /// active finger become relative pointer motion (deltas between
+    /// consecutive positions), matching how a touchpad moves a cursor.
+    /// </summary>
+    private void HandleTouchpadAbs(InputEvent e)
+    {
+        switch (e.Code)
+        {
+            case InputConstants.AbsMtSlot:
+                _mtSlot = e.Value;
+                return;
+
+            case InputConstants.AbsMtTrackingId:
+                if (e.Value == InputConstants.TrackingIdUp)
+                {
+                    _mtFingers.Remove(_mtSlot);
+                }
+                else
+                {
+                    // Down: nothing seeded, so the first coordinates of both
+                    // axes place the finger without moving the cursor.
+                    _mtFingers[_mtSlot] = (0, 0, false, false);
+                }
+
+                return;
+
+            case InputConstants.AbsMtPositionX or InputConstants.AbsMtPositionY:
+                if (!_mtFingers.TryGetValue(_mtSlot, out var last))
+                {
+                    // No tracking id seen for this slot: ignore stray coords.
+                    return;
+                }
+
+                if (e.Code == InputConstants.AbsMtPositionX)
+                {
+                    if (last.HasX)
+                    {
+                        MoveCursor(e.Value - last.X, 0, e.TimeMs);
+                    }
+
+                    _mtFingers[_mtSlot] = (e.Value, last.Y, true, last.HasY);
+                }
+                else
+                {
+                    if (last.HasY)
+                    {
+                        MoveCursor(0, e.Value - last.Y, e.TimeMs);
+                    }
+
+                    _mtFingers[_mtSlot] = (last.X, e.Value, last.HasX, true);
+                }
+
+                return;
         }
     }
 
