@@ -102,7 +102,8 @@ Verified against libwayland's marshalling code and the protocol docs:
   unmapped immediately. Reviewed once; 15 findings fixed with regression
   tests. Confirmed on screen (silver, 27/10/2026): the smoke client maps a
   real window via the full dance, with live frame callbacks.
-- **M6 — input**: ✅ done (pending on-screen check). evdev read directly
+- **M6 — input**: ✅ done (confirmed on hardware: keyboard, mouse, multitouch
+  trackpad; click-to-focus, Alt+F4 close, Super+Esc quit). evdev read directly
   (no libinput): /dev/input discovery, capability bitmaps, exclusive grabs
   (EBUSY skips the device), poll() + wake-eventfd reads whose shutdown never
   closes an fd under a blocked reader. One keymap: US QWERTY generated with
