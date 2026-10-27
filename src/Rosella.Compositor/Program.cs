@@ -20,11 +20,14 @@ var socketPath = Path.Combine(runtimeDirectory, displayName);
 
 var scene = new Scene();
 var seat = new SeatState();
+var shell = new Shell();
+shell.Launcher.SocketName = displayName;
+scene.Shell = shell;
 
 // The device set is fixed before clients bind, so wl_seat capabilities are
 // right from the first moment (no hot-plug in M6).
 using var cancellation = new CancellationTokenSource();
-using var input = new InputThread(scene, seat, () => cancellation.Cancel());
+using var input = new InputThread(scene, seat, () => cancellation.Cancel(), shell);
 input.Discover();
 
 using var server = new DisplayServer(socketPath, handlerFactory: new CompositorHandlerFactory(scene, seat));

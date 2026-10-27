@@ -1,3 +1,4 @@
+
 namespace Rosella.Compositor;
 
 /// <summary>
@@ -36,6 +37,9 @@ public sealed class Scene
     /// <summary>The scanout's size; windows are placed relative to it.</summary>
     internal (int Width, int Height) OutputSize { get; set; } = (1920, 1080);
 
+    /// <summary>The desktop shell, when one is wired in (bar, launcher, workspaces).</summary>
+    internal Shell? Shell { get; set; }
+
     /// <summary>The input seat, notified when surfaces hide or go away.</summary>
     internal SeatState? Seat { get; set; }
 
@@ -69,17 +73,19 @@ public sealed class Scene
 
     /// <summary>
     /// The window policy: every mapped window goes to the centre of the
-    /// output with a small per-window cascade offset, raised to the top.
-    /// Returns where the window's visible corner belongs.
+    /// output's work area (below the bar, when there is a shell) with a
+    /// small per-window cascade offset, raised to the top. Returns where the
+    /// window's visible corner belongs.
     /// </summary>
     internal (int X, int Y) PlaceWindow(SurfaceHandler surface, int windowWidth, int windowHeight)
     {
         lock (_gate)
         {
             var (outputWidth, outputHeight) = OutputSize;
+            var top = Shell is null ? 0 : Shell.BarHeight;
             var offset = (_placed++ % 8) * 48;
             var x = Math.Max(0, ((outputWidth - windowWidth) / 2) + offset);
-            var y = Math.Max(0, ((outputHeight - windowHeight) / 2) + offset);
+            var y = Math.Max(top, top + ((outputHeight - top - windowHeight) / 2) + offset);
 
             // Raise: later in the list renders on top.
             _surfaces.Remove(surface);
@@ -90,7 +96,7 @@ public sealed class Scene
 
     private int _placed;
 
-    /// <summary>Draws the background and every mapped surface.</summary>
+    /// <summary>Draws the background, the windows, the shell chrome, and the cursor.</summary>
     public void Render(Span<byte> pixels, int width, int height, int stride, long frame)
     {
         TestPattern.Render(pixels, width, height, stride, frame);
@@ -98,11 +104,15 @@ public sealed class Scene
         {
             foreach (var surface in _surfaces)
             {
-                surface.BlitInto(pixels, width, height, stride);
+                if (Visible(surface))
+                {
+                    surface.BlitInto(pixels, width, height, stride);
+                }
             }
-
-            CursorSprite.Draw(pixels, width, height, stride, Cursor.X, Cursor.Y);
         }
+
+        Shell?.Draw(pixels, width, height, stride, Bar.ClockString(), TaskWindows(), Seat?.KeyboardFocus);
+        CursorSprite.Draw(pixels, width, height, stride, Cursor.X, Cursor.Y);
     }
 
     /// <summary>Fires frame callbacks for the frame just composited.</summary>
@@ -112,7 +122,10 @@ public sealed class Scene
         {
             foreach (var surface in _surfaces)
             {
-                surface.CompleteFrame();
+                if (Visible(surface))
+                {
+                    surface.CompleteFrame();
+                }
             }
         }
     }
@@ -137,7 +150,7 @@ public sealed class Scene
             for (var i = _surfaces.Count - 1; i >= 0; i--)
             {
                 var surface = _surfaces[i];
-                if (!surface.IsMapped)
+                if (!surface.IsMapped || !Visible(surface))
                 {
                     continue;
                 }
@@ -150,6 +163,61 @@ public sealed class Scene
             }
 
             return null;
+        }
+    }
+
+    /// <summary>The task strip's windows: mapped toplevels of the current workspace.</summary>
+    internal IReadOnlyList<BarTask> TaskWindows()
+    {
+        lock (_gate)
+        {
+            var tasks = new List<BarTask>();
+            foreach (var surface in _surfaces)
+            {
+                if (!surface.IsMapped || !Visible(surface) || surface.Gone)
+                {
+                    continue;
+                }
+
+                if (surface.XdgRole?.Toplevel is { } toplevel)
+                {
+                    tasks.Add(new BarTask(Bar.LabelFor(toplevel.Title, toplevel.AppId), surface));
+                }
+            }
+
+            return tasks;
+        }
+    }
+
+    /// <summary>Windows outside the current workspace are drawn by nobody.</summary>
+    private bool Visible(SurfaceHandler surface) =>
+        Shell is null || surface.Workspace == Shell.CurrentWorkspace;
+
+    /// <summary>
+    /// Dismisses every popup whose ancestor chain reaches the surface: a
+    /// popup may never outlive its parent's place on screen.
+    /// </summary>
+    internal void DismissDescendantPopups(SurfaceHandler surface)
+    {
+        List<SurfaceHandler> snapshot;
+        lock (_gate)
+        {
+            snapshot = _surfaces.ToList();
+        }
+
+        foreach (var candidate in snapshot)
+        {
+            var role = candidate.XdgRole;
+            while (role is not null)
+            {
+                if (role.PopupParent?.Surface == surface)
+                {
+                    role.DismissPopup();
+                    break;
+                }
+
+                role = role.PopupParent;
+            }
         }
     }
 

@@ -121,10 +121,17 @@ Verified against libwayland's marshalling code and the protocol docs:
   (3 crash-grade: unhandled SocketException on input threads, send-vs-
   destroy id resurrection, unlocked xdg configure state), 10 new regression
   tests. Known accepted limits are in Open risks.
-- **M7 — the shell**: bar, app launcher, workspaces, notifications — all in
-  managed code, all opinionated.
-- **M8 — session polish**: lock screen, idle handling, session startup,
-  whatever the DE needs to feel finished.
+- **M7 — the shell**: ✅ done. Bar (workspace chips, clock, task strip with
+  click-to-focus), app launcher (Super, fixed app list, arrows/Enter/Esc,
+  spawns with the right WAYLAND_DISPLAY), four fixed workspaces (Super+1..4
+  switch, Super+Shift+1..4 moves the focused window and dismisses its
+  popups), windows placed in the work area below the bar. One embedded 8x16
+  bitmap font (Linux kernel font_8x16, scaled 2x); drawing and hit-testing
+  share one cached bar layout per frame. Notifications did not make the
+  cut and may never: an opinionated desktop can do without them.
+- **M8 — session polish**: window states (maximise/fullscreen), lock
+  screen, idle handling, session startup, whatever the DE needs to feel
+  finished.
 
 ## Conventions the implementation follows
 
@@ -167,7 +174,8 @@ Learned from libwayland and verified against real clients:
   (the spec names no error code); popup stacking rules
   (`not_the_topmost_popup`, parent-mapped-first) and positioner constraint
   adjustment (flip/slide to stay on screen) are unimplemented; maximise/
-  fullscreen requests are ignored until the shell (M7). M6 additions: seat
+  fullscreen requests are still ignored (window states are M8: the shell
+  chrome and workspaces shipped in M7 without them). M6 additions: seat
   sends hold the seat gate during socket writes, so one stalled client can
   briefly delay input delivery to others (accepted on a single-seat
   desktop); kernel autorepeat is dropped (clients repeat via repeat_info);

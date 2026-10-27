@@ -1,0 +1,166 @@
+using System.Diagnostics;
+
+namespace Rosella.Compositor;
+
+/// <summary>
+/// The app launcher: Super opens it, arrows choose, Enter launches, Esc
+/// closes. The app list is fixed; there is no configuration.
+/// </summary>
+internal sealed class Launcher
+{
+    internal static readonly (string Name, string Command)[] Apps =
+    [
+        ("Files", "nautilus"),
+        ("Web Browser", "firefox"),
+        ("Text Editor", "gnome-text-editor"),
+        ("System Monitor", "gnome-system-monitor"),
+    ];
+
+    private const uint PanelBackground = 0xFF2E303A;
+    private const uint PanelBorder = 0xFFB8BEC8;
+    private const uint TextColour = 0xFFE8E8EC;
+    private const uint RowSelected = 0xFFB8BEC8;
+    private const uint RowSelectedText = 0xFF101216;
+
+    private const int PanelWidth = 560;
+    private const int RowHeight = 40;
+
+    internal bool IsOpen { get; private set; }
+
+    internal int Selection { get; private set; }
+
+    /// <summary>The socket name launched apps should connect to.</summary>
+    internal string? SocketName { get; set; }
+
+    /// <summary>Test seam: (command, socketName) -> started.</summary>
+    internal Func<string, string?, bool>? SpawnOverride { get; set; }
+
+    internal void Toggle()
+    {
+        if (IsOpen)
+        {
+            Close();
+        }
+        else
+        {
+            Open();
+        }
+    }
+
+    internal void Open()
+    {
+        IsOpen = true;
+        Selection = 0;
+    }
+
+    internal void Close()
+    {
+        IsOpen = false;
+    }
+
+    /// <summary>Handles a key while the launcher is open. True = consumed.</summary>
+    internal bool HandleKey(ushort code)
+    {
+        switch (code)
+        {
+            case Rosella.Input.InputConstants.KeyUp:
+                Selection = Math.Max(0, Selection - 1);
+                return true;
+
+            case Rosella.Input.InputConstants.KeyDown:
+                Selection = Math.Min(Apps.Length - 1, Selection + 1);
+                return true;
+
+            case Rosella.Input.InputConstants.KeyEnter:
+                Launch(Apps[Selection].Command);
+                Close();
+                return true;
+
+            case Rosella.Input.InputConstants.KeyEsc:
+                Close();
+                return true;
+
+            default:
+                return false;
+        }
+    }
+
+    /// <summary>
+    /// Handles a click while the launcher is open. True = consumed (inside
+    /// the panel); a click on a row launches that app and closes.
+    /// </summary>
+    internal bool HandleClick(int x, int y, int outputWidth, int outputHeight)
+    {
+        var panel = PanelRect(outputWidth, outputHeight);
+        if (!panel.Contains(x, y))
+        {
+            return false;
+        }
+
+        for (var i = 0; i < Apps.Length; i++)
+        {
+            if (RowRect(panel, i).Contains(x, y))
+            {
+                Selection = i;
+                Launch(Apps[i].Command);
+                Close();
+                return true;
+            }
+        }
+
+        return true;
+    }
+
+    internal void Draw(Span<byte> pixels, int width, int height, int stride)
+    {
+        var panel = PanelRect(width, height);
+        Chrome.FillRect(pixels, width, height, stride, panel, PanelBackground);
+        Chrome.FrameRect(pixels, width, height, stride, panel, PanelBorder);
+        BitmapFont.DrawText(pixels, width, height, stride, "Applications", panel.X + 16, panel.Y + 12, TextColour, Shell.FontScale);
+
+        for (var i = 0; i < Apps.Length; i++)
+        {
+            var row = RowRect(panel, i);
+            var selected = i == Selection;
+            if (selected)
+            {
+                Chrome.FillRect(pixels, width, height, stride, row, RowSelected);
+            }
+
+            BitmapFont.DrawText(pixels, width, height, stride, Apps[i].Name, row.X + 12, row.Y + ((row.H - BitmapFont.GlyphHeight * Shell.FontScale) / 2), selected ? RowSelectedText : TextColour, Shell.FontScale);
+        }
+    }
+
+    internal Rect PanelRect(int outputWidth, int outputHeight)
+    {
+        var panelHeight = 56 + (Apps.Length * RowHeight) + 8;
+        return new Rect((outputWidth - PanelWidth) / 2, (outputHeight - panelHeight) / 2, PanelWidth, panelHeight);
+    }
+
+    private static Rect RowRect(Rect panel, int index) =>
+        new(panel.X + 8, panel.Y + 48 + (index * RowHeight), panel.W - 16, RowHeight - 4);
+
+    private void Launch(string command)
+    {
+        if (SpawnOverride is { } spawn)
+        {
+            spawn(command, SocketName);
+            return;
+        }
+
+        try
+        {
+            var startInfo = new ProcessStartInfo { FileName = command, UseShellExecute = false };
+            if (SocketName is { } socket)
+            {
+                startInfo.Environment["WAYLAND_DISPLAY"] = socket;
+            }
+
+            Process.Start(startInfo)?.Dispose();
+        }
+        catch (Exception)
+        {
+            // Opinionated: a missing app simply does not open.
+        }
+    }
+}

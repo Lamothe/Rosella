@@ -19,6 +19,10 @@ public static class InputConstants
 
     // KEY_* (the subset Rosella binds or routes around)
     public const ushort KeyEsc = 1;
+    public const ushort Key1 = 2;
+    public const ushort Key2 = 3;
+    public const ushort Key3 = 4;
+    public const ushort Key4 = 5;
     public const ushort KeyEnter = 28;
     public const ushort KeyA = 30;
     public const ushort KeyLeftCtrl = 29;
@@ -30,6 +34,8 @@ public static class InputConstants
     public const ushort KeyNumLock = 69;
     public const ushort KeyRightCtrl = 97;
     public const ushort KeyRightAlt = 100;
+    public const ushort KeyUp = 103;
+    public const ushort KeyDown = 108;
     public const ushort KeyLeftMeta = 125;
     public const ushort KeyRightMeta = 126;
 

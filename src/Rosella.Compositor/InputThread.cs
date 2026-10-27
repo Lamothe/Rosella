@@ -16,10 +16,10 @@ internal sealed class InputThread : IDisposable
     private readonly List<EvdevDevice> _devices = new();
     private readonly List<Thread> _threads = new();
 
-    internal InputThread(Scene scene, SeatState seat, Action quit)
+    internal InputThread(Scene scene, SeatState seat, Action quit, Shell? shell = null)
     {
         _seat = seat;
-        _router = new InputRouter(scene, seat, quit);
+        _router = new InputRouter(scene, seat, quit, shell);
     }
 
     internal InputRouter Router => _router;

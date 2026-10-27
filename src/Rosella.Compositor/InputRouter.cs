@@ -5,18 +5,25 @@ namespace Rosella.Compositor;
 /// <summary>
 /// The input policy, and deliberately the only policy there is: the cursor
 /// moves and hit-tests windows, a click focuses and raises, keys go to the
-/// keyboard focus, and two keybindings exist (Alt+F4 = close window,
-/// Super+Esc = quit). Nothing is configurable.
+/// keyboard focus, and the keybindings are fixed: Alt+F4 closes the focused
+/// window, Super+Esc quits, Super alone toggles the launcher, Super+1..4
+/// switches workspace, Super+Shift+1..4 moves the focused window there.
+/// Nothing is configurable.
 /// </summary>
 internal sealed class InputRouter
 {
     private readonly Scene _scene;
     private readonly SeatState _seat;
     private readonly Action _quit;
+    private readonly Shell? _shell;
     private readonly object _gate = new();
     private readonly HashSet<int> _pressedKeys = new();
+    private readonly HashSet<int> _consumedKeys = new();
     private int _cursorX;
     private int _cursorY;
+    private bool _superChordUsed;
+    private bool _chromePressConsumed;
+    private SurfaceHandler? _focusBeforeLauncher;
 
     // Multitouch slot state (protocol B): slot -> last per-axis position
     // with per-axis seeding (the first coordinates after finger-down are a
@@ -28,11 +35,12 @@ internal sealed class InputRouter
     private int _lastDepressed = -1;
     private int _lastLocked = -1;
 
-    internal InputRouter(Scene scene, SeatState seat, Action quit)
+    internal InputRouter(Scene scene, SeatState seat, Action quit, Shell? shell = null)
     {
         _scene = scene;
         _seat = seat;
         _quit = quit;
+        _shell = shell;
     }
 
     /// <summary>Where the arrow's hotspot sits.</summary>
@@ -180,6 +188,40 @@ internal sealed class InputRouter
     {
         var pressed = e.Value != InputConstants.KeyReleased;
 
+        // A press eaten by the shell chrome swallows its release too: no
+        // client may see a release for a press it never received.
+        if (!pressed && _chromePressConsumed)
+        {
+            _chromePressConsumed = false;
+            return;
+        }
+
+        // Shell chrome eats clicks first: the launcher when open, then the
+        // bar strip. Neither may leak into client windows underneath.
+        if (pressed && _shell is { } shell)
+        {
+            var (outputWidth, outputHeight) = _scene.OutputSize;
+            if (shell.Launcher.IsOpen)
+            {
+                if (!shell.Launcher.HandleClick(_cursorX, _cursorY, outputWidth, outputHeight))
+                {
+                    // A click outside the panel dismisses it.
+                    ToggleLauncher();
+                }
+
+                _chromePressConsumed = true;
+                RestoreLauncherFocusIfClosed();
+                return;
+            }
+
+            if (_cursorY < Shell.BarHeight)
+            {
+                HandleBarClick(shell, _cursorX, _cursorY);
+                _chromePressConsumed = true;
+                return;
+            }
+        }
+
         // The window under the cursor is authoritative even if the cursor
         // never moved since it appeared (click-to-focus, raise on press).
         var target = _scene.HitTest(_cursorX, _cursorY);
@@ -209,6 +251,24 @@ internal sealed class InputRouter
 
         var pressed = e.Value != InputConstants.KeyReleased;
 
+        // The release of a binding-consumed key is swallowed with its press,
+        // so a consumed key never appears in enter frames or at a client.
+        if (!pressed && _consumedKeys.Remove(e.Code))
+        {
+            SendModifiers(_seat.KeyboardFocus);
+            return;
+        }
+
+        // Bindings see the raw key before it joins the pressed set, so the
+        // key that triggered one is never part of a later enter frame.
+        if (e.Value == InputConstants.KeyPressed && TryHandleBinding(e.Code))
+        {
+            _consumedKeys.Add(e.Code);
+            SendModifiers(_seat.KeyboardFocus);
+            return;
+        }
+
+        var superWasDown = SuperDown;
         if (pressed)
         {
             _pressedKeys.Add(e.Code);
@@ -218,27 +278,40 @@ internal sealed class InputRouter
             _pressedKeys.Remove(e.Code);
         }
 
-        if (e.Value == InputConstants.KeyPressed)
+        // Only the Super up->down transition arms a fresh chord: a second
+        // Meta must not reset one already made.
+        if (pressed && !superWasDown && (e.Code is InputConstants.KeyLeftMeta or InputConstants.KeyRightMeta))
         {
-            if (e.Code == InputConstants.KeyF4 && AltDown)
-            {
-                _seat.KeyboardFocus?.XdgRole?.Close();
-            }
+            _superChordUsed = false;
+        }
 
-            if (e.Code == InputConstants.KeyEsc && SuperDown)
-            {
-                _quit();
-            }
+        if (pressed && e.Code == InputConstants.KeyCapsLock)
+        {
+            _capsLocked = !_capsLocked;
+        }
 
-            if (e.Code == InputConstants.KeyCapsLock)
-            {
-                _capsLocked = !_capsLocked;
-            }
+        if (pressed && e.Code == InputConstants.KeyNumLock)
+        {
+            _numLocked = !_numLocked;
+        }
 
-            if (e.Code == InputConstants.KeyNumLock)
-            {
-                _numLocked = !_numLocked;
-            }
+        // Super released with no chord: the launcher toggles.
+        if (!pressed
+            && (e.Code is InputConstants.KeyLeftMeta or InputConstants.KeyRightMeta)
+            && !SuperDown && !_superChordUsed)
+        {
+            ToggleLauncher();
+        }
+
+        // The launcher, when open, eats its navigation keys outright.
+        if (pressed && _shell is { Launcher.IsOpen: true } openShell && openShell.Launcher.HandleKey(e.Code))
+        {
+            // Any consumed key counts as a chord while Super may still be
+            // held: its release must not also toggle the launcher.
+            _superChordUsed = true;
+            RestoreLauncherFocusIfClosed();
+            SendModifiers(_seat.KeyboardFocus);
+            return;
         }
 
         if (_seat.KeyboardFocus is { } focus)
@@ -250,9 +323,178 @@ internal sealed class InputRouter
         SendModifiers(_seat.KeyboardFocus);
     }
 
+    /// <summary>The fixed keybindings. True = the key is consumed outright.</summary>
+    private bool TryHandleBinding(int code)
+    {
+        if (code == InputConstants.KeyF4 && AltDown)
+        {
+            _seat.KeyboardFocus?.XdgRole?.Close();
+            return true;
+        }
+
+        if (code == InputConstants.KeyEsc && SuperDown)
+        {
+            _superChordUsed = true;
+            _quit();
+            return true;
+        }
+
+        if (_shell is { } shell && SuperDown && code is >= InputConstants.Key1 and <= InputConstants.Key4)
+        {
+            _superChordUsed = true;
+            var workspace = (code - InputConstants.Key1) + 1;
+            if (ShiftDown)
+            {
+                MoveFocusedWindow(shell, workspace);
+            }
+            else
+            {
+                SwitchWorkspace(shell, workspace);
+            }
+
+            return true;
+        }
+
+        return false;
+    }
+
+    private void ToggleLauncher()
+    {
+        if (_shell is not { } shell)
+        {
+            return;
+        }
+
+        // Every open/close counts as a chord: if Super is still held when
+        // the launcher closes some other way, its release must not re-open.
+        _superChordUsed = true;
+        if (shell.Launcher.IsOpen)
+        {
+            CloseLauncher();
+        }
+        else
+        {
+            _focusBeforeLauncher = _seat.KeyboardFocus;
+            shell.Launcher.Open();
+            _seat.SetKeyboardFocus(null, _pressedKeys);
+        }
+    }
+
+    /// <summary>Closes the launcher and hands the keyboard back.</summary>
+    private void CloseLauncher()
+    {
+        _shell?.Launcher.Close();
+        RestoreLauncherFocus();
+    }
+
+    /// <summary>Restores the pre-launcher focus once the launcher is shut.</summary>
+    private void RestoreLauncherFocusIfClosed()
+    {
+        if (_shell is not { Launcher.IsOpen: true })
+        {
+            RestoreLauncherFocus();
+        }
+    }
+
+    private void RestoreLauncherFocus()
+    {
+        if (_focusBeforeLauncher is null)
+        {
+            return;
+        }
+
+        var previous = _focusBeforeLauncher is { Gone: false } stale && stale.IsMapped ? stale : null;
+        _focusBeforeLauncher = null;
+        _seat.SetKeyboardFocus(previous, _pressedKeys);
+    }
+
+    private void HandleBarClick(Shell shell, int x, int y)
+    {
+        // The cached layout is exactly what the scanout drew, so drawn and
+        // hit rectangles cannot disagree; without a frame yet, compute one.
+        var layout = shell.LastBarLayout ?? Bar.ComputeLayout(_scene.OutputSize.Width, Bar.ClockString(), _scene.TaskWindows());
+        for (var i = 0; i < layout.WorkspaceChips.Length; i++)
+        {
+            if (layout.WorkspaceChips[i].Contains(x, y))
+            {
+                SwitchWorkspace(shell, i + 1);
+                return;
+            }
+        }
+
+        foreach (var (rect, task) in layout.Tasks)
+        {
+            if (rect.Contains(x, y))
+            {
+                _scene.Raise(task.Surface);
+                _seat.SetKeyboardFocus(task.Surface, _pressedKeys);
+                return;
+            }
+        }
+    }
+
+    private void SwitchWorkspace(Shell shell, int workspace)
+    {
+        if (_shell is { Launcher.IsOpen: true })
+        {
+            CloseLauncher();
+        }
+
+        if (shell.CurrentWorkspace == workspace)
+        {
+            return;
+        }
+
+        shell.CurrentWorkspace = workspace;
+
+        // Focus the topmost window of the new workspace, or nothing at all.
+        _seat.SetKeyboardFocus(TopWindow(), _pressedKeys);
+
+        // The pointer stays put; it simply aims at whatever is here now.
+        var target = _scene.HitTest(_cursorX, _cursorY);
+        _seat.SetPointerFocus(target, LocalX(target), LocalY(target));
+    }
+
+    private void MoveFocusedWindow(Shell shell, int workspace)
+    {
+        if (_shell is { Launcher.IsOpen: true })
+        {
+            CloseLauncher();
+        }
+
+        if (_seat.KeyboardFocus is not { } focus || focus.Gone || focus.XdgRole?.Toplevel is null)
+        {
+            return;
+        }
+
+        focus.Workspace = workspace;
+
+        // A menu's place is at its parent's side: leaving the workspace
+        // dismisses the whole popup subtree (popup_done + unmap).
+        _scene.DismissDescendantPopups(focus);
+        if (workspace != shell.CurrentWorkspace)
+        {
+            _seat.SetKeyboardFocus(TopWindow(), _pressedKeys);
+        }
+    }
+
+    /// <summary>The topmost mapped toplevel of the current workspace, if any.</summary>
+    private SurfaceHandler? TopWindow()
+    {
+        SurfaceHandler? top = null;
+        foreach (var task in _scene.TaskWindows())
+        {
+            top = task.Surface;
+        }
+
+        return top;
+    }
+
     private bool AltDown => _pressedKeys.Contains(InputConstants.KeyLeftAlt) || _pressedKeys.Contains(InputConstants.KeyRightAlt);
 
     private bool SuperDown => _pressedKeys.Contains(InputConstants.KeyLeftMeta) || _pressedKeys.Contains(InputConstants.KeyRightMeta);
+
+    private bool ShiftDown => _pressedKeys.Contains(InputConstants.KeyLeftShift) || _pressedKeys.Contains(InputConstants.KeyRightShift);
 
     /// <summary>Sends wl_keyboard.modifiers when the mask changed.</summary>
     private void SendModifiers(SurfaceHandler? target)

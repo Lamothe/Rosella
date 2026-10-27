@@ -39,10 +39,12 @@ internal sealed class XdgSurfaceHandler : IRequestHandler, ISurfaceRole, IDispos
     private ServerObject? _wmBase;
     private IXdgRoleObject? _roleObject;
     private XdgToplevelHandler? _toplevel;
+    private XdgSurfaceHandler? _popupParent;
     private Action? _onEnded;
     private bool _constructed;
     private bool _destroyed;
     private bool _surfaceDefunct;
+    private bool _workspaceAssigned;
     private bool _initialConfigureSent;
     private bool _ackedConfigure;
     private bool _mapped;
@@ -79,6 +81,9 @@ internal sealed class XdgSurfaceHandler : IRequestHandler, ISurfaceRole, IDispos
 
     /// <summary>The toplevel, for parent tracking and the shell.</summary>
     internal XdgToplevelHandler? Toplevel => _toplevel;
+
+    /// <summary>The popup parent role, when this surface is a popup.</summary>
+    internal XdgSurfaceHandler? PopupParent => _popupParent;
 
     /// <summary>True once the xdg_surface object is gone (session end or destroy).</summary>
     public bool IsDefunct => _destroyed;
@@ -325,6 +330,7 @@ internal sealed class XdgSurfaceHandler : IRequestHandler, ISurfaceRole, IDispos
         }
 
         CreateRole(session, target, new XdgPopupHandler(this, parent, positioner.Snapshot()), "xdg_popup", request.Arguments[0].AsNewId());
+        _popupParent = parent;
     }
 
     private void Map(SurfaceHandler surface, int contentWidth, int contentHeight)
@@ -335,9 +341,31 @@ internal sealed class XdgSurfaceHandler : IRequestHandler, ISurfaceRole, IDispos
             var (width, height, corner) = _roleObject!.GetPlacement(surface, geometry);
             _windowPosition = corner ?? _scene.PlaceWindow(surface, width, height);
             _mapped = true;
+
+            // Popups always follow their parent; toplevels join the current
+            // workspace once and keep it across unmap/remap cycles.
+            if (_popupParent is { } parent)
+            {
+                surface.Workspace = parent.Surface.Workspace;
+            }
+            else if (!_workspaceAssigned)
+            {
+                _workspaceAssigned = true;
+                surface.Workspace = _scene.Shell?.CurrentWorkspace ?? 1;
+            }
         }
 
         surface.Position = (_windowPosition.X - _geometry.X, _windowPosition.Y - _geometry.Y);
+    }
+
+    /// <summary>Dismisses this popup: popup_done to the client, then unmap.</summary>
+    internal void DismissPopup()
+    {
+        if (_roleObject is XdgPopupHandler popup)
+        {
+            popup.Done();
+            Unmap(_surface);
+        }
     }
 
     private void Unmap(SurfaceHandler surface)
