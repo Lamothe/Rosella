@@ -16,8 +16,17 @@ if [ -z "$dotnet" ]; then
     exit 1
 fi
 
-"$dotnet" publish "$root/src/Rosella.Compositor/Rosella.Compositor.csproj" \
-    -c Release --self-contained -o "$root/build/publish" --nologo
+owner="${SUDO_USER:-$USER}"
+if [ "$(id -u)" = 0 ] && [ -n "$SUDO_USER" ]; then
+    # Elevated via sudo: build as the invoking user so root never owns
+    # build/obj artefacts in the source tree.
+    runuser -u "$owner" -- env DOTNET="$dotnet" "$dotnet" publish "$root/src/Rosella.Compositor/Rosella.Compositor.csproj" \
+        -c Release --self-contained -o "$root/build/publish" --nologo
+    chown -R "$owner:" "$root/build"
+else
+    "$dotnet" publish "$root/src/Rosella.Compositor/Rosella.Compositor.csproj" \
+        -c Release --self-contained -o "$root/build/publish" --nologo
+fi
 
 sudo install -d /usr/local/lib/rosella
 sudo cp -r "$root/build/publish/." /usr/local/lib/rosella/
@@ -25,7 +34,7 @@ sudo install -m 755 "$root/scripts/rosella-session" /usr/local/bin/rosella-sessi
 sudo install -m 644 "$root/scripts/rosella.desktop" /usr/share/wayland-sessions/rosella.desktop
 
 # M6 input: evdev nodes are root:input 660, so the seat user needs the group.
-seatUser="${SUDO_USER:-$USER}"
+seatUser="$owner"
 sudo usermod -aG input "$seatUser"
 
 echo "Installed. 'Rosella' now appears in the GDM session chooser."
