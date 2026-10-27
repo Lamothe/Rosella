@@ -9,6 +9,7 @@
 
   <ItemGroup>
     <EmbeddedResource Include="Resources/wayland.xml" />
+    <EmbeddedResource Include="Resources/xdg-shell.xml" />
   </ItemGroup>
 
 </Project>

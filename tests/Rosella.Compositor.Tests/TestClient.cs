@@ -28,7 +28,7 @@ internal sealed class TestClient : IDisposable
     /// <summary>Sends a request, looked up by interface and request name.</summary>
     public void SendRequest(uint objectId, string interfaceName, string requestName, params WireArgument[] arguments)
     {
-        var interfaceDescription = ProtocolDescription.Core.FindInterface(interfaceName)
+        var interfaceDescription = ProtocolDescription.Combined.FindInterface(interfaceName)
             ?? throw new InvalidOperationException($"unknown interface '{interfaceName}'");
         var request = interfaceDescription.Requests.FirstOrDefault(r => r.Name == requestName)
             ?? throw new InvalidOperationException($"'{interfaceName}' has no request '{requestName}'");
@@ -87,7 +87,7 @@ internal sealed class TestClient : IDisposable
 
     internal string EventName(DecodedMessage message)
     {
-        var interfaceDescription = ProtocolDescription.Core.FindInterface(_interfaces[message.ObjectId])
+        var interfaceDescription = ProtocolDescription.Combined.FindInterface(_interfaces[message.ObjectId])
             ?? throw new InvalidOperationException("unknown interface");
         return interfaceDescription.FindEvent(message.Opcode)?.Name
             ?? throw new InvalidOperationException($"unknown event {message.Opcode}");
@@ -100,7 +100,7 @@ internal sealed class TestClient : IDisposable
             throw new InvalidOperationException($"event for unknown object {objectId}");
         }
 
-        var interfaceDescription = ProtocolDescription.Core.FindInterface(interfaceName)
+        var interfaceDescription = ProtocolDescription.Combined.FindInterface(interfaceName)
             ?? throw new InvalidOperationException($"unknown interface '{interfaceName}'");
         var description = interfaceDescription.FindEvent(opcode)
             ?? throw new InvalidOperationException($"'{interfaceName}' has no event {opcode}");

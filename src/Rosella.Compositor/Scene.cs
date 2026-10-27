@@ -27,6 +27,32 @@ public sealed class Scene
         }
     }
 
+    /// <summary>The scanout's size; windows are placed relative to it.</summary>
+    internal (int Width, int Height) OutputSize { get; set; } = (1920, 1080);
+
+    /// <summary>
+    /// The window policy: every mapped window goes to the centre of the
+    /// output with a small per-window cascade offset, raised to the top.
+    /// Returns where the window's visible corner belongs.
+    /// </summary>
+    internal (int X, int Y) PlaceWindow(SurfaceHandler surface, int windowWidth, int windowHeight)
+    {
+        lock (_gate)
+        {
+            var (outputWidth, outputHeight) = OutputSize;
+            var offset = (_placed++ % 8) * 48;
+            var x = Math.Max(0, ((outputWidth - windowWidth) / 2) + offset);
+            var y = Math.Max(0, ((outputHeight - windowHeight) / 2) + offset);
+
+            // Raise: later in the list renders on top.
+            _surfaces.Remove(surface);
+            _surfaces.Add(surface);
+            return (x, y);
+        }
+    }
+
+    private int _placed;
+
     /// <summary>Draws the background and every mapped surface.</summary>
     public void Render(Span<byte> pixels, int width, int height, int stride, long frame)
     {
@@ -64,7 +90,7 @@ public sealed class Scene
         }
     }
 
-    /// <summary>Cascade placement until the shell (M5) positions windows properly.</summary>
+    /// <summary>Cascade placement for surfaces with no role (raw test clients).</summary>
     private static (int X, int Y) Cascade(int index)
     {
         var offset = (index % 10) * 72;

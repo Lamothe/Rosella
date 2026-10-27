@@ -30,6 +30,9 @@ if (detection is null)
     return 1;
 }
 
+// Windows are placed relative to the real output.
+scene.OutputSize = (detection.Value.Output.Mode.HDisplay, detection.Value.Output.Mode.VDisplay);
+
 using var cancellation = new CancellationTokenSource();
 
 // Signal handling is registered first so it stays alive through cleanup and

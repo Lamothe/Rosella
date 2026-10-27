@@ -6,10 +6,11 @@ using Rosella.Transport;
 namespace Rosella.SmokeClient;
 
 /// <summary>
-/// A tiny, dependency-free Wayland client for smoke-testing Rosella: draws an
+/// A tiny, dependency-free Wayland client for smoke-testing Rosella: opens a
+/// real xdg-shell window (the full configure → ack → map dance) and draws an
 /// animated gradient with a moving bar into an shm buffer, paced by frame
-/// callbacks. Runs until Ctrl+C. Also serves as a reference for the wire
-/// format from the client side.
+/// callbacks. Runs until Ctrl+C or the compositor closes the window. Also
+/// serves as a reference for the wire format from the client side.
 /// </summary>
 internal static class Program
 {
@@ -21,7 +22,10 @@ internal static class Program
     private const uint PoolId = 6;
     private const uint BufferId = 7;
     private const uint SurfaceId = 8;
-    private const uint FirstFrameCallbackId = 9;
+    private const uint WmBaseId = 10;
+    private const uint XdgSurfaceId = 11;
+    private const uint XdgToplevelId = 12;
+    private const uint FirstFrameCallbackId = 13;
 
     private const int Width = 640;
     private const int Height = 360;
@@ -37,6 +41,9 @@ internal static class Program
         [PoolId] = "wl_shm_pool",
         [BufferId] = "wl_buffer",
         [SurfaceId] = "wl_surface",
+        [WmBaseId] = "xdg_wm_base",
+        [XdgSurfaceId] = "xdg_surface",
+        [XdgToplevelId] = "xdg_toplevel",
     };
 
     // Frame-callback ids are recycled only after wl_display.delete_id, as the
@@ -75,7 +82,7 @@ internal static class Program
         using var connection = new WireConnection(socket);
         using var stream = new MessageStream();
 
-        Handshake(connection, stream);
+        var globals = Handshake(connection, stream);
 
         // The pool: a temp file handed to the compositor as a descriptor.
         var poolPath = Path.GetTempFileName();
@@ -84,21 +91,29 @@ internal static class Program
 
         Request(connection, ShmId, "wl_shm", "create_pool", WireArgument.NewId(PoolId), WireArgument.FileDescriptor(unchecked((int)poolHandle.DangerousGetHandle())), WireArgument.Int32(Stride * Height));
         Request(connection, PoolId, "wl_shm_pool", "create_buffer", WireArgument.NewId(BufferId), WireArgument.Int32(0), WireArgument.Int32(Width), WireArgument.Int32(Height), WireArgument.Int32(Stride), WireArgument.UInt32(1));
+
+        // The xdg-shell window: surface + xdg_surface + toplevel, then the
+        // initial buffer-less commit that triggers the configure dance.
         Request(connection, CompositorId, "wl_compositor", "create_surface", WireArgument.NewId(SurfaceId));
-        Request(connection, SurfaceId, "wl_surface", "attach", WireArgument.Object(BufferId), WireArgument.Int32(0), WireArgument.Int32(0));
-        Request(connection, SurfaceId, "wl_surface", "damage", WireArgument.Int32(0), WireArgument.Int32(0), WireArgument.Int32(Width), WireArgument.Int32(Height));
-        Request(connection, SurfaceId, "wl_surface", "frame", WireArgument.NewId(AllocateCallback()));
+        Request(connection, WmBaseId, "xdg_wm_base", "get_xdg_surface", WireArgument.NewId(XdgSurfaceId), WireArgument.Object(SurfaceId));
+        Request(connection, XdgSurfaceId, "xdg_surface", "get_toplevel", WireArgument.NewId(XdgToplevelId));
+        Request(connection, XdgToplevelId, "xdg_toplevel", "set_title", WireArgument.String("Rosella Smoke Test"));
+        Request(connection, XdgToplevelId, "xdg_toplevel", "set_app_id", WireArgument.String("rosella-smoke"));
         Request(connection, SurfaceId, "wl_surface", "commit");
-        Console.WriteLine("rosella-smoke: surface committed — look for the window on the output");
+        Console.WriteLine("rosella-smoke: initial commit — waiting for configure");
 
         var frame = 0;
+        var mapped = false;
         var buffer = new byte[Stride * Height];
         var receiveBuffer = new byte[4096];
         var receiveDescriptors = new int[WireConnection.MaxDescriptorsPerReceive];
         while (true)
         {
-            Draw(buffer, frame);
-            RandomAccess.Write(poolHandle, new ReadOnlyMemory<byte>[] { buffer }, 0);
+            if (mapped)
+            {
+                Draw(buffer, frame);
+                RandomAccess.Write(poolHandle, new ReadOnlyMemory<byte>[] { buffer }, 0);
+            }
 
             foreach (var message in ReadEvents(connection, stream, receiveBuffer, receiveDescriptors))
             {
@@ -110,6 +125,29 @@ internal static class Program
                     if (CallbackIds.Remove(freed))
                     {
                         FreeCallbackIds.Enqueue(freed);
+                    }
+
+                    continue;
+                }
+
+                if (message.ObjectId == XdgToplevelId && eventName == "close")
+                {
+                    Console.WriteLine("rosella-smoke: compositor closed the window");
+                    return;
+                }
+
+                if (message.ObjectId == XdgSurfaceId && eventName == "configure")
+                {
+                    var serial = message.Arguments[0].AsUInt32();
+                    Request(connection, XdgSurfaceId, "xdg_surface", "ack_configure", WireArgument.UInt32(serial));
+                    if (!mapped)
+                    {
+                        mapped = true;
+                        Request(connection, SurfaceId, "wl_surface", "attach", WireArgument.Object(BufferId), WireArgument.Int32(0), WireArgument.Int32(0));
+                        Request(connection, SurfaceId, "wl_surface", "damage", WireArgument.Int32(0), WireArgument.Int32(0), WireArgument.Int32(Width), WireArgument.Int32(Height));
+                        Request(connection, SurfaceId, "wl_surface", "frame", WireArgument.NewId(AllocateCallback()));
+                        Request(connection, SurfaceId, "wl_surface", "commit");
+                        Console.WriteLine("rosella-smoke: window mapped — look for it on the output");
                     }
 
                     continue;
@@ -132,20 +170,55 @@ internal static class Program
         }
     }
 
-    private static void Handshake(WireConnection connection, MessageStream stream)
+    /// <summary>Connects, learns the globals, and binds the ones we speak.</summary>
+    private static Dictionary<uint, (string Interface, uint Version)> Handshake(WireConnection connection, MessageStream stream)
     {
         Request(connection, DisplayId, "wl_display", "get_registry", WireArgument.NewId(RegistryId));
         Request(connection, DisplayId, "wl_display", "sync", WireArgument.NewId(SyncCallbackId));
 
+        var globals = new Dictionary<uint, (string, uint)>();
         var buffer = new byte[4096];
         var descriptors = new int[WireConnection.MaxDescriptorsPerReceive];
-        while (!ReadEvents(connection, stream, buffer, descriptors).Any(m => m.ObjectId == SyncCallbackId))
+        while (true)
         {
-            // Drain the registry's global events until the sync callback.
+            var synced = false;
+            foreach (var message in ReadEvents(connection, stream, buffer, descriptors))
+            {
+                if (message.ObjectId == RegistryId && EventName(message) == "global")
+                {
+                    globals[message.Arguments[0].AsUInt32()] = (message.Arguments[1].AsString(), message.Arguments[2].AsUInt32());
+                }
+
+                if (message.ObjectId == SyncCallbackId)
+                {
+                    synced = true;
+                }
+            }
+
+            if (synced)
+            {
+                break;
+            }
         }
 
-        Request(connection, RegistryId, "wl_registry", "bind", WireArgument.UInt32(1), WireArgument.String("wl_compositor"), WireArgument.UInt32(7), WireArgument.NewId(CompositorId));
-        Request(connection, RegistryId, "wl_registry", "bind", WireArgument.UInt32(3), WireArgument.String("wl_shm"), WireArgument.UInt32(3), WireArgument.NewId(ShmId));
+        Bind(connection, globals, "wl_compositor", 4, CompositorId);
+        Bind(connection, globals, "wl_shm", 5, ShmId);
+        Bind(connection, globals, "xdg_wm_base", 6, WmBaseId);
+        return globals;
+    }
+
+    private static void Bind(WireConnection connection, Dictionary<uint, (string Interface, uint Version)> globals, string interfaceName, uint maxVersion, uint id)
+    {
+        foreach (var (name, (found, version)) in globals)
+        {
+            if (found == interfaceName)
+            {
+                Request(connection, RegistryId, "wl_registry", "bind", WireArgument.UInt32(name), WireArgument.String(interfaceName), WireArgument.UInt32(Math.Min(version, maxVersion)), WireArgument.NewId(id));
+                return;
+            }
+        }
+
+        throw new InvalidOperationException($"compositor does not advertise {interfaceName}");
     }
 
     /// <summary>Reads one batch of events, decoding them against the interface map.</summary>
@@ -181,7 +254,7 @@ internal static class Program
 
     private static void Request(WireConnection connection, uint objectId, string interfaceName, string requestName, params WireArgument[] arguments)
     {
-        var interfaceDescription = ProtocolDescription.Core.FindInterface(interfaceName)
+        var interfaceDescription = ProtocolDescription.Combined.FindInterface(interfaceName)
             ?? throw new InvalidOperationException($"unknown interface '{interfaceName}'");
         var request = interfaceDescription.Requests.First(r => r.Name == requestName);
         connection.Send(MessageEncoder.Encode(objectId, request.Opcode, request.WireSignature, arguments));
@@ -201,7 +274,7 @@ internal static class Program
 
     private static string EventName(DecodedMessage message)
     {
-        var interfaceDescription = ProtocolDescription.Core.FindInterface(InterfaceOf(message.ObjectId))
+        var interfaceDescription = ProtocolDescription.Combined.FindInterface(InterfaceOf(message.ObjectId))
             ?? throw new InvalidOperationException("unknown interface");
         return interfaceDescription.FindEvent(message.Opcode)?.Name
             ?? throw new InvalidOperationException($"unknown event {message.Opcode}");
@@ -209,7 +282,7 @@ internal static class Program
 
     private static IReadOnlyList<ArgumentType> ResolveEvent(uint objectId, ushort opcode)
     {
-        var interfaceDescription = ProtocolDescription.Core.FindInterface(InterfaceOf(objectId))
+        var interfaceDescription = ProtocolDescription.Combined.FindInterface(InterfaceOf(objectId))
             ?? throw new InvalidOperationException($"event for unknown object {objectId}");
         var description = interfaceDescription.FindEvent(opcode)
             ?? throw new InvalidOperationException($"unknown event {opcode} on object {objectId}");

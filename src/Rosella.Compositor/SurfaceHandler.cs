@@ -10,7 +10,28 @@ internal static class SurfaceErrors
     internal const uint InvalidScale = 0;
     internal const uint InvalidTransform = 1;
     internal const uint InvalidOffset = 3;
+    internal const uint DefunctRoleObject = 4;
     internal const uint NoBuffer = 5;
+}
+
+/// <summary>
+/// A role (xdg-shell) on a surface: notified at commit time and destruction,
+/// so role state machines can map, unmap, and raise role-specific errors.
+/// </summary>
+internal interface ISurfaceRole
+{
+    /// <summary>
+    /// Called with the commit's outcome before it becomes visible; may raise
+    /// protocol errors. <paramref name="hasContent"/> and the dimensions
+    /// describe the content this commit will apply.
+    /// </summary>
+    void OnCommit(SurfaceHandler surface, bool contentChanged, bool hasContent, int contentWidth, int contentHeight);
+
+    /// <summary>Called when the wl_surface is destroyed.</summary>
+    void OnSurfaceDestroyed();
+
+    /// <summary>True once the role object has been destroyed (or its session ended).</summary>
+    bool IsDefunct { get; }
 }
 
 /// <summary>
@@ -34,6 +55,7 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
     private byte[]? _content;
     private int _width;
     private int _height;
+    private ISurfaceRole? _role;
 
     public SurfaceHandler(Scene scene)
     {
@@ -70,10 +92,43 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
         }
     }
 
+    /// <summary>Drops the content without a commit (role/surface teardown).</summary>
+    internal void UnmapContent()
+    {
+        lock (_state)
+        {
+            _content = null;
+            _width = 0;
+            _height = 0;
+        }
+    }
+
     public void Bind(ClientSession session, ServerObject self)
     {
         _session = session;
         _self = self;
+    }
+
+    /// <summary>The wl_surface id, for role errors raised elsewhere.</summary>
+    internal uint Id => _self!.Id;
+
+    /// <summary>True once any xdg role object has been created for this surface.</summary>
+    internal bool HasXdgRole { get; private set; }
+
+    /// <summary>
+    /// Assigns the surface's xdg role. A surface's role never changes, so the
+    /// first assignment wins for the wl_surface's lifetime.
+    /// </summary>
+    internal bool TryAssignRole(ISurfaceRole role)
+    {
+        if (HasXdgRole)
+        {
+            return false;
+        }
+
+        HasXdgRole = true;
+        _role = role;
+        return true;
     }
 
     public void HandleRequest(ClientSession session, ServerObject target, DecodedMessage request)
@@ -230,6 +285,10 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
 
     private void Commit()
     {
+        bool contentChanged;
+        byte[]? newContent;
+        var newWidth = 0;
+        var newHeight = 0;
         lock (_state)
         {
             // get_release requires a non-null buffer in this content update.
@@ -238,14 +297,18 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
                 throw new ProtocolErrorException(_self!.Id, SurfaceErrors.NoBuffer, "get_release without a committed buffer");
             }
 
+            contentChanged = _pendingAttach;
+            newContent = _content;
+            newWidth = _width;
+            newHeight = _height;
             if (_pendingAttach)
             {
                 _pendingAttach = false;
                 if (_pendingBuffer is { } buffer)
                 {
-                    _content = buffer.Buffer.ReadPixels();
-                    _width = buffer.Buffer.Width;
-                    _height = buffer.Buffer.Height;
+                    newContent = buffer.Buffer.ReadPixels();
+                    newWidth = buffer.Buffer.Width;
+                    newHeight = buffer.Buffer.Height;
                     _pendingBuffer = null;
                     buffer.ReleaseReference();
                     buffer.MarkReleased(_pendingReleaseCallbacks);
@@ -253,8 +316,25 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
                 }
                 else
                 {
-                    _content = null;
+                    newContent = null;
+                    newWidth = 0;
+                    newHeight = 0;
                 }
+            }
+        }
+
+        // The role hook runs outside the state lock (lock order: scene ->
+        // surface state) and BEFORE the content becomes visible, so a mapped
+        // window is at its final position the moment its pixels appear.
+        _role?.OnCommit(this, contentChanged, newContent is not null, newWidth, newHeight);
+
+        lock (_state)
+        {
+            if (contentChanged)
+            {
+                _content = newContent;
+                _width = newWidth;
+                _height = newHeight;
             }
 
             _activeCallbacks.AddRange(_pendingCallbacks);
@@ -264,6 +344,12 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
 
     private void Destroy(ClientSession session, ServerObject target)
     {
+        if (_role is { IsDefunct: false })
+        {
+            // wayland.xml: the role object must be destroyed first.
+            throw new ProtocolErrorException(_self!.Id, SurfaceErrors.DefunctRoleObject, "wl_surface destroyed before its role object");
+        }
+
         _scene.Remove(this);
         lock (_state)
         {
@@ -283,6 +369,7 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
             DestroyCallbacks(session, _pendingReleaseCallbacks);
         }
 
+        _role?.OnSurfaceDestroyed();
         session.DestroyObject(target);
     }
 

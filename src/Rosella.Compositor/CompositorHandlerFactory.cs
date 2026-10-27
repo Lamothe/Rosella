@@ -18,6 +18,7 @@ internal sealed class CompositorHandlerFactory : IGlobalHandlerFactory
         {
             "wl_compositor" => new CompositorHandler(_scene),
             "wl_shm" => new ShmHandler(),
+            "xdg_wm_base" => new XdgWmBaseHandler(_scene),
             _ => null,
         };
     }

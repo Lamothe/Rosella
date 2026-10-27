@@ -91,8 +91,16 @@ Verified against libwayland's marshalling code and the protocol docs:
   compositing of client windows over the background. Servers and the render
   loop share the `Scene` under a strict lock order (scene → surface state →
   session). Confirmed on screen 27/10/2026 on silver (simpledrm panel).
-- **M5 — xdg-shell**: windows are recognised: mapped/unmapped, positioned
-  (replacing the temporary cascade placement), closed.
+- **M5 — xdg-shell**: ✅ windows: the commit → configure → ack_configure →
+  buffer-commit map dance with strict serial consumption (ack consumes the
+  serial and all older ones), window policy placement (centre + per-window
+  cascade, placed once per map and raised), double-buffered window geometry
+  shifting the content origin, popups placed from a frozen positioner
+  snapshot (anchor rect + offset, relative to the parent's window geometry
+  in the event), wm_capabilities before the first configure, and enforced
+  destroy order (wl_surface/xdg_surface/role object) with dead windows
+  unmapped immediately. Reviewed once; 15 findings fixed with regression
+  tests. Pending: on-screen check.
 - **M6 — input**: libinput/evdev via a seat, keyboard focus routing, the few
   hardcoded keybindings the DE allows.
 - **M7 — the shell**: bar, app launcher, workspaces, notifications — all in
@@ -136,7 +144,12 @@ Learned from libwayland and verified against real clients:
   microseconds between render and `CompleteFrame` can get its frame callback
   fired one frame early; argb8888 alpha is ignored (opaque copy) until
   blending; a client that truncates its pool file after mapping can still
-  SIGBUS the compositor (the common lying-size case is checked up front).
+  SIGBUS the compositor (the common lying-size case is checked up front);
+  `get_xdg_surface` on a surface that already has content is not rejected
+  (the spec names no error code); popup stacking rules
+  (`not_the_topmost_popup`, parent-mapped-first) and positioner constraint
+  adjustment (flip/slide to stay on screen) are unimplemented; maximise/
+  fullscreen requests are ignored until the shell (M7).
 - The M2/M3 code has been reviewed three times at the code level; M4 adds the
   surface layer, reviewed once. Only `wayland-info` and `SmokeClient` have
   exercised the protocol as clients so far — toolkits (GTK/Qt) will stress it

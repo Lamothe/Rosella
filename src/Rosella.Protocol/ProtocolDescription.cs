@@ -11,6 +11,10 @@ namespace Rosella.Protocol;
 public sealed class ProtocolDescription
 {
     private static readonly Lazy<ProtocolDescription> CoreInstance = new(LoadCore, LazyThreadSafetyMode.ExecutionAndPublication);
+    private static readonly Lazy<ProtocolDescription> XdgShellInstance = new(LoadXdgShell, LazyThreadSafetyMode.ExecutionAndPublication);
+    private static readonly Lazy<ProtocolDescription> CombinedInstance = new(
+        () => Combine(Core, XdgShell),
+        LazyThreadSafetyMode.ExecutionAndPublication);
 
     private readonly Dictionary<string, InterfaceDescription> _interfacesByName;
 
@@ -29,6 +33,40 @@ public sealed class ProtocolDescription
     public static ProtocolDescription Core
     {
         get { return CoreInstance.Value; }
+    }
+
+    /// <summary>The xdg-shell protocol, parsed from the embedded xdg-shell.xml.</summary>
+    public static ProtocolDescription XdgShell
+    {
+        get { return XdgShellInstance.Value; }
+    }
+
+    /// <summary>Core plus xdg-shell: every interface Rosella speaks.</summary>
+    public static ProtocolDescription Combined
+    {
+        get { return CombinedInstance.Value; }
+    }
+
+    /// <summary>Merges protocol definitions into one interface set.</summary>
+    public static ProtocolDescription Combine(params ProtocolDescription[] protocols)
+    {
+        ArgumentNullException.ThrowIfNull(protocols);
+        var interfaces = new List<InterfaceDescription>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var protocol in protocols)
+        {
+            foreach (var iface in protocol.Interfaces)
+            {
+                if (!seen.Add(iface.Name))
+                {
+                    throw new InvalidOperationException($"interface '{iface.Name}' is defined twice");
+                }
+
+                interfaces.Add(iface);
+            }
+        }
+
+        return new ProtocolDescription(string.Join("+", protocols.Select(p => p.Name)), interfaces);
     }
 
     /// <summary>Returns the named interface, or null when the protocol does not define it.</summary>
@@ -52,9 +90,19 @@ public sealed class ProtocolDescription
 
     private static ProtocolDescription LoadCore()
     {
+        return LoadResource("Rosella.Protocol.Resources.wayland.xml");
+    }
+
+    private static ProtocolDescription LoadXdgShell()
+    {
+        return LoadResource("Rosella.Protocol.Resources.xdg-shell.xml");
+    }
+
+    private static ProtocolDescription LoadResource(string resourceName)
+    {
         var assembly = typeof(ProtocolDescription).Assembly;
-        using var stream = assembly.GetManifestResourceStream("Rosella.Protocol.Resources.wayland.xml")
-            ?? throw new InvalidOperationException("Embedded wayland.xml resource is missing.");
+        using var stream = assembly.GetManifestResourceStream(resourceName)
+            ?? throw new InvalidOperationException($"Embedded {resourceName} resource is missing.");
         return Load(stream);
     }
 

@@ -16,6 +16,7 @@ public static class StandardGlobals
             new(4, "wl_seat", 11),
             new(5, "wl_output", 4),
             new(6, "wl_data_device_manager", 3),
+            new(7, "xdg_wm_base", 7),
         ];
     }
 }

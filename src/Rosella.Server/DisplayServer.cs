@@ -182,7 +182,7 @@ public sealed class DisplayServer : IDisposable
     private void RunSession(Socket socket)
     {
         using var connection = new WireConnection(socket);
-        var session = new ClientSession(connection, ProtocolDescription.Core, Globals, _token, HandlerFactory);
+        var session = new ClientSession(connection, ProtocolDescription.Combined, Globals, _token, HandlerFactory);
         session.Run();
     }
 }

@@ -48,8 +48,16 @@ configuration is where desktop environments go to die.
   buffer is released); frame callbacks pace clients. Verified end to end over
   real sockets with descriptor passing, plus `wayland-info` and the bundled
   `tools/Rosella.SmokeClient`.
-- **M5 — xdg-shell**: next. Windows are recognised: mapped/unmapped, positioned
-  (replacing the temporary cascade placement), closed.
+- **M5 — xdg-shell**: done — pending on-screen check. Windows are real:
+  `xdg_wm_base`/`xdg_surface`/`xdg_toplevel`/`xdg_popup`/`xdg_positioner`
+  (v7), the full commit → configure → ack_configure → map dance with strict
+  serial consumption, window policy placement (centre + small cascade,
+  raised on map), double-buffered window geometry, popups positioned by a
+  frozen positioner snapshot relative to the parent window, and correct
+  unmap/teardown semantics (role destroy unmaps; destroy order is enforced).
+  The smoke client now opens a genuine xdg-shell window.
+- **M6 — input**: next. libinput/evdev via a seat, keyboard focus routing,
+  the few hardcoded keybindings the DE allows; then real toolkit apps.
 
 ## Layout
 
