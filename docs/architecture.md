@@ -74,11 +74,15 @@ Verified against libwayland's marshalling code and the protocol docs:
   `since`-version gating in both directions, stub interfaces that survive real
   clients. Exit test passed: `wayland-info` (real libwayland) lists all six
   globals and parses every event (shm formats, seat, output geometry/mode).
-- **M3 — output**: DRM/KMS modesetting + scanout, run natively on mercury as a
-  GDM login session (no VM primary; a VM remains an optional fallback). First
-  task: probe what the NVIDIA driver's DRM node exposes (dumb buffers vs
-  GBM/EGL) and choose the buffer path accordingly. Goal: a visible test
-  pattern from the login session.
+- **M3 — output**: ✅ DRM/KMS modesetting + scanout, run natively on mercury
+  as a GDM login session (a VM remains an optional fallback). Rosella.Drm
+  pins every struct layout and ioctl code against the kernel UAPI with golden
+  tests; `--probe` validated the whole interop surface against real drivers
+  (amdgpu + nvidia-drm — both report `CAP_DUMB_BUFFER` and allocate dumb
+  buffers fine, settling the NVIDIA risk). Scanout drives the first connected
+  output (on mercury: the SONY TV at 3840x2160@60) with a software-rendered
+  test pattern via a page-flip loop; the previous display state is restored on
+  exit. Pending: visual confirmation in the GDM session.
 - **M4 — client buffers**: `wl_shm` and `wl_surface`/`wl_compositor`/
   `wl_subcompositor`, compositing client surfaces into the scanout.
 - **M5 — xdg-shell**: toplevels, mapping, focus, one hardcoded window policy.
@@ -111,14 +115,14 @@ Learned from libwayland and verified against real clients:
 
 ## Open risks
 
-- DRM/KMS + Mesa interop is the fiddliest native surface; mitigated by doing
-  software rendering first and keeping GL optional.
-- Native testing runs on mercury's NVIDIA GPU: dumb-buffer scanout is
-  historically limited on the proprietary driver, so M3 probes the DRM node
-  first and falls back to GBM/EGL allocation if dumb buffers are unusable.
+- DRM/KMS + Mesa interop was the fiddliest native surface; M3 proved the
+  modesetting side against real drivers, but only one output is driven at a
+  time and the exit-restore re-binds only that connector (multi-output and
+  clone-aware restore land with the shell).
 - Being the login session means a bug yields a blank screen, not a crash:
   recovery is a VT switch (`Ctrl+Alt+F3`) or picking GNOME at the greeter.
+  The flip loop is token-interruptible, so signals cannot wedge it silently.
 - M2's `Rosella.Server` and `Rosella.Transport` have been reviewed twice at
   the code level and once against libwayland, but only `wayland-info` has been
   used as a real client so far — toolkits (GTK/Qt) will exercise more of the
-  protocol once M3–M5 land.
+  protocol once M4–M5 land.

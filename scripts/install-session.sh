@@ -15,5 +15,5 @@ sudo install -m 755 "$root/scripts/rosella-session" /usr/local/bin/rosella-sessi
 sudo install -m 644 "$root/scripts/rosella.desktop" /usr/share/wayland-sessions/rosella.desktop
 
 echo "Installed. 'Rosella' now appears in the GDM session chooser."
-echo "WARNING: until milestone 3 lands output, selecting it gives a blank screen."
+echo "Selecting it drives the first connected output (test pattern) until milestone 5."
 echo "Recovery: Ctrl+Alt+F3, log in, pkill -f Rosella.Compositor (or pick GNOME at the greeter)."

@@ -10,6 +10,11 @@
 
   <ItemGroup>
     <ProjectReference Include="../Rosella.Server/Rosella.Server.csproj" />
+    <ProjectReference Include="../Rosella.Drm/Rosella.Drm.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Rosella.Compositor.Tests" />
   </ItemGroup>
 
 </Project>
