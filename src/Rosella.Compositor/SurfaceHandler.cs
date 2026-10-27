@@ -65,9 +65,6 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
     /// <summary>Where the surface is composited, assigned by the scene.</summary>
     internal (int X, int Y) Position { get; set; }
 
-    /// <summary>The workspace this surface lives in (1-based; the shell has four).</summary>
-    internal int Workspace { get; set; } = 1;
-
     /// <summary>The session that owns this surface, for input routing.</summary>
     internal ClientSession? Session => _session;
 

@@ -4,7 +4,7 @@ using Rosella.Drm;
 using Rosella.Server;
 
 // Rosella's entry point: the Wayland display server plus, from milestone 3,
-// real scanout of an opinionated test pattern on the first connected output.
+// real scanout — the Windows 11 style desktop on the first connected output.
 
 if (args.Contains("--probe", StringComparer.Ordinal))
 {

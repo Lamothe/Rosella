@@ -6,11 +6,10 @@ using Rosella.Server;
 namespace Rosella.Compositor.Tests;
 
 /// <summary>
-/// The M7 shell over a real socket: windows land below the bar in the
-/// current workspace, Super toggles the launcher, Super+1..4 switches
-/// workspaces, Super+Shift+1..4 moves the focused window, the bar's task
-/// strip and chips are clickable, and hidden workspaces are invisible to
-/// rendering, hit-testing, and the task strip alike.
+/// The Windows 11 style shell over a real socket: windows land above the
+/// taskbar, Super toggles the Start menu, the taskbar's Start button and
+/// task buttons are clickable, binding keys never leak to clients, and the
+/// focused window wears the accent border.
 /// </summary>
 public class ShellTests
 {
@@ -18,17 +17,30 @@ public class ShellTests
         MemoryMarshal.Read<uint>(buffer.AsSpan((y * stride) + (x * 4)));
 
     [Fact]
-    public void MapWindow_LandsBelowTheBarInWorkspaceOne()
+    public void MapWindow_LandsAboveTheTaskbar()
     {
         using var harness = new Harness();
         harness.MapWindow(8, 11, 12, title: "Hello");
 
         var surface = harness.MappedSurface(8);
-        Assert.Equal(1, surface.Workspace);
-        Assert.True(surface.Position.Y >= Shell.BarHeight, $"window at y={surface.Position.Y}");
+        Assert.True(surface.Position.Y >= 8, $"window at y={surface.Position.Y}");
+        Assert.True(surface.Position.Y + surface.Height <= harness.Scene.OutputSize.Height - Shell.BarHeight,
+            $"window bottom at y={surface.Position.Y + surface.Height}");
 
         var render = harness.RenderFrame();
         Assert.Equal(harness.ContentPixel, PixelAt(render, 1920 * 4, surface.Position.X + 2, surface.Position.Y + 2));
+    }
+
+    [Fact]
+    public void FocusedWindow_WearsTheAccentBorder()
+    {
+        using var harness = new Harness();
+        harness.MapWindow(8, 11, 12, title: "Hello");
+        var surface = harness.MappedSurface(8);
+        harness.ClickAt(surface.Position.X + 2, surface.Position.Y + 2);
+
+        var render = harness.RenderFrame();
+        Assert.Equal(0xFF7B86E8, PixelAt(render, 1920 * 4, surface.Position.X - 1, surface.Position.Y + 2));
     }
 
     [Fact]
@@ -39,7 +51,7 @@ public class ShellTests
         harness.MapWindow(30, 31, 32);
 
         var tasks = harness.Scene.TaskWindows();
-        Assert.Equal(["Hello", "(window)"], tasks.Select(t => t.Label));
+        Assert.Equal(["Hello", "Window"], tasks.Select(t => t.Label));
     }
 
     [Fact]
@@ -57,63 +69,33 @@ public class ShellTests
     }
 
     [Fact]
-    public void SuperChord_SwitchesWorkspaceWithoutTogglingTheLauncher()
+    public void StartButton_TogglesTheLauncher()
     {
         using var harness = new Harness();
+        var start = Bar.ComputeLayout(1920, 1080, Bar.ClockString(), []).Start;
+        var cx = start.X + (start.W / 2);
+        var cy = start.Y + (start.H / 2);
 
-        harness.Press(InputConstants.KeyLeftMeta);
-        harness.Press(InputConstants.Key2);
-        harness.Release(InputConstants.Key2);
-        harness.Release(InputConstants.KeyLeftMeta);
+        harness.ClickAt(cx, cy);
+        Assert.True(harness.Shell.Launcher.IsOpen);
 
-        Assert.Equal(2, harness.Shell.CurrentWorkspace);
+        harness.ClickAt(cx, cy);
         Assert.False(harness.Shell.Launcher.IsOpen);
     }
 
     [Fact]
-    public void SuperShiftTwo_MovesTheFocusedWindowOutOfWorkspaceOne()
+    public void TaskButton_FocusesAndRaisesTheWindow()
     {
         using var harness = new Harness();
 
         harness.MapWindow(8, 11, 12, title: "Hello");
         var surface = harness.MappedSurface(8);
-        harness.ClickAt(surface.Position.X + 2, surface.Position.Y + 2);
+
+        var layout = Bar.ComputeLayout(1920, 1080, Bar.ClockString(), harness.Scene.TaskWindows());
+        var rect = layout.Tasks.Single().Rect;
+        harness.ClickAt(rect.X + (rect.W / 2), rect.Y + (rect.H / 2));
+
         Assert.Equal(surface, harness.Seat.KeyboardFocus);
-
-        harness.Press(InputConstants.KeyLeftMeta);
-        harness.Press(InputConstants.KeyLeftShift);
-        harness.Press(InputConstants.Key2);
-        harness.Release(InputConstants.Key2);
-        harness.Release(InputConstants.KeyLeftShift);
-        harness.Release(InputConstants.KeyLeftMeta);
-
-        Assert.Equal(2, surface.Workspace);
-        Assert.Empty(harness.Scene.TaskWindows());
-        Assert.Null(harness.Seat.KeyboardFocus);
-
-        // The window is invisible in workspace 1: its pixels and hit rect are gone.
-        var render = harness.RenderFrame();
-        Assert.NotEqual(harness.ContentPixel, PixelAt(render, 1920 * 4, surface.Position.X + 2, surface.Position.Y + 2));
-        Assert.Null(harness.Scene.HitTest(surface.Position.X + 2, surface.Position.Y + 2));
-    }
-
-    [Fact]
-    public void HiddenWorkspace_IsNeitherRenderedNorInTheTaskStrip()
-    {
-        using var harness = new Harness();
-
-        harness.MapWindow(8, 11, 12, title: "In Two");
-        var surface = harness.MappedSurface(8);
-        surface.Workspace = 2;
-
-        Assert.Empty(harness.Scene.TaskWindows());
-        var render = harness.RenderFrame();
-        Assert.NotEqual(harness.ContentPixel, PixelAt(render, 1920 * 4, surface.Position.X + 2, surface.Position.Y + 2));
-
-        // Back on workspace 2 the window is whole again.
-        harness.Shell.CurrentWorkspace = 2;
-        render = harness.RenderFrame();
-        Assert.Equal(harness.ContentPixel, PixelAt(render, 1920 * 4, surface.Position.X + 2, surface.Position.Y + 2));
     }
 
     [Fact]
@@ -146,9 +128,7 @@ public class ShellTests
         harness.MapWindow(8, 11, 12, title: "Hello");
         var surface = harness.MappedSurface(8);
         harness.ClickAt(surface.Position.X + 2, surface.Position.Y + 2);
-        harness.Client.SendRequest(20, "wl_seat", "get_keyboard", WireArgument.NewId(21));
-        harness.Client.RegisterObject(21, "wl_keyboard");
-        harness.Client.ReadUntil(21, "keymap");
+        harness.OpenKeyboard();
 
         harness.Press(InputConstants.KeyLeftMeta);
         harness.Release(InputConstants.KeyLeftMeta);
@@ -166,30 +146,40 @@ public class ShellTests
     }
 
     [Fact]
-    public void BarTaskClick_FocusesAndRaisesTheWindow()
+    public void AltF4_ClosesTheWindowWithoutLeakingTheKey()
     {
         using var harness = new Harness();
-
         harness.MapWindow(8, 11, 12, title: "Hello");
         var surface = harness.MappedSurface(8);
+        harness.ClickAt(surface.Position.X + 2, surface.Position.Y + 2);
+        harness.OpenKeyboard();
+        harness.CollectUntilRoundTrip();
 
-        var layout = Bar.ComputeLayout(1920, Bar.ClockString(), harness.Scene.TaskWindows());
-        var rect = layout.Tasks.Single().Rect;
-        harness.ClickAt(rect.X + (rect.W / 2), rect.Y + (rect.H / 2));
+        harness.Press(InputConstants.KeyLeftAlt);
+        harness.Press(InputConstants.KeyF4);
+        harness.Release(InputConstants.KeyF4);
+        harness.Release(InputConstants.KeyLeftAlt);
 
-        Assert.Equal(surface, harness.Seat.KeyboardFocus);
+        var events = harness.DrainUntilRoundTrip();
+        Assert.DoesNotContain(events, e => harness.Client.EventName(e) == "key" && e.Arguments[2].AsUInt32() is 62 or 70);
+
+        // Closing is the client's move: the compositor asks, the client obeys.
+        Assert.Contains(events, e => e.ObjectId == 12 && harness.Client.EventName(e) == "close");
     }
 
     [Fact]
-    public void WorkspaceChipClick_SwitchesWorkspace()
+    public void ChromePressAndRelease_NeverReachAWindow()
     {
         using var harness = new Harness();
+        harness.MapWindow(8, 11, 12, title: "Hello");
+        harness.OpenPointer();
+        harness.CollectUntilRoundTrip();
 
-        var layout = Bar.ComputeLayout(1920, Bar.ClockString(), []);
-        var chip = layout.WorkspaceChips[2];
-        harness.ClickAt(chip.X + (chip.W / 2), chip.Y + (chip.H / 2));
-
-        Assert.Equal(3, harness.Shell.CurrentWorkspace);
+        // A full click on a task button: consumed both ways.
+        var layout = Bar.ComputeLayout(1920, 1080, Bar.ClockString(), harness.Scene.TaskWindows());
+        var rect = layout.Tasks.Single().Rect;
+        harness.ClickAt(rect.X + (rect.W / 2), rect.Y + (rect.H / 2));
+        Assert.DoesNotContain(harness.CollectUntilRoundTrip(), e => e.EventName == "button");
     }
 
     [Fact]
@@ -202,56 +192,6 @@ public class ShellTests
 
         harness.ClickAt(0, 200);
         Assert.False(harness.Shell.Launcher.IsOpen);
-    }
-
-    [Fact]
-    public void BindingKeys_NeverReachTheFocusedWindow()
-    {
-        using var harness = new Harness();
-        harness.MapWindow(8, 11, 12, title: "Hello");
-        var surface = harness.MappedSurface(8);
-        harness.ClickAt(surface.Position.X + 2, surface.Position.Y + 2);
-        harness.OpenKeyboard();
-        harness.CollectUntilRoundTrip();
-
-        // Super+2 switches away: the digit reaches nobody, not even the new
-        // workspace's window. (The Meta keys themselves pass through: they
-        // are modifiers the window legitimately sees.) Key codes appear in
-        // evdev or xkb (evdev + 8) form depending on the wire mapping.
-        bool IsDigit(DecodedMessage message) =>
-            harness.Client.EventName(message) == "key"
-            && message.Arguments[2].AsUInt32() is (>= 2 and <= 5) or (>= 10 and <= 13);
-
-        harness.Press(InputConstants.KeyLeftMeta);
-        harness.Press(InputConstants.Key2);
-        harness.Release(InputConstants.Key2);
-        harness.Release(InputConstants.KeyLeftMeta);
-        Assert.DoesNotContain(harness.DrainUntilRoundTrip(), IsDigit);
-
-        // Super+Shift+2 moves the focused window: same promise.
-        harness.ClickAt(surface.Position.X + 2, surface.Position.Y + 2);
-        harness.Press(InputConstants.KeyLeftMeta);
-        harness.Press(InputConstants.KeyLeftShift);
-        harness.Press(InputConstants.Key2);
-        harness.Release(InputConstants.Key2);
-        harness.Release(InputConstants.KeyLeftShift);
-        harness.Release(InputConstants.KeyLeftMeta);
-        Assert.DoesNotContain(harness.DrainUntilRoundTrip(), IsDigit);
-    }
-
-    [Fact]
-    public void ChromePressAndRelease_NeverReachAWindow()
-    {
-        using var harness = new Harness();
-        harness.MapWindow(8, 11, 12, title: "Hello");
-        harness.OpenPointer();
-        harness.CollectUntilRoundTrip();
-
-        // A full click on the bar strip: consumed both ways.
-        var layout = Bar.ComputeLayout(1920, Bar.ClockString(), harness.Scene.TaskWindows());
-        var rect = layout.Tasks.Single().Rect;
-        harness.ClickAt(rect.X + (rect.W / 2), rect.Y + (rect.H / 2));
-        Assert.DoesNotContain(harness.CollectUntilRoundTrip(), e => e.EventName == "button");
     }
 
     [Fact]
@@ -292,16 +232,17 @@ public class ShellTests
     public void SecondMetaDoesNotResetAUsedChord()
     {
         using var harness = new Harness();
+        var start = Bar.ComputeLayout(1920, 1080, Bar.ClockString(), []).Start;
 
         harness.Press(InputConstants.KeyLeftMeta);
-        harness.Press(InputConstants.Key2);
-        harness.Release(InputConstants.Key2);
+        harness.ClickAt(start.X + (start.W / 2), start.Y + (start.H / 2));
+        Assert.True(harness.Shell.Launcher.IsOpen);
+
         harness.Press(InputConstants.KeyRightMeta);
         harness.Release(InputConstants.KeyLeftMeta);
         harness.Release(InputConstants.KeyRightMeta);
 
-        Assert.Equal(2, harness.Shell.CurrentWorkspace);
-        Assert.False(harness.Shell.Launcher.IsOpen);
+        Assert.True(harness.Shell.Launcher.IsOpen);
     }
 
     [Fact]
@@ -322,62 +263,104 @@ public class ShellTests
     }
 
     [Fact]
-    public void PopupInheritsTheParentsWorkspace()
-    {
-        using var harness = new Harness();
-        harness.Shell.CurrentWorkspace = 2;
-        harness.MapWindow(8, 11, 12, title: "Hello");
-        harness.MapPopup(parentXdgSurfaceId: 11, popupSurfaceId: 15, popupXdgSurfaceId: 16, popupId: 13);
-
-        Assert.Equal(2, harness.MappedSurface(8).Workspace);
-        Assert.Equal(2, harness.MappedSurface(15).Workspace);
-    }
-
-    [Fact]
-    public void MovingAWindowDismissesItsPopups()
+    public void DismissingPopups_UnmapsThemAndSendsPopupDone()
     {
         using var harness = new Harness();
         harness.MapWindow(8, 11, 12, title: "Hello");
         harness.MapPopup(parentXdgSurfaceId: 11, popupSurfaceId: 15, popupXdgSurfaceId: 16, popupId: 13);
         var surface = harness.MappedSurface(8);
-        harness.ClickAt(surface.Position.X + 2, surface.Position.Y + 2);
 
-        harness.Press(InputConstants.KeyLeftMeta);
-        harness.Press(InputConstants.KeyLeftShift);
-        harness.Press(InputConstants.Key3);
-        harness.Release(InputConstants.Key3);
-        harness.Release(InputConstants.KeyLeftShift);
-        harness.Release(InputConstants.KeyLeftMeta);
+        harness.Scene.DismissDescendantPopups(surface);
 
-        Assert.Equal(3, surface.Workspace);
         Assert.False(harness.MappedSurface(15).IsMapped);
         Assert.Equal("popup_done", harness.Client.EventName(harness.Client.ReadUntil(13, "popup_done")));
     }
 
     [Fact]
-    public void RemapKeepsTheAssignedWorkspace()
+    public void TaskbarDismissWhileMetaHeld_DoesNotReopenOnRelease()
     {
         using var harness = new Harness();
-        harness.Shell.CurrentWorkspace = 2;
+        harness.Press(InputConstants.KeyLeftMeta);
+        harness.Release(InputConstants.KeyLeftMeta);
+        Assert.True(harness.Shell.Launcher.IsOpen);
+
+        harness.Press(InputConstants.KeyLeftMeta);
+        harness.ClickAt(400, harness.Scene.OutputSize.Height - (Shell.BarHeight / 2));
+        Assert.False(harness.Shell.Launcher.IsOpen);
+
+        harness.Release(InputConstants.KeyLeftMeta);
+        Assert.False(harness.Shell.Launcher.IsOpen);
+    }
+
+    [Fact]
+    public void SuperPlusKey_IsAChordNotALauncherToggle()
+    {
+        using var harness = new Harness();
+
+        harness.Press(InputConstants.KeyLeftMeta);
+        harness.Press(InputConstants.KeyA);
+        harness.Release(InputConstants.KeyA);
+        harness.Release(InputConstants.KeyLeftMeta);
+
+        Assert.False(harness.Shell.Launcher.IsOpen);
+    }
+
+    [Fact]
+    public void ChromePress_SwallowsOnlyItsOwnButtonRelease()
+    {
+        using var harness = new Harness();
         harness.MapWindow(8, 11, 12, title: "Hello");
         var surface = harness.MappedSurface(8);
-        Assert.Equal(2, surface.Workspace);
+        harness.OpenPointer();
+        harness.CollectUntilRoundTrip();
 
-        // Unmap (null-buffer commit restarts the dance), switch the shell
-        // away, remap: the window stays where it was put.
+        // Left press on the window (delivered), right press on the taskbar
+        // (consumed), then the left release: it still belongs to the window.
+        harness.Router.PlaceCursor(surface.Position.X + 2, surface.Position.Y + 2);
+        harness.Press(InputConstants.ButtonLeft);
+        harness.Router.PlaceCursor(400, harness.Scene.OutputSize.Height - (Shell.BarHeight / 2));
+        harness.Press(InputConstants.ButtonRight);
+        harness.Release(InputConstants.ButtonLeft);
+
+        var buttons = harness.DrainUntilRoundTrip()
+            .Where(e => harness.Client.EventName(e) == "button")
+            .ToList();
+        Assert.Equal(2, buttons.Count);
+        Assert.All(buttons, e => Assert.Equal((uint)InputConstants.ButtonLeft, e.Arguments[2].AsUInt32()));
+    }
+
+    [Fact]
+    public void LargeWindow_StaysInsideTheWorkArea()
+    {
+        var scene = new Scene { Shell = new Shell() };
+        scene.OutputSize = (800, 600);
+
+        var (x, y) = scene.PlaceWindow(new SurfaceHandler(scene), 700, 300);
+        Assert.True(y + 300 <= 600 - Shell.BarHeight, $"bottom at {y + 300}");
+        Assert.True(x + 700 <= 800, $"right edge at {x + 700}");
+
+        // Taller than the work area: pinned to the top margin rather than
+        // stranded under the taskbar.
+        var (_, y2) = scene.PlaceWindow(new SurfaceHandler(scene), 400, 700);
+        Assert.Equal(8, y2);
+    }
+
+    [Fact]
+    public void StaleTaskButton_DoesNotFocusAGhostWindow()
+    {
+        using var harness = new Harness();
+        harness.MapWindow(8, 11, 12, title: "Hello");
+        harness.RenderFrame();
+        var surface = harness.MappedSurface(8);
+
+        // The window unmaps after the frame that built the taskbar layout.
         harness.Client.SendRequest(8, "wl_surface", "attach", WireArgument.Object(0), WireArgument.Int32(0), WireArgument.Int32(0));
         harness.Client.SendRequest(8, "wl_surface", "commit");
         CompositorSessionTests.WaitFor(() => surface, value => !value.IsMapped);
-        harness.Shell.CurrentWorkspace = 1;
 
-        harness.Client.SendRequest(8, "wl_surface", "commit");
-        var configure = harness.Client.ReadUntil(11, "configure");
-        harness.Client.SendRequest(11, "xdg_surface", "ack_configure", WireArgument.UInt32(configure.Arguments[0].AsUInt32()));
-        harness.Client.SendRequest(8, "wl_surface", "attach", WireArgument.Object(7), WireArgument.Int32(0), WireArgument.Int32(0));
-        harness.Client.SendRequest(8, "wl_surface", "commit");
-        CompositorSessionTests.WaitFor(() => surface, value => value.IsMapped);
-
-        Assert.Equal(2, surface.Workspace);
+        var rect = harness.Shell.LastBarLayout!.Tasks.Single().Rect;
+        harness.ClickAt(rect.X + (rect.W / 2), rect.Y + (rect.H / 2));
+        Assert.Null(harness.Seat.KeyboardFocus);
     }
 
     private sealed class Harness : IDisposable

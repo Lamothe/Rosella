@@ -35,8 +35,8 @@ configuration is where desktop environments go to die.
   that survive real clients (`wayland-info` exit test passed).
 - **M3 — output** (`Rosella.Drm`): done, pending visual confirmation in the
   GDM session. DRM/KMS interop pinned against the kernel UAPI by golden tests,
-  dumb buffers + mmap, framebuffers, legacy modeset, page-flip loop and a
-  software-rendered test pattern on the first connected output. `--probe`
+  dumb buffers + mmap, framebuffers, legacy modeset, page-flip loop and the
+  desktop on the first connected output. `--probe`
   introspects cards/connectors/modes and validates dumb buffers against the
   real driver.
 - **M4 — client buffers** (`Rosella.Compositor` surface layer): done —
@@ -79,12 +79,12 @@ src/Rosella.Protocol/          Wayland wire format + protocol description (embed
 src/Rosella.Transport/         unix sockets, recvmsg/sendmsg, SCM_RIGHTS descriptor passing
 src/Rosella.Server/            display server: sessions, object maps, dispatch, globals
 src/Rosella.Drm/               DRM/KMS interop: devices, connectors, modes, dumb buffers, flips
-src/Rosella.Compositor/        entry point: scanout loop, test pattern, --probe
+src/Rosella.Compositor/        entry point: scanout loop, desktop background, --probe
 scripts/                       GDM login-session installer and session wrapper
 tests/Rosella.Protocol.Tests/  unit tests, including golden wire bytes
 tests/Rosella.Server.Tests/    transport + end-to-end handshake tests
 tests/Rosella.Drm.Tests/       kernel ABI golden layouts, ioctl codes, event parsing
-tests/Rosella.Compositor.Tests/test pattern and flip matching
+tests/Rosella.Compositor.Tests/shell chrome, input and flip matching
 docs/architecture.md           design notes and roadmap
 ```
 
@@ -110,7 +110,9 @@ byte order; Rosella targets x86_64/ARM64).
 entry, so "Rosella" appears in the greeter's session chooser alongside GNOME.
 
 Selecting it drives the first connected output at its preferred mode with the
-milestone 3 test pattern (colour bars + a moving inverting column). Recovery
+Windows 11 style desktop: a bottom taskbar (Start button, task buttons,
+clock), a Start menu centred above it (Super tap), and a calm dark gradient
+background — no workspaces, by design. Recovery
 if anything goes wrong: `Ctrl+Alt+F3`, log in, `pkill -f Rosella.Compositor`,
 or simply pick GNOME at the next greeter — it is always offered.
 

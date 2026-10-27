@@ -41,6 +41,7 @@ public sealed class EvdevDevice : IDisposable
         var fd = Open(path, Libc.OpenReadOnly);
         if (fd < 0)
         {
+            Console.WriteLine($"input: {path} cannot be opened");
             return null;
         }
 
@@ -56,6 +57,7 @@ public sealed class EvdevDevice : IDisposable
             var id = GetId(fd);
             var name = GetName(fd);
             var eventBits = GetBits(fd, 0, 8);
+            Console.WriteLine($"input: {path} opened '{name}'");
             return new EvdevDevice(fd, wakeFd, name, id, eventBits);
         }
         catch

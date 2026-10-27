@@ -14,7 +14,7 @@ something — and the DE logic is fully testable there).
 | Userspace | Mesa: GBM (buffers), EGL/GL or Vulkan (rendering) | Rosella, via P/Invoke |
 | Userspace | libinput (gesture/keyboard/mouse semantics) | Rosella, via P/Invoke |
 | Protocol | Wayland wire format (client ⇄ compositor IPC) | **Rosella implements both sides** |
-| Shell | bar, launcher, windows, workspaces | Rosella (managed, in-process) |
+| Shell | taskbar, Start menu, windows | Rosella (managed, in-process) |
 
 A key mental-model point: Wayland is *not* a driver API. It is the IPC between
 apps (clients) and the compositor. The compositor itself talks to drivers:
@@ -81,7 +81,7 @@ Verified against libwayland's marshalling code and the protocol docs:
   (amdgpu + nvidia-drm — both report `CAP_DUMB_BUFFER` and allocate dumb
   buffers fine, settling the NVIDIA risk). Scanout drives the first connected
   output (on mercury: the SONY TV at 3840x2160@60) with a software-rendered
-  test pattern via a page-flip loop; the previous display state is restored on
+  the desktop via a page-flip loop; the previous display state is restored on
   exit. Pending: visual confirmation in the GDM session.
 - **M4 — client buffers**: ✅ real `wl_shm` (client descriptors are dup'd,
   size-checked with lseek and mapped read-only), `wl_surface` state machine
@@ -121,14 +121,18 @@ Verified against libwayland's marshalling code and the protocol docs:
   (3 crash-grade: unhandled SocketException on input threads, send-vs-
   destroy id resurrection, unlocked xdg configure state), 10 new regression
   tests. Known accepted limits are in Open risks.
-- **M7 — the shell**: ✅ done. Bar (workspace chips, clock, task strip with
-  click-to-focus), app launcher (Super, fixed app list, arrows/Enter/Esc,
-  spawns with the right WAYLAND_DISPLAY), four fixed workspaces (Super+1..4
-  switch, Super+Shift+1..4 moves the focused window and dismisses its
-  popups), windows placed in the work area below the bar. One embedded 8x16
-  bitmap font (Linux kernel font_8x16, scaled 2x); drawing and hit-testing
-  share one cached bar layout per frame. Notifications did not make the
-  cut and may never: an opinionated desktop can do without them.
+- **M7 — the shell**: ✅ done, then redesigned to Windows 11 style on the
+  user's request: a bottom taskbar (Start button, task buttons with a focus
+  accent, clock in AU format), a Start menu centred above the taskbar
+  (Super tap, fixed app list, arrows/Enter/Esc, spawns with the right
+  WAYLAND_DISPLAY), and **no workspaces** — one desktop, by design. The
+  background is a calm dark gradient (the milestone-3 colour bars and
+  moving stripe are gone: the user found them annoying). Windows sit in
+  the work area above the taskbar, clamped to stay there, and wear an
+  accent border when focused. One embedded 8x16 bitmap font (Linux kernel
+  font_8x16, scaled 2x); drawing and hit-testing share one cached taskbar
+  layout per frame. Notifications did not make the cut and may never: an
+  opinionated desktop can do without them.
 - **M8 — session polish**: window states (maximise/fullscreen), lock
   screen, idle handling, session startup, whatever the DE needs to feel
   finished.
@@ -175,7 +179,7 @@ Learned from libwayland and verified against real clients:
   (`not_the_topmost_popup`, parent-mapped-first) and positioner constraint
   adjustment (flip/slide to stay on screen) are unimplemented; maximise/
   fullscreen requests are still ignored (window states are M8: the shell
-  chrome and workspaces shipped in M7 without them). M6 additions: seat
+  chrome shipped in M7 without them). M6 additions: seat
   sends hold the seat gate during socket writes, so one stalled client can
   briefly delay input delivery to others (accepted on a single-seat
   desktop); kernel autorepeat is dropped (clients repeat via repeat_info);

@@ -116,7 +116,7 @@ internal sealed class Launcher
         var panel = PanelRect(width, height);
         Chrome.FillRect(pixels, width, height, stride, panel, PanelBackground);
         Chrome.FrameRect(pixels, width, height, stride, panel, PanelBorder);
-        BitmapFont.DrawText(pixels, width, height, stride, "Applications", panel.X + 16, panel.Y + 12, TextColour, Shell.FontScale);
+        BitmapFont.DrawText(pixels, width, height, stride, "Pinned", panel.X + 16, panel.Y + 12, TextColour, Shell.FontScale);
 
         for (var i = 0; i < Apps.Length; i++)
         {
@@ -133,8 +133,12 @@ internal sealed class Launcher
 
     internal Rect PanelRect(int outputWidth, int outputHeight)
     {
+        // Windows 11 style: centred horizontally, resting on the taskbar,
+        // clamped to fit small outputs.
+        var panelWidth = Math.Min(PanelWidth, outputWidth);
         var panelHeight = 56 + (Apps.Length * RowHeight) + 8;
-        return new Rect((outputWidth - PanelWidth) / 2, (outputHeight - panelHeight) / 2, PanelWidth, panelHeight);
+        var y = outputHeight - Shell.BarHeight - panelHeight;
+        return new Rect(Math.Max(0, (outputWidth - panelWidth) / 2), Math.Max(0, y), panelWidth, panelHeight);
     }
 
     private static Rect RowRect(Rect panel, int index) =>
@@ -156,11 +160,14 @@ internal sealed class Launcher
                 startInfo.Environment["WAYLAND_DISPLAY"] = socket;
             }
 
-            Process.Start(startInfo)?.Dispose();
+            var process = Process.Start(startInfo);
+            Console.WriteLine($"spawn: {command} pid {process?.Id.ToString() ?? "none"}");
+            process?.Dispose();
         }
-        catch (Exception)
+        catch (Exception exception)
         {
             // Opinionated: a missing app simply does not open.
+            Console.WriteLine($"spawn: {command} failed: {exception.Message}");
         }
     }
 }

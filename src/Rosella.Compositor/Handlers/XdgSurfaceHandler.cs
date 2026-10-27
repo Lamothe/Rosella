@@ -44,7 +44,6 @@ internal sealed class XdgSurfaceHandler : IRequestHandler, ISurfaceRole, IDispos
     private bool _constructed;
     private bool _destroyed;
     private bool _surfaceDefunct;
-    private bool _workspaceAssigned;
     private bool _initialConfigureSent;
     private bool _ackedConfigure;
     private bool _mapped;
@@ -341,18 +340,6 @@ internal sealed class XdgSurfaceHandler : IRequestHandler, ISurfaceRole, IDispos
             var (width, height, corner) = _roleObject!.GetPlacement(surface, geometry);
             _windowPosition = corner ?? _scene.PlaceWindow(surface, width, height);
             _mapped = true;
-
-            // Popups always follow their parent; toplevels join the current
-            // workspace once and keep it across unmap/remap cycles.
-            if (_popupParent is { } parent)
-            {
-                surface.Workspace = parent.Surface.Workspace;
-            }
-            else if (!_workspaceAssigned)
-            {
-                _workspaceAssigned = true;
-                surface.Workspace = _scene.Shell?.CurrentWorkspace ?? 1;
-            }
         }
 
         surface.Position = (_windowPosition.X - _geometry.X, _windowPosition.Y - _geometry.Y);

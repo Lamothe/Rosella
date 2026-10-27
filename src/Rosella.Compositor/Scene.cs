@@ -2,7 +2,7 @@
 namespace Rosella.Compositor;
 
 /// <summary>
-/// The compositor's scene: surfaces in mapping order over the test-pattern
+/// The compositor's scene: windows in mapping order over the desktop
 /// background, shared between client threads and the scanout loop.
 /// </summary>
 public sealed class Scene
@@ -37,7 +37,7 @@ public sealed class Scene
     /// <summary>The scanout's size; windows are placed relative to it.</summary>
     internal (int Width, int Height) OutputSize { get; set; } = (1920, 1080);
 
-    /// <summary>The desktop shell, when one is wired in (bar, launcher, workspaces).</summary>
+    /// <summary>The desktop shell, when one is wired in (taskbar and Start menu).</summary>
     internal Shell? Shell { get; set; }
 
     /// <summary>The input seat, notified when surfaces hide or go away.</summary>
@@ -82,10 +82,16 @@ public sealed class Scene
         lock (_gate)
         {
             var (outputWidth, outputHeight) = OutputSize;
-            var top = Shell is null ? 0 : Shell.BarHeight;
+            const int topMargin = 8;
+            var workBottom = Shell is null ? outputHeight : outputHeight - Shell.BarHeight;
             var offset = (_placed++ % 8) * 48;
-            var x = Math.Max(0, ((outputWidth - windowWidth) / 2) + offset);
-            var y = Math.Max(top, top + ((outputHeight - top - windowHeight) / 2) + offset);
+
+            // Centred with a cascade, clamped to stay inside the work area:
+            // no window may land under the taskbar or off the right edge.
+            var maxX = Math.Max(0, outputWidth - windowWidth);
+            var maxY = Math.Max(topMargin, workBottom - windowHeight);
+            var x = Math.Clamp(((outputWidth - windowWidth) / 2) + offset, 0, maxX);
+            var y = Math.Clamp(topMargin + ((workBottom - topMargin - windowHeight) / 2) + offset, topMargin, maxY);
 
             // Raise: later in the list renders on top.
             _surfaces.Remove(surface);
@@ -99,15 +105,24 @@ public sealed class Scene
     /// <summary>Draws the background, the windows, the shell chrome, and the cursor.</summary>
     public void Render(Span<byte> pixels, int width, int height, int stride, long frame)
     {
-        TestPattern.Render(pixels, width, height, stride, frame);
+        Background.Render(pixels, width, height, stride);
         lock (_gate)
         {
             foreach (var surface in _surfaces)
             {
-                if (Visible(surface))
+                if (surface.IsMapped)
                 {
                     surface.BlitInto(pixels, width, height, stride);
                 }
+            }
+
+            // Windows 11 style: the focused window wears an accent border,
+            // so a click has a visible consequence.
+            if (Seat?.KeyboardFocus is { IsMapped: true } focus)
+            {
+                Chrome.FrameRect(pixels, width, height, stride,
+                    new Rect(focus.Position.X - 1, focus.Position.Y - 1, focus.Width + 2, focus.Height + 2),
+                    0xFF7B86E8);
             }
         }
 
@@ -122,7 +137,7 @@ public sealed class Scene
         {
             foreach (var surface in _surfaces)
             {
-                if (Visible(surface))
+                if (surface.IsMapped)
                 {
                     surface.CompleteFrame();
                 }
@@ -150,7 +165,7 @@ public sealed class Scene
             for (var i = _surfaces.Count - 1; i >= 0; i--)
             {
                 var surface = _surfaces[i];
-                if (!surface.IsMapped || !Visible(surface))
+                if (!surface.IsMapped)
                 {
                     continue;
                 }
@@ -166,7 +181,7 @@ public sealed class Scene
         }
     }
 
-    /// <summary>The task strip's windows: mapped toplevels of the current workspace.</summary>
+    /// <summary>The taskbar's windows: every mapped toplevel, oldest first.</summary>
     internal IReadOnlyList<BarTask> TaskWindows()
     {
         lock (_gate)
@@ -174,7 +189,7 @@ public sealed class Scene
             var tasks = new List<BarTask>();
             foreach (var surface in _surfaces)
             {
-                if (!surface.IsMapped || !Visible(surface) || surface.Gone)
+                if (!surface.IsMapped || surface.Gone)
                 {
                     continue;
                 }
@@ -188,10 +203,6 @@ public sealed class Scene
             return tasks;
         }
     }
-
-    /// <summary>Windows outside the current workspace are drawn by nobody.</summary>
-    private bool Visible(SurfaceHandler surface) =>
-        Shell is null || surface.Workspace == Shell.CurrentWorkspace;
 
     /// <summary>
     /// Dismisses every popup whose ancestor chain reaches the surface: a

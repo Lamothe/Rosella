@@ -17,7 +17,10 @@ public class XdgShellTests
     // positioner 14, popup surface 15, popup xdg_surface 16.
     // Policy: first window centred on the 1920×1080 default output.
     private const int FirstX = (1920 - Width) / 2;
-    private const int FirstY = (1080 - Height) / 2;
+
+    // Centred in the work area: 8px margins, the taskbar side only applies
+    // when a shell is present (this harness runs bare).
+    private const int FirstY = 8 + ((1080 - 8 - Height) / 2);
 
     [Fact]
     public void Toplevel_FollowsTheConfigureAckMapDance()
@@ -110,7 +113,7 @@ public class XdgShellTests
 
         // The visible corner is centred for the geometry size (20×20); the
         // buffer origin is shifted back by the geometry offset (4, 6).
-        Assert.Equal((((1920 - 20) / 2) - 4, ((1080 - 20) / 2) - 6), surface.Position);
+        Assert.Equal((((1920 - 20) / 2) - 4, 8 + ((1080 - 8 - 20) / 2) - 6), surface.Position);
     }
 
     [Fact]

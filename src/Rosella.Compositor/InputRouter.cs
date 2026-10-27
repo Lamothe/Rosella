@@ -6,9 +6,9 @@ namespace Rosella.Compositor;
 /// The input policy, and deliberately the only policy there is: the cursor
 /// moves and hit-tests windows, a click focuses and raises, keys go to the
 /// keyboard focus, and the keybindings are fixed: Alt+F4 closes the focused
-/// window, Super+Esc quits, Super alone toggles the launcher, Super+1..4
-/// switches workspace, Super+Shift+1..4 moves the focused window there.
-/// Nothing is configurable.
+/// window, Super+Esc quits, Super alone toggles the Start menu. Anything
+/// else typed or clicked while Super is held counts as a chord use (the
+/// menu opens only on a bare Super tap). Nothing is configurable.
 /// </summary>
 internal sealed class InputRouter
 {
@@ -22,7 +22,8 @@ internal sealed class InputRouter
     private int _cursorX;
     private int _cursorY;
     private bool _superChordUsed;
-    private bool _chromePressConsumed;
+    private int _chromePressConsumedButton = -1;
+    private SurfaceHandler? _buttonPressTarget;
     private SurfaceHandler? _focusBeforeLauncher;
 
     // Multitouch slot state (protocol B): slot -> last per-axis position
@@ -149,7 +150,7 @@ internal sealed class InputRouter
                 {
                     if (last.HasX)
                     {
-                        MoveCursor(e.Value - last.X, 0, e.TimeMs);
+                        MoveCursor(ScaleTouchpadX(e.Value - last.X), 0, e.TimeMs);
                     }
 
                     _mtFingers[_mtSlot] = (e.Value, last.Y, true, last.HasY);
@@ -158,7 +159,7 @@ internal sealed class InputRouter
                 {
                     if (last.HasY)
                     {
-                        MoveCursor(0, e.Value - last.Y, e.TimeMs);
+                        MoveCursor(0, ScaleTouchpadY(e.Value - last.Y), e.TimeMs);
                     }
 
                     _mtFingers[_mtSlot] = (last.X, e.Value, last.HasX, true);
@@ -166,6 +167,31 @@ internal sealed class InputRouter
 
                 return;
         }
+    }
+
+    /// <summary>
+    /// Trackpad sensitivity: touchpad units are roughly three times coarser
+    /// than screen pixels should be. Scaled by 7/20 with the fraction
+    /// carried, so slow drags still move the cursor steadily.
+    /// </summary>
+    private const int TouchpadNumerator = 7;
+    private const int TouchpadDenominator = 20;
+
+    private int _touchpadRemainderX;
+    private int _touchpadRemainderY;
+
+    private int ScaleTouchpadX(int raw)
+    {
+        var total = (raw * TouchpadNumerator) + _touchpadRemainderX;
+        _touchpadRemainderX = total % TouchpadDenominator;
+        return total / TouchpadDenominator;
+    }
+
+    private int ScaleTouchpadY(int raw)
+    {
+        var total = (raw * TouchpadNumerator) + _touchpadRemainderY;
+        _touchpadRemainderY = total % TouchpadDenominator;
+        return total / TouchpadDenominator;
     }
 
     private void MoveCursor(int dx, int dy, uint time)
@@ -188,48 +214,69 @@ internal sealed class InputRouter
     {
         var pressed = e.Value != InputConstants.KeyReleased;
 
-        // A press eaten by the shell chrome swallows its release too: no
-        // client may see a release for a press it never received.
-        if (!pressed && _chromePressConsumed)
+        // Any click while Super is held counts as a chord use.
+        if (pressed && SuperDown)
         {
-            _chromePressConsumed = false;
+            _superChordUsed = true;
+        }
+
+        // A press eaten by the shell chrome swallows its own release: no
+        // client may see a release for a press it never received, and no
+        // press may lose the release it is owed.
+        if (!pressed && e.Code == _chromePressConsumedButton)
+        {
+            _chromePressConsumedButton = -1;
             return;
         }
 
-        // Shell chrome eats clicks first: the launcher when open, then the
-        // bar strip. Neither may leak into client windows underneath.
+        // Shell chrome eats clicks first: the Start menu (it draws over the
+        // taskbar on small outputs, so what you see is what you click), the
+        // taskbar strip, then the click-outside dismissal. None may leak
+        // into client windows underneath.
         if (pressed && _shell is { } shell)
         {
             var (outputWidth, outputHeight) = _scene.OutputSize;
-            if (shell.Launcher.IsOpen)
+            if (shell.Launcher.IsOpen && shell.Launcher.PanelRect(outputWidth, outputHeight).Contains(_cursorX, _cursorY))
             {
-                if (!shell.Launcher.HandleClick(_cursorX, _cursorY, outputWidth, outputHeight))
-                {
-                    // A click outside the panel dismisses it.
-                    ToggleLauncher();
-                }
-
-                _chromePressConsumed = true;
+                shell.Launcher.HandleClick(_cursorX, _cursorY, outputWidth, outputHeight);
+                _chromePressConsumedButton = e.Code;
                 RestoreLauncherFocusIfClosed();
                 return;
             }
 
-            if (_cursorY < Shell.BarHeight)
+            if (_cursorY >= outputHeight - Shell.BarHeight)
             {
-                HandleBarClick(shell, _cursorX, _cursorY);
-                _chromePressConsumed = true;
+                HandleTaskbarClick(shell, outputWidth, outputHeight, _cursorX, _cursorY);
+                _chromePressConsumedButton = e.Code;
+                RestoreLauncherFocusIfClosed();
+                return;
+            }
+
+            if (shell.Launcher.IsOpen)
+            {
+                // A click outside the panel dismisses it.
+                ToggleLauncher();
+                _chromePressConsumedButton = e.Code;
+                RestoreLauncherFocusIfClosed();
                 return;
             }
         }
 
-        // The window under the cursor is authoritative even if the cursor
-        // never moved since it appeared (click-to-focus, raise on press).
-        var target = _scene.HitTest(_cursorX, _cursorY);
+        // The window under the cursor is authoritative for a press (click-to-
+        // focus, raise on press). Its release is owed back to the surface
+        // that received the press — an implicit grab, lite — wherever the
+        // cursor wandered to since.
+        var target = pressed ? _scene.HitTest(_cursorX, _cursorY) : _buttonPressTarget ?? _scene.HitTest(_cursorX, _cursorY);
         _seat.SetPointerFocus(target, LocalX(target), LocalY(target));
         if (pressed && target is not null)
         {
+            _buttonPressTarget = target;
             _scene.Raise(target);
             _seat.SetKeyboardFocus(target, _pressedKeys);
+        }
+        else if (!pressed)
+        {
+            _buttonPressTarget = null;
         }
 
         if (_seat.PointerFocus is { } pointerTarget)
@@ -283,6 +330,13 @@ internal sealed class InputRouter
         if (pressed && !superWasDown && (e.Code is InputConstants.KeyLeftMeta or InputConstants.KeyRightMeta))
         {
             _superChordUsed = false;
+        }
+
+        // Any other key while Super is held is a chord use: typing under a
+        // held Super must not open the Start menu on its release.
+        if (pressed && SuperDown && e.Code is not (InputConstants.KeyLeftMeta or InputConstants.KeyRightMeta))
+        {
+            _superChordUsed = true;
         }
 
         if (pressed && e.Code == InputConstants.KeyCapsLock)
@@ -339,22 +393,6 @@ internal sealed class InputRouter
             return true;
         }
 
-        if (_shell is { } shell && SuperDown && code is >= InputConstants.Key1 and <= InputConstants.Key4)
-        {
-            _superChordUsed = true;
-            var workspace = (code - InputConstants.Key1) + 1;
-            if (ShiftDown)
-            {
-                MoveFocusedWindow(shell, workspace);
-            }
-            else
-            {
-                SwitchWorkspace(shell, workspace);
-            }
-
-            return true;
-        }
-
         return false;
     }
 
@@ -383,6 +421,13 @@ internal sealed class InputRouter
     /// <summary>Closes the launcher and hands the keyboard back.</summary>
     private void CloseLauncher()
     {
+        // Any dismissal while Super is held is a chord use: its release
+        // must not re-open the menu.
+        if (SuperDown)
+        {
+            _superChordUsed = true;
+        }
+
         _shell?.Launcher.Close();
         RestoreLauncherFocus();
     }
@@ -408,93 +453,46 @@ internal sealed class InputRouter
         _seat.SetKeyboardFocus(previous, _pressedKeys);
     }
 
-    private void HandleBarClick(Shell shell, int x, int y)
+    private void HandleTaskbarClick(Shell shell, int outputWidth, int outputHeight, int x, int y)
     {
         // The cached layout is exactly what the scanout drew, so drawn and
         // hit rectangles cannot disagree; without a frame yet, compute one.
-        var layout = shell.LastBarLayout ?? Bar.ComputeLayout(_scene.OutputSize.Width, Bar.ClockString(), _scene.TaskWindows());
-        for (var i = 0; i < layout.WorkspaceChips.Length; i++)
+        var layout = shell.LastBarLayout ?? Bar.ComputeLayout(outputWidth, outputHeight, Bar.ClockString(), _scene.TaskWindows());
+
+        // Any taskbar click closes the Start menu first, except a click on
+        // Start itself, which toggles it.
+        if (shell.Launcher.IsOpen && !layout.Start.Contains(x, y))
         {
-            if (layout.WorkspaceChips[i].Contains(x, y))
-            {
-                SwitchWorkspace(shell, i + 1);
-                return;
-            }
+            CloseLauncher();
+        }
+
+        if (layout.Start.Contains(x, y))
+        {
+            ToggleLauncher();
+            return;
         }
 
         foreach (var (rect, task) in layout.Tasks)
         {
             if (rect.Contains(x, y))
             {
-                _scene.Raise(task.Surface);
-                _seat.SetKeyboardFocus(task.Surface, _pressedKeys);
+                // The layout is a snapshot: the window may be gone since it
+                // was drawn. Ghosts get no focus.
+                if (task.Surface is { IsMapped: true, Gone: false } target)
+                {
+                    _scene.Raise(target);
+                    _seat.SetKeyboardFocus(target, _pressedKeys);
+                }
+
                 return;
             }
         }
-    }
-
-    private void SwitchWorkspace(Shell shell, int workspace)
-    {
-        if (_shell is { Launcher.IsOpen: true })
-        {
-            CloseLauncher();
-        }
-
-        if (shell.CurrentWorkspace == workspace)
-        {
-            return;
-        }
-
-        shell.CurrentWorkspace = workspace;
-
-        // Focus the topmost window of the new workspace, or nothing at all.
-        _seat.SetKeyboardFocus(TopWindow(), _pressedKeys);
-
-        // The pointer stays put; it simply aims at whatever is here now.
-        var target = _scene.HitTest(_cursorX, _cursorY);
-        _seat.SetPointerFocus(target, LocalX(target), LocalY(target));
-    }
-
-    private void MoveFocusedWindow(Shell shell, int workspace)
-    {
-        if (_shell is { Launcher.IsOpen: true })
-        {
-            CloseLauncher();
-        }
-
-        if (_seat.KeyboardFocus is not { } focus || focus.Gone || focus.XdgRole?.Toplevel is null)
-        {
-            return;
-        }
-
-        focus.Workspace = workspace;
-
-        // A menu's place is at its parent's side: leaving the workspace
-        // dismisses the whole popup subtree (popup_done + unmap).
-        _scene.DismissDescendantPopups(focus);
-        if (workspace != shell.CurrentWorkspace)
-        {
-            _seat.SetKeyboardFocus(TopWindow(), _pressedKeys);
-        }
-    }
-
-    /// <summary>The topmost mapped toplevel of the current workspace, if any.</summary>
-    private SurfaceHandler? TopWindow()
-    {
-        SurfaceHandler? top = null;
-        foreach (var task in _scene.TaskWindows())
-        {
-            top = task.Surface;
-        }
-
-        return top;
     }
 
     private bool AltDown => _pressedKeys.Contains(InputConstants.KeyLeftAlt) || _pressedKeys.Contains(InputConstants.KeyRightAlt);
 
     private bool SuperDown => _pressedKeys.Contains(InputConstants.KeyLeftMeta) || _pressedKeys.Contains(InputConstants.KeyRightMeta);
 
-    private bool ShiftDown => _pressedKeys.Contains(InputConstants.KeyLeftShift) || _pressedKeys.Contains(InputConstants.KeyRightShift);
 
     /// <summary>Sends wl_keyboard.modifiers when the mask changed.</summary>
     private void SendModifiers(SurfaceHandler? target)

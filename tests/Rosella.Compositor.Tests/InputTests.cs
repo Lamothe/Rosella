@@ -227,10 +227,10 @@ public class InputTests
         Assert.Equal(0xFF000000u, PixelAt(frame, 1920, 100, 100));
         Assert.Equal(0xFFFFFFFFu, PixelAt(frame, 1920, 101, 102)); // the white fill
 
-        // With the arrow elsewhere, (100, 100) is the white first bar again.
+        // With the arrow elsewhere, (100, 100) is the background again.
         harness.Router.PlaceCursor(500, 500);
         harness.Scene.Render(frame, 1920, 1080, 1920 * 4, 0);
-        Assert.Equal(0xFFFFFFFFu, PixelAt(frame, 1920, 100, 100));
+        Assert.Equal(Background.ColourAt(100, 1080), PixelAt(frame, 1920, 100, 100));
         Assert.Equal(0xFF000000u, PixelAt(frame, 1920, 500, 500));
     }
 
@@ -387,9 +387,10 @@ public class InputTests
         harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtPositionX, 500));
         harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtPositionY, 300));
 
+        // 20 units of finger travel = 7 cursor pixels (the 7/20 scale).
         harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtPositionX, 520));
-        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtPositionY, 285));
-        Assert.Equal((120, 85), harness.Router.Cursor);
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtPositionY, 280));
+        Assert.Equal((107, 93), harness.Router.Cursor);
     }
 
     [Fact]
@@ -420,13 +421,14 @@ public class InputTests
         harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtPositionX, 10));
         harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtPositionY, 10));
 
-        // Slot 0 moves +5; slot 1 stays. Then slot 1 moves +3.
+        // Slot 0 moves +20 units (= 7 pixels); slot 1 stays. Then slot 1
+        // moves +20. The scale remainder is per-axis and shared across fingers.
         harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtSlot, 0));
-        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtPositionX, 505));
-        Assert.Equal((5, 0), harness.Router.Cursor);
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtPositionX, 520));
+        Assert.Equal((7, 0), harness.Router.Cursor);
         harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtSlot, 1));
-        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtPositionY, 13));
-        Assert.Equal((5, 3), harness.Router.Cursor);
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtPositionY, 30));
+        Assert.Equal((7, 7), harness.Router.Cursor);
     }
 
     [Fact]

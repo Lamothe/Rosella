@@ -1,12 +1,11 @@
 using System.Runtime.InteropServices;
-using System.Text.RegularExpressions;
 
 namespace Rosella.Compositor.Tests;
 
 /// <summary>
-/// The shell chrome geometry and painting: bar layout is shared between
-/// drawing and hit-testing, the clock is fixed-format Australian, and the
-/// launcher's fixed app list drives keyboard and mouse.
+/// The taskbar: Windows 11 style — bottom strip, Start button, one button
+/// per window, clock at the right. The geometry is the same for drawing
+/// and hit-testing, and both live in this one layout.
 /// </summary>
 public class ShellChromeTests
 {
@@ -14,141 +13,78 @@ public class ShellChromeTests
         MemoryMarshal.Read<uint>(buffer.AsSpan((y * stride) + (x * 4)));
 
     [Fact]
-    public void BarLayout_PlacesChipsClockAndTasks()
+    public void ComputeLayout_PlacesStartBottomLeft()
     {
-        var tasks = new List<BarTask> { new("Hello", null!) };
-        var layout = Bar.ComputeLayout(1920, "Tue 27/10 13:37", tasks);
+        var layout = Bar.ComputeLayout(1920, 1080, "14:33  28/10/2026", []);
 
-        Assert.Equal(new Rect(8, 4, 40, 40), layout.WorkspaceChips[0]);
-        Assert.Equal(new Rect(140, 4, 40, 40), layout.WorkspaceChips[3]);
-
-        // The clock is centred: 15 chars x 16px at scale 2.
-        Assert.Equal(new Rect(840, 8, 240, 32), layout.Clock);
-
-        // The task is right-aligned: 5 chars x 16px + 24px padding.
-        Assert.Equal(new Rect(1808, 6, 104, 36), layout.Tasks[0].Rect);
+        Assert.Equal(new Rect(8, 1080 - Shell.BarHeight + 6, 56, Shell.BarHeight - 12), layout.Start);
     }
 
     [Fact]
-    public void BarLayout_TruncatesLongLabelsAndDropsOverflowTasks()
+    public void ComputeLayout_PlacesTheClockAtTheRightEdge()
     {
-        var longLabel = new string('x', 30);
-        var tasks = new List<BarTask> { new(longLabel, null!) };
-        var layout = Bar.ComputeLayout(1920, "Tue 27/10 13:37", tasks);
+        var clock = "14:33  28/10/2026";
+        var layout = Bar.ComputeLayout(1920, 1080, clock, []);
 
-        // 17 chars + "..." = 20 chars x 16px + 24px padding.
-        Assert.Equal(344, layout.Tasks[0].Rect.W);
-
-        // Two 20-char tasks cannot both fit between the clock and the edge
-        // on a 1000px output: only the first is kept.
-        var narrow = Bar.ComputeLayout(1000, "Tue 27/10 13:37", tasks.Concat(tasks).ToList());
-        Assert.Single(narrow.Tasks);
+        Assert.True(layout.Clock.X + layout.Clock.W <= 1920 - 8, "clock overlaps the right edge");
+        Assert.True(layout.Clock.W >= BitmapFont.Measure(clock, 1).Width, "clock zone narrower than its text");
     }
 
     [Fact]
-    public void BarDraw_PaintsBackgroundActiveChipAndFocusedTask()
+    public void ComputeLayout_TasksFillBetweenStartAndTheClock()
     {
-        var surface = new SurfaceHandler(null!);
-        var tasks = new List<BarTask> { new("Hello", surface) };
-        var layout = Bar.ComputeLayout(640, "Tue 27/10 13:37", tasks);
-        var buffer = new byte[640 * 200 * 4];
+        var scene = new Scene();
+        var task = new BarTask("Hello", new SurfaceHandler(scene));
+        var layout = Bar.ComputeLayout(1920, 1080, "14:33  28/10/2026", [task]);
 
-        Bar.Draw(buffer, 640, 200, 640 * 4, layout, "Tue 27/10 13:37", currentWorkspace: 1, focused: surface);
-
-        Assert.Equal(0xFF24262Eu, PixelAt(buffer, 640 * 4, 0, 0));
-        Assert.Equal(0xFFB8BEC8u, PixelAt(buffer, 640 * 4, layout.WorkspaceChips[0].X + 1, 5));
-        Assert.Equal(0xFF3A3E4Au, PixelAt(buffer, 640 * 4, layout.Tasks[0].Rect.X + 1, 7));
-
-        // The inactive chip shows the background, not the highlight.
-        Assert.Equal(0xFF24262Eu, PixelAt(buffer, 640 * 4, layout.WorkspaceChips[1].X + 1, 5));
+        var (rect, _) = Assert.Single(layout.Tasks);
+        Assert.True(rect.X >= layout.Start.X + layout.Start.W, "task overlaps Start");
+        Assert.True(rect.X + rect.W <= layout.Clock.X, "task overlaps the clock");
     }
 
     [Fact]
-    public void ClockString_IsAustralianWithInvariantWeekday()
+    public void ComputeLayout_TaskCountIsCappedByTheSpace()
     {
-        var clock = Bar.ClockString();
-        Assert.Matches(new Regex("^[A-Z][a-z]{2} \\d{2}/\\d{2} \\d{2}:\\d{2}$"), clock);
+        var scene = new Scene();
+        var tasks = Enumerable.Range(0, 50)
+            .Select(i => new BarTask($"t{i}", new SurfaceHandler(scene)))
+            .ToArray();
+        var layout = Bar.ComputeLayout(1920, 1080, "14:33  28/10/2026", tasks);
+
+        Assert.True(layout.Tasks.Length > 0 && layout.Tasks.Length < 50, $"got {layout.Tasks.Length} tasks");
     }
 
     [Fact]
-    public void Launcher_KeyboardNavigatesClamped()
+    public void LabelFor_TruncatesLongTitles()
     {
-        var launcher = new Launcher();
-        launcher.Open();
-
-        launcher.HandleKey(Rosella.Input.InputConstants.KeyUp);
-        Assert.Equal(0, launcher.Selection);
-
-        launcher.HandleKey(Rosella.Input.InputConstants.KeyDown);
-        launcher.HandleKey(Rosella.Input.InputConstants.KeyDown);
-        Assert.Equal(2, launcher.Selection);
-
-        for (var i = 0; i < 10; i++)
-        {
-            launcher.HandleKey(Rosella.Input.InputConstants.KeyDown);
-        }
-
-        Assert.Equal(Launcher.Apps.Length - 1, launcher.Selection);
+        Assert.Equal("Window", Bar.LabelFor("", ""));
+        Assert.Equal("Hello", Bar.LabelFor("Hello", "app"));
+        Assert.Equal(24, Bar.LabelFor(new string('x', 40), "app").Length);
     }
 
     [Fact]
-    public void Launcher_EnterSpawnsSelectedAppWithTheSocket()
+    public void ClockString_IsTimeThenAustralianDate()
     {
-        var launcher = new Launcher { SocketName = "wayland-7" };
-        var spawned = new List<(string Command, string? Socket)>();
-        launcher.SpawnOverride = (command, socket) =>
-        {
-            spawned.Add((command, socket));
-            return true;
-        };
-
-        launcher.Open();
-        launcher.HandleKey(Rosella.Input.InputConstants.KeyDown);
-        launcher.HandleKey(Rosella.Input.InputConstants.KeyEnter);
-
-        Assert.Equal([(Launcher.Apps[1].Command, "wayland-7")], spawned);
-        Assert.False(launcher.IsOpen);
+        Assert.Matches(@"^\d{2}:\d{2}  \d{2}/\d{2}/\d{4}$", Bar.ClockString());
     }
 
     [Fact]
-    public void Launcher_EscClosesWithoutSpawning()
+    public void Draw_PaintsTheTaskbarAndTheFocusAccent()
     {
-        var launcher = new Launcher();
-        launcher.SpawnOverride = (_, _) => throw new InvalidOperationException("must not spawn");
-        launcher.Open();
+        var width = 1920;
+        var height = 1080;
+        var scene = new Scene();
+        var task = new BarTask("Hello", new SurfaceHandler(scene));
+        var layout = Bar.ComputeLayout(width, height, Bar.ClockString(), [task]);
 
-        launcher.HandleKey(Rosella.Input.InputConstants.KeyEsc);
+        var pixels = new byte[width * height * 4];
+        Bar.Draw(pixels, width, height, width * 4, layout, Bar.ClockString(), task.Surface);
 
-        Assert.False(launcher.IsOpen);
-    }
+        var barY = height - Shell.BarHeight;
+        Assert.NotEqual(0u, PixelAt(pixels, width * 4, width / 2, barY + 2));
 
-    [Fact]
-    public void Launcher_ClicksSelectLaunchOrDismiss()
-    {
-        var launcher = new Launcher();
-        var spawned = new List<string>();
-        launcher.SpawnOverride = (command, _) =>
-        {
-            spawned.Add(command);
-            return true;
-        };
-
-        launcher.Open();
-        var panel = launcher.PanelRect(1920, 1080);
-
-        // Inside the panel but between rows: consumed, nothing launched.
-        Assert.True(launcher.HandleClick(panel.X + 20, panel.Y + 2, 1920, 1080));
-        Assert.Empty(spawned);
-        Assert.True(launcher.IsOpen);
-
-        // On row 2: launches that app and closes.
-        Assert.True(launcher.HandleClick(panel.X + 20, panel.Y + 48 + 80 + 18, 1920, 1080));
-        Assert.Equal([Launcher.Apps[2].Command], spawned);
-        Assert.False(launcher.IsOpen);
-
-        // Outside the panel: not consumed.
-        launcher.Open();
-        Assert.False(launcher.HandleClick(0, 0, 1920, 1080));
-        Assert.True(launcher.IsOpen);
+        // The focused task wears the accent underline at its bottom edge.
+        var (rect, _) = layout.Tasks[0];
+        Assert.Equal(0xFF7B86E8, PixelAt(pixels, width * 4, rect.X + (rect.W / 2), rect.Y + rect.H - 1));
     }
 }

@@ -1,6 +1,6 @@
 [Desktop Entry]
 Name=Rosella
-Comment=Rosella desktop environment (in development — shows a test pattern)
+Comment=Rosella desktop environment (in development)
 Exec=/usr/local/bin/rosella-session
 Type=Application
 DesktopNames=Rosella

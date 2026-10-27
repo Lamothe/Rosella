@@ -86,7 +86,7 @@ public class CompositorSessionTests
             client.SendRequest(8, "wl_surface", "commit");
             WaitFor(() => scene.Surfaces.FirstOrDefault(), value => value is { IsMapped: false });
             scene.Render(pixels, 800, 600, 800 * 4, frame: 1);
-            Assert.Equal(0xFFFFFFFFu, System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(pixels.AsSpan((64 * 800 * 4) + (64 * 4), 4)));
+            Assert.Equal(Background.ColourAt(64, 600), System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(pixels.AsSpan((64 * 800 * 4) + (64 * 4), 4)));
 
             // Destroying the surface clears it from the scene.
             client.SendRequest(8, "wl_surface", "destroy");
