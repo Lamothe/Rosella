@@ -31,11 +31,13 @@ internal sealed class InputThread : IDisposable
         {
             if (EvdevDevice.TryOpen(path) is not { } device)
             {
+                Console.Error.WriteLine($"rosella: input: {path} not opened (permission or busy)");
                 continue;
             }
 
             if (!DeviceDiscovery.IsKeyboard(device) && !DeviceDiscovery.IsPointer(device))
             {
+                Console.Error.WriteLine($"rosella: input: {device.Name} skipped (not keyboard or pointer)");
                 device.Dispose();
                 continue;
             }
@@ -53,6 +55,7 @@ internal sealed class InputThread : IDisposable
                 continue;
             }
 
+            Console.Error.WriteLine($"rosella: input: {device.Name} grabbed ({(DeviceDiscovery.IsKeyboard(device) ? "keyboard" : "")}{(DeviceDiscovery.IsPointer(device) ? "pointer" : "")})");
             _devices.Add(device);
             if (DeviceDiscovery.IsKeyboard(device))
             {
