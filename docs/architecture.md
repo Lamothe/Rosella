@@ -102,8 +102,24 @@ Verified against libwayland's marshalling code and the protocol docs:
   unmapped immediately. Reviewed once; 15 findings fixed with regression
   tests. Confirmed on screen (silver, 27/10/2026): the smoke client maps a
   real window via the full dance, with live frame callbacks.
-- **M6 — input**: libinput/evdev via a seat, keyboard focus routing, the few
-  hardcoded keybindings the DE allows.
+- **M6 — input**: ✅ done (pending on-screen check). evdev read directly
+  (no libinput): /dev/input discovery, capability bitmaps, exclusive grabs
+  (EBUSY skips the device), poll() + wake-eventfd reads whose shutdown never
+  closes an fd under a blocked reader. One keymap: US QWERTY generated with
+  xkbcommon, a fresh memfd per wl_keyboard (SCM_RIGHTS shares the file
+  description offset otherwise). Real wl_seat/wl_keyboard/wl_pointer:
+  name-then-capabilities at bind, missing_capability (0) for absent
+  capabilities incl. all touch, keymap + repeat_info before registration,
+  enter carries the held keys and is always followed by modifiers, frame
+  gated at v5, release/teardown unregister. The policy: click-to-focus +
+  raise, keys to the focus, xdg activation configure rounds, Alt+F4 =
+  close, Super+Esc = quit; one cursor sprite, set_cursor ignored. All seat
+  sends run under the seat gate (serialised against object death: nothing
+  can name an object after delete_id) and per-target try/catch so one dead
+  client never poisons the fan-out. Reviewed once — 15 findings fixed
+  (3 crash-grade: unhandled SocketException on input threads, send-vs-
+  destroy id resurrection, unlocked xdg configure state), 10 new regression
+  tests. Known accepted limits are in Open risks.
 - **M7 — the shell**: bar, app launcher, workspaces, notifications — all in
   managed code, all opinionated.
 - **M8 — session polish**: lock screen, idle handling, session startup,
