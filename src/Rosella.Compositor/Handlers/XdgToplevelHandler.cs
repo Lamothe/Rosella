@@ -35,6 +35,9 @@ internal sealed class XdgToplevelHandler : IRequestHandler, IXdgRoleObject
     /// <summary>The app id, for the shell (M7).</summary>
     internal string AppId { get; private set; } = "";
 
+    /// <summary>Whether the window holds keyboard focus (xdg state 4, activated).</summary>
+    internal bool Activated { get; set; }
+
     internal void Bind(ClientSession session, ServerObject self)
     {
         _session = session;
@@ -140,7 +143,9 @@ internal sealed class XdgToplevelHandler : IRequestHandler, IXdgRoleObject
             _session!.SendEvent(_self, "wm_capabilities", WireArgument.Array([]));
         }
 
-        _session!.SendEvent(_self!, "configure", WireArgument.Int32(0), WireArgument.Int32(0), WireArgument.Array([]));
+        // xdg_toplevel.state.activated = 4 (pinned against xdg-shell.xml).
+        var states = Activated ? BitConverter.GetBytes(4u) : [];
+        _session!.SendEvent(_self!, "configure", WireArgument.Int32(0), WireArgument.Int32(0), WireArgument.Array(states));
     }
 
     /// <summary>Toplevels are placed by the window policy.</summary>

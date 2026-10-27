@@ -150,7 +150,14 @@ Learned from libwayland and verified against real clients:
   (the spec names no error code); popup stacking rules
   (`not_the_topmost_popup`, parent-mapped-first) and positioner constraint
   adjustment (flip/slide to stay on screen) are unimplemented; maximise/
-  fullscreen requests are ignored until the shell (M7).
+  fullscreen requests are ignored until the shell (M7). M6 additions: seat
+  sends hold the seat gate during socket writes, so one stalled client can
+  briefly delay input delivery to others (accepted on a single-seat
+  desktop); kernel autorepeat is dropped (clients repeat via repeat_info);
+  no touch support; `wl_pointer.set_cursor` is ignored (one built-in
+  cursor); a keyboard bound mid-focus receives enter with the seat's last
+  held-keys snapshot; input device hot-plug is not handled (the device set
+  is fixed at startup).
 - The M2/M3 code has been reviewed three times at the code level; M4 adds the
   surface layer, reviewed once. Only `wayland-info` and `SmokeClient` have
   exercised the protocol as clients so far — toolkits (GTK/Qt) will stress it

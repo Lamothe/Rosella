@@ -2,6 +2,7 @@
   <Folder Name="/src/">
     <Project Path="src/Rosella.Compositor/Rosella.Compositor.csproj" />
     <Project Path="src/Rosella.Drm/Rosella.Drm.csproj" />
+    <Project Path="src/Rosella.Input/Rosella.Input.csproj" />
     <Project Path="src/Rosella.Protocol/Rosella.Protocol.csproj" />
     <Project Path="src/Rosella.Server/Rosella.Server.csproj" />
     <Project Path="src/Rosella.Transport/Rosella.Transport.csproj" />
@@ -9,6 +10,7 @@
   <Folder Name="/tests/">
     <Project Path="tests/Rosella.Compositor.Tests/Rosella.Compositor.Tests.csproj" />
     <Project Path="tests/Rosella.Drm.Tests/Rosella.Drm.Tests.csproj" />
+    <Project Path="tests/Rosella.Input.Tests/Rosella.Input.Tests.csproj" />
     <Project Path="tests/Rosella.Server.Tests/Rosella.Server.Tests.csproj" />
   </Folder>
   <Folder Name="/tools/">

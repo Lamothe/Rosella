@@ -56,8 +56,21 @@ configuration is where desktop environments go to die.
   frozen positioner snapshot relative to the parent window, and correct
   unmap/teardown semantics (role destroy unmaps; destroy order is enforced).
   The smoke client now opens a genuine xdg-shell window.
-- **M6 — input**: next. libinput/evdev via a seat, keyboard focus routing,
-  the few hardcoded keybindings the DE allows; then real toolkit apps.
+- **M6 — input**: done (pending on-screen check). evdev devices are read
+  directly (no libinput): discovery, capability probing, exclusive grabs and
+  poll()-based reads that shut down cleanly. The keyboard keymap is the one
+  US QWERTY map, generated with xkbcommon. `wl_seat`/`wl_keyboard`/
+  `wl_pointer` implement the real protocol (keymap fd per keyboard, enter
+  with the held keys, mandatory modifiers after enter, repeat_info, frame
+  gated at v5). The input policy is the only policy: click-to-focus with
+  raise, keys to the keyboard focus, xdg_toplevel activation configure
+  rounds, and two hardcoded keybindings (Alt+F4 = close window,
+  Super+Esc = quit). One built-in cursor sprite, drawn topmost;
+  `set_cursor` is deliberately ignored. All seat sends are serialised under
+  the seat gate against object death, so no event can name an object after
+  its `delete_id`.
+- **M7 — shell**: next. A window list / taskbar as an in-process surface
+  region, window switching, and the few remaining policies.
 
 ## Layout
 

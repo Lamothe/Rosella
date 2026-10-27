@@ -12,6 +12,7 @@
   <ItemGroup>
     <ProjectReference Include="../Rosella.Server/Rosella.Server.csproj" />
     <ProjectReference Include="../Rosella.Drm/Rosella.Drm.csproj" />
+    <ProjectReference Include="../Rosella.Input/Rosella.Input.csproj" />
   </ItemGroup>
 
   <ItemGroup>

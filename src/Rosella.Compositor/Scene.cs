@@ -23,12 +23,49 @@ public sealed class Scene
     {
         lock (_gate)
         {
+            // Gone first: a stale hit-test reference must not be re-focused.
+            surface.Gone = true;
             _surfaces.Remove(surface);
         }
+
+        // Destroy paths only: the surface id is dying or gone, so focus is
+        // cleared without leave events (they would name a dead object).
+        Seat?.OnSurfaceHidden(surface, canSendLeave: false);
     }
 
     /// <summary>The scanout's size; windows are placed relative to it.</summary>
     internal (int Width, int Height) OutputSize { get; set; } = (1920, 1080);
+
+    /// <summary>The input seat, notified when surfaces hide or go away.</summary>
+    internal SeatState? Seat { get; set; }
+
+    /// <summary>Where the cursor arrow's hotspot sits (guarded by the scene gate).</summary>
+    internal (int X, int Y) Cursor
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _cursor;
+            }
+        }
+
+        set
+        {
+            lock (_gate)
+            {
+                _cursor = value;
+            }
+        }
+    }
+
+    private (int X, int Y) _cursor;
+
+    /// <summary>Focus teardown for the seat (unmap = leave, destroy = silent).</summary>
+    internal void OnSurfaceHidden(SurfaceHandler surface, bool canSendLeave)
+    {
+        Seat?.OnSurfaceHidden(surface, canSendLeave);
+    }
 
     /// <summary>
     /// The window policy: every mapped window goes to the centre of the
@@ -63,6 +100,8 @@ public sealed class Scene
             {
                 surface.BlitInto(pixels, width, height, stride);
             }
+
+            CursorSprite.Draw(pixels, width, height, stride, Cursor.X, Cursor.Y);
         }
     }
 
@@ -86,6 +125,42 @@ public sealed class Scene
             lock (_gate)
             {
                 return _surfaces.ToArray();
+            }
+        }
+    }
+
+    /// <summary>The topmost mapped surface at the point, if any.</summary>
+    internal SurfaceHandler? HitTest(int x, int y)
+    {
+        lock (_gate)
+        {
+            for (var i = _surfaces.Count - 1; i >= 0; i--)
+            {
+                var surface = _surfaces[i];
+                if (!surface.IsMapped)
+                {
+                    continue;
+                }
+
+                if (x >= surface.Position.X && x < surface.Position.X + surface.Width
+                    && y >= surface.Position.Y && y < surface.Position.Y + surface.Height)
+                {
+                    return surface;
+                }
+            }
+
+            return null;
+        }
+    }
+
+    /// <summary>Raises the surface to the top (it renders last).</summary>
+    internal void Raise(SurfaceHandler surface)
+    {
+        lock (_gate)
+        {
+            if (_surfaces.Remove(surface))
+            {
+                _surfaces.Add(surface);
             }
         }
     }

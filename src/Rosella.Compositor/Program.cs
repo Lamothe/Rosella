@@ -19,7 +19,15 @@ var displayName = args.Length > 0 ? args[0] : Path.GetFileName(DisplayServer.Fin
 var socketPath = Path.Combine(runtimeDirectory, displayName);
 
 var scene = new Scene();
-using var server = new DisplayServer(socketPath, handlerFactory: new CompositorHandlerFactory(scene));
+var seat = new SeatState();
+
+// The device set is fixed before clients bind, so wl_seat capabilities are
+// right from the first moment (no hot-plug in M6).
+using var cancellation = new CancellationTokenSource();
+using var input = new InputThread(scene, seat, () => cancellation.Cancel());
+input.Discover();
+
+using var server = new DisplayServer(socketPath, handlerFactory: new CompositorHandlerFactory(scene, seat));
 server.Start();
 Console.WriteLine($"rosella: display server listening on {socketPath}");
 
@@ -32,8 +40,7 @@ if (detection is null)
 
 // Windows are placed relative to the real output.
 scene.OutputSize = (detection.Value.Output.Mode.HDisplay, detection.Value.Output.Mode.VDisplay);
-
-using var cancellation = new CancellationTokenSource();
+input.Router.PlaceCursor(scene.OutputSize.Width / 2, scene.OutputSize.Height / 2);
 
 // Signal handling is registered first so it stays alive through cleanup and
 // keeps interrupting the flip loop while the display state is restored.
@@ -56,6 +63,7 @@ Console.CancelKeyPress += (_, eventArgs) =>
 using var device = detection.Value.Device;
 var output = detection.Value.Output;
 Console.WriteLine($"rosella: driving {output.Connector} at {output.Mode} via CRTC {output.CrtcId}");
+input.Start();
 
 var scanout = new Scanout(device, output, scene);
 try

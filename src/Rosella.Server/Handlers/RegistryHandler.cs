@@ -36,8 +36,16 @@ public sealed class RegistryHandler : IRequestHandler
             throw new ProtocolErrorException(target.Id, ClientSession.ErrorInvalidMethod, $"global '{global.Interface}' does not support version {version}");
         }
 
-        var bound = session.CreateClientObject(id, boundInterface, version, CreateHandler(session, global.Interface), target);
-        SendBoundEvents(session, bound);
+        var handler = CreateHandler(session, global.Interface);
+        var bound = session.CreateClientObject(id, boundInterface, version, handler, target);
+        if (handler is IBindEvents bindEvents)
+        {
+            bindEvents.SendBindEvents(session, bound);
+        }
+        else
+        {
+            SendBoundEvents(session, bound);
+        }
     }
 
     /// <summary>The compositor's handler for this global, or the generic stub.</summary>

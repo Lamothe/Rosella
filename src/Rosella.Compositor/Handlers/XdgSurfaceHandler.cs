@@ -26,6 +26,13 @@ internal sealed class XdgSurfaceHandler : IRequestHandler, ISurfaceRole, IDispos
 {
     private readonly Scene _scene;
     private readonly SurfaceHandler _surface;
+
+    /// <summary>
+    /// Guards the configure state machine: pending serials, the configure
+    /// pair emission (so two configures never interleave on the wire), and
+    /// activation. Session threads and input threads both touch it.
+    /// </summary>
+    private readonly object _configureGate = new();
     private readonly HashSet<uint> _pendingSerials = new();
     private ClientSession? _session;
     private ServerObject? _self;
@@ -115,17 +122,20 @@ internal sealed class XdgSurfaceHandler : IRequestHandler, ISurfaceRole, IDispos
             case "ack_configure":
             {
                 var serial = request.Arguments[0].AsUInt32();
-
-                // Acking a serial consumes it and every older pending one;
-                // acking an already-consumed or older serial is invalid.
-                if (serial <= _lastAckedSerial || !_pendingSerials.Remove(serial))
+                lock (_configureGate)
                 {
-                    throw new ProtocolErrorException(target.Id, XdgErrors.InvalidSerial, $"configure serial {serial} cannot be acked");
+                    // Acking a serial consumes it and every older pending one;
+                    // acking an already-consumed or older serial is invalid.
+                    if (serial <= _lastAckedSerial || !_pendingSerials.Remove(serial))
+                    {
+                        throw new ProtocolErrorException(target.Id, XdgErrors.InvalidSerial, $"configure serial {serial} cannot be acked");
+                    }
+
+                    _pendingSerials.RemoveWhere(s => s <= serial);
+                    _lastAckedSerial = serial;
+                    _ackedConfigure = true;
                 }
 
-                _pendingSerials.RemoveWhere(s => s <= serial);
-                _lastAckedSerial = serial;
-                _ackedConfigure = true;
                 break;
             }
 
@@ -170,8 +180,14 @@ internal sealed class XdgSurfaceHandler : IRequestHandler, ISurfaceRole, IDispos
 
         if (!_initialConfigureSent)
         {
-            SendConfigure();
-            _initialConfigureSent = true;
+            lock (_configureGate)
+            {
+                if (!_initialConfigureSent)
+                {
+                    SendConfigure();
+                    _initialConfigureSent = true;
+                }
+            }
         }
 
         if (!contentChanged)
@@ -193,9 +209,12 @@ internal sealed class XdgSurfaceHandler : IRequestHandler, ISurfaceRole, IDispos
             Unmap(surface);
 
             // A newly-unmapped surface must repeat the mapping dance.
-            _initialConfigureSent = false;
-            _ackedConfigure = false;
-            _pendingSerials.Clear();
+            lock (_configureGate)
+            {
+                _initialConfigureSent = false;
+                _ackedConfigure = false;
+                _pendingSerials.Clear();
+            }
         }
     }
 
@@ -214,13 +233,38 @@ internal sealed class XdgSurfaceHandler : IRequestHandler, ISurfaceRole, IDispos
         _toplevel = null;
     }
 
+    /// <summary>Activation round-trip for input focus changes.</summary>
+    internal void SetActivated(bool activated)
+    {
+        lock (_configureGate)
+        {
+            if (_roleObject is XdgToplevelHandler toplevel && toplevel.Activated != activated)
+            {
+                toplevel.Activated = activated;
+                SendConfigure();
+            }
+        }
+    }
+
+    /// <summary>Asks the window to close (Alt+F4 in the input policy).</summary>
+    internal void Close()
+    {
+        if (_roleObject is XdgToplevelHandler toplevel)
+        {
+            toplevel.Close();
+        }
+    }
+
     /// <summary>Sends xdg_surface.configure around the role's payload.</summary>
     internal void SendConfigure()
     {
-        _roleObject!.SendRoleConfigure();
-        var serial = _session!.NextSerial();
-        _pendingSerials.Add(serial);
-        _session.SendEvent(_self!, "configure", WireArgument.UInt32(serial));
+        lock (_configureGate)
+        {
+            _roleObject!.SendRoleConfigure();
+            var serial = _session!.NextSerial();
+            _pendingSerials.Add(serial);
+            _session.SendEvent(_self!, "configure", WireArgument.UInt32(serial));
+        }
     }
 
     /// <summary>Session end: stop the wm_base surface count without sending.</summary>

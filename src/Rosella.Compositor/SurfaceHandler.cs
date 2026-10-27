@@ -65,6 +65,16 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
     /// <summary>Where the surface is composited, assigned by the scene.</summary>
     internal (int X, int Y) Position { get; set; }
 
+    /// <summary>The session that owns this surface, for input routing.</summary>
+    internal ClientSession? Session => _session;
+
+
+    /// <summary>The xdg role on this surface, if any.</summary>
+    internal XdgSurfaceHandler? XdgRole => _role as XdgSurfaceHandler;
+
+    /// <summary>Set once the surface is destroyed: focus must skip it.</summary>
+    internal volatile bool Gone;
+
     internal bool IsMapped
     {
         get
@@ -101,6 +111,9 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
             _width = 0;
             _height = 0;
         }
+
+        // The object still exists, so the seat may send leave events.
+        _scene.OnSurfaceHidden(this, canSendLeave: true);
     }
 
     public void Bind(ClientSession session, ServerObject self)
@@ -328,10 +341,12 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
         // window is at its final position the moment its pixels appear.
         _role?.OnCommit(this, contentChanged, newContent is not null, newWidth, newHeight);
 
+        var unmapped = false;
         lock (_state)
         {
             if (contentChanged)
             {
+                unmapped = _content is not null && newContent is null;
                 _content = newContent;
                 _width = newWidth;
                 _height = newHeight;
@@ -339,6 +354,13 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
 
             _activeCallbacks.AddRange(_pendingCallbacks);
             _pendingCallbacks.Clear();
+        }
+
+        if (unmapped)
+        {
+            // A client-driven unmap: the surface id is still valid, so the
+            // seat sends proper leave events.
+            _scene.OnSurfaceHidden(this, canSendLeave: true);
         }
     }
 
