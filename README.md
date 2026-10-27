@@ -48,7 +48,7 @@ configuration is where desktop environments go to die.
   buffer is released); frame callbacks pace clients. Verified end to end over
   real sockets with descriptor passing, plus `wayland-info` and the bundled
   `tools/Rosella.SmokeClient`.
-- **M5 — xdg-shell**: done — pending on-screen check. Windows are real:
+- **M5 — xdg-shell**: done and confirmed on screen (silver, 27/10/2026). Windows are real:
   `xdg_wm_base`/`xdg_surface`/`xdg_toplevel`/`xdg_popup`/`xdg_positioner`
   (v7), the full commit → configure → ack_configure → map dance with strict
   serial consumption, window policy placement (centre + small cascade,

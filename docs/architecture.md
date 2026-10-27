@@ -100,7 +100,8 @@ Verified against libwayland's marshalling code and the protocol docs:
   in the event), wm_capabilities before the first configure, and enforced
   destroy order (wl_surface/xdg_surface/role object) with dead windows
   unmapped immediately. Reviewed once; 15 findings fixed with regression
-  tests. Pending: on-screen check.
+  tests. Confirmed on screen (silver, 27/10/2026): the smoke client maps a
+  real window via the full dance, with live frame callbacks.
 - **M6 — input**: libinput/evdev via a seat, keyboard focus routing, the few
   hardcoded keybindings the DE allows.
 - **M7 — the shell**: bar, app launcher, workspaces, notifications — all in
