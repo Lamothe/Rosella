@@ -39,8 +39,9 @@ configuration is where desktop environments go to die.
   software-rendered test pattern on the first connected output. `--probe`
   introspects cards/connectors/modes and validates dumb buffers against the
   real driver.
-- **M4 — client buffers** (`Rosella.Compositor` surface layer): done, pending
-  on-screen confirmation. Real `wl_shm` (client descriptors mapped, bounds
+- **M4 — client buffers** (`Rosella.Compositor` surface layer): done —
+  confirmed on screen 27/10/2026 (silver: test-pattern background plus a
+  real client window). Real `wl_shm` (client descriptors mapped, bounds
   validated), `wl_compositor`/`wl_surface` state machine (attach/damage/frame/
   get_release/commit), `wl_buffer` release, and compositing of client windows
   over the test-pattern background. Content is copied at commit (then the

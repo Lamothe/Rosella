@@ -90,7 +90,7 @@ Verified against libwayland's marshalling code and the protocol docs:
   rules, pool/buffer refcounting so any destruction order is safe, and
   compositing of client windows over the background. Servers and the render
   loop share the `Scene` under a strict lock order (scene → surface state →
-  session). Pending: on-screen confirmation in the GDM session.
+  session). Confirmed on screen 27/10/2026 on silver (simpledrm panel).
 - **M5 — xdg-shell**: windows are recognised: mapped/unmapped, positioned
   (replacing the temporary cascade placement), closed.
 - **M6 — input**: libinput/evdev via a seat, keyboard focus routing, the few
