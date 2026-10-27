@@ -42,8 +42,8 @@ public static class InputConstants
     // positions here instead of relative motion (include/uapi/linux/input-event-codes.h).
     public const ushort AbsMtSlot = 0x2f;
     public const ushort AbsMtTrackingId = 0x39;
-    public const ushort AbsMtPositionX = 0x30;
-    public const ushort AbsMtPositionY = 0x31;
+    public const ushort AbsMtPositionX = 0x35;
+    public const ushort AbsMtPositionY = 0x36;
     public const int TrackingIdUp = -1;
 
     // EV_KEY values

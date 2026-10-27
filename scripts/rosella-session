@@ -9,8 +9,8 @@ export XDG_SESSION_TYPE=wayland
 # input-group grant (getty logins cache credentials from first login), the
 # group is missing even though /etc/group is correct. `sg` re-resolves
 # membership from the group database and adds it, no password needed for
-# an existing member.
+# an existing member. No args are passed to the session; GDM passes none.
 if id -nG | tr ' ' '\n' | grep -qx input; then
     exec /usr/local/lib/rosella/Rosella.Compositor "$@"
 fi
-exec sg input -c '/usr/local/lib/rosella/Rosella.Compositor "$@"' -- "$@"
+exec sg input -c '/usr/local/lib/rosella/Rosella.Compositor'
