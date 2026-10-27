@@ -6,7 +6,17 @@ set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-dotnet publish "$root/src/Rosella.Compositor/Rosella.Compositor.csproj" \
+# The SDK may be installed user-local (e.g. ~/.dotnet).
+dotnet="${DOTNET:-$(command -v dotnet || true)}"
+if [ -z "$dotnet" ] && [ -x "$HOME/.dotnet/dotnet" ]; then
+    dotnet="$HOME/.dotnet/dotnet"
+fi
+if [ -z "$dotnet" ]; then
+    echo "rosella: dotnet SDK not found (install .NET 10 or set DOTNET=/path/to/dotnet)" >&2
+    exit 1
+fi
+
+"$dotnet" publish "$root/src/Rosella.Compositor/Rosella.Compositor.csproj" \
     -c Release --self-contained -o "$root/build/publish" --nologo
 
 sudo install -d /usr/local/lib/rosella
