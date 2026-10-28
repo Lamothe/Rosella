@@ -91,9 +91,24 @@ Console.WriteLine($"rosella: driving {output.Connector} at {output.Mode} via CRT
 input.Start();
 
 var scanout = new Scanout(device, output, scene);
+
+// Diagnostics: SIGWINCH (kill -WINCH <pid>) dumps what is on screen at
+// that instant (PPM), so visual reports can be checked against ground
+// truth from outside. SIGWINCH is safe to take: the runtime ignores it.
+PosixSignalRegistration? sigwinch = null;
+if (!OperatingSystem.IsWindows())
+{
+    sigwinch = PosixSignalRegistration.Create(PosixSignal.SIGWINCH, context =>
+    {
+        context.Cancel = true;
+        scanout.DumpFrame("/tmp/rosella-frame.ppm");
+    });
+}
+
 try
 {
     scanout.Run(cancellation.Token);
+    scanout.DumpFrame("/tmp/rosella-frame-exit.ppm");
 }
 catch (OperationCanceledException)
 {

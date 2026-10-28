@@ -19,6 +19,9 @@ internal sealed class Scanout : IDisposable
     private readonly uint[] _framebuffers = new uint[2];
     private bool _disposed;
 
+    /// <summary>Index of the buffer currently scanned out (diagnostics).</summary>
+    private volatile int _front;
+
     public Scanout(DrmDevice device, DrmOutput output, Scene scene)
     {
         _device = device;
@@ -159,8 +162,21 @@ internal sealed class Scanout : IDisposable
             WaitForFlip((ulong)frame, token);
             _scene.CompleteFrame();
             front = back;
+            _front = back;
             frame++;
         }
+    }
+
+    /// <summary>
+    /// Dumps what is on screen right now to a PPM file (diagnostics: the
+    /// ground truth for visual reports — may tear mid-flip, which is fine
+    /// for its purpose).
+    /// </summary>
+    internal void DumpFrame(string path)
+    {
+        var buffer = _buffers[_front];
+        FrameDump.WritePpm(path, _output.Mode.HDisplay, _output.Mode.VDisplay, buffer.Pitch, buffer.Pixels);
+        Console.Error.WriteLine($"rosella: frame dumped to {path}");
     }
 
     public void Dispose()

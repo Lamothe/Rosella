@@ -97,21 +97,21 @@ public class ShellChromeTests
         var buffer = new byte[stride * h];
         var layout = Bar.ComputeLayout(w, h, "14:33  28/10/2026", []);
         Bar.Draw(buffer, w, h, stride, 1, layout, "14:33  28/10/2026", null);
-        var cx = layout.Start.X + (layout.Start.W / 2);
-        var cy = layout.Start.Y + (layout.Start.H / 2);
+        var x0 = layout.Start.X + ((layout.Start.W - 20) / 2);
+        var y0 = layout.Start.Y + ((layout.Start.H - 20) / 2);
 
-        // Body: icon pixels well inside the start rect.
-        Assert.Equal(0xFFE8E8ECu, PixelAt(buffer, stride, cx, cy + 2));
-        Assert.Equal(0xFFE8E8ECu, PixelAt(buffer, stride, cx - 4, cy + 2));
+        // Body: solid through the middle and at the lower right, where the
+        // silhouette is widest.
+        Assert.Equal(0xFFE8E8ECu, PixelAt(buffer, stride, x0 + 7, y0 + 13));
+        Assert.Equal(0xFFE8E8ECu, PixelAt(buffer, stride, x0 + 17, y0 + 13));
 
-        // The bite: a notch punched out of the body's right edge at the
-        // punch centre row, while the body extends further right below it.
-        Assert.Equal(0xFF16171Eu, PixelAt(buffer, stride, cx + 5, cy + 1));
-        Assert.Equal(0xFFE8E8ECu, PixelAt(buffer, stride, cx + 6, cy + 4));
+        // The bite: the upper-right flank is empty where the body reaches
+        // further right below.
+        Assert.Equal(0xFF16171Eu, PixelAt(buffer, stride, x0 + 16, y0 + 8));
 
-        // Leaf and stem above the body.
-        Assert.Equal(0xFFE8E8ECu, PixelAt(buffer, stride, cx + 3, cy - 7));
-        Assert.Equal(0xFFE8E8ECu, PixelAt(buffer, stride, cx, cy - 8));
+        // Stem fills the top notch; the leaf sticks out top-right.
+        Assert.Equal(0xFFE8E8ECu, PixelAt(buffer, stride, x0 + 9, y0 + 2));
+        Assert.Equal(0xFFE8E8ECu, PixelAt(buffer, stride, x0 + 14, y0 + 1));
 
         // Everything painted left of the clock zone lives inside the start
         // button's rect (the clock/task labels share the icon's colour).

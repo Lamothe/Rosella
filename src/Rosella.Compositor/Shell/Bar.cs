@@ -101,26 +101,62 @@ internal static class Bar
     }
 
     /// <summary>
-    /// The Start button icon: an apple silhouette with a bite and a leaf
-    /// (Mac style, per the desktop's opinionated aesthetic). The bite is
-    /// punched in the bar background the icon sits on.
+    /// The Start button icon: an apple silhouette with a stem, a leaf and a
+    /// bite (Mac style, per the desktop's opinionated aesthetic), drawn from
+    /// a hand-authored pixel-art grid so the shape is deliberate at any
+    /// scale rather than an accident of ellipses.
     /// </summary>
-    private static void DrawStartIcon(Span<byte> pixels, int clipW, int clipH, int stride, int scale, Rect start)
+    internal static void DrawStartIcon(Span<byte> pixels, int clipW, int clipH, int stride, int scale, Rect start)
     {
-        var cx = start.X + (start.W / 2);
-        var cy = start.Y + (start.H / 2);
-
-        // Body: one roundish ellipse, slightly low in the box.
-        Chrome.FillEllipse(pixels, clipW, clipH, stride, cx, cy + 2, 8, 8, StartIconColour, scale);
-
-        // Bite: punch a small ellipse out of the body's right edge.
-        Chrome.FillEllipse(pixels, clipW, clipH, stride, cx + 7, cy + 1, 3, 3, BarBackground, scale);
-
-        // Leaf and stem above the body (overlapping it slightly, so the
-        // silhouette has no hairline gaps at small sizes).
-        Chrome.FillEllipse(pixels, clipW, clipH, stride, cx + 3, cy - 7, 4, 2, StartIconColour, scale);
-        Chrome.FillRect(pixels, clipW, clipH, stride, new Rect(cx - 1, cy - 9, 2, 5), StartIconColour, scale);
+        var x0 = start.X + ((start.W - AppleIcon.Width) / 2);
+        var y0 = start.Y + ((start.H - AppleIcon.Height) / 2);
+        for (var y = 0; y < AppleIcon.Height; y++)
+        {
+            for (var x = 0; x < AppleIcon.Width; x++)
+            {
+                if (AppleIcon.IsSet(x, y))
+                {
+                    Chrome.FillRect(pixels, clipW, clipH, stride, new Rect(x0 + x, y0 + y, 1, 1), StartIconColour, scale);
+                }
+            }
+        }
     }
+}
+
+/// <summary>
+/// The Start button's apple: a hand-authored 20x20 pixel-art silhouette —
+/// stem in the top notch, leaf up-right, bite out of the right flank.
+/// </summary>
+internal static class AppleIcon
+{
+    internal const int Width = 20;
+    internal const int Height = 20;
+
+    private static readonly string[] Rows =
+    [
+        "....................",
+        ".........##.####....",
+        ".........########...",
+        ".........######.....",
+        "...####..##..####...",
+        "..######.##.####....",
+        "..#############.....",
+        "..#############.....",
+        "..#############.....",
+        "..#############.....",
+        "..#############.....",
+        "..##############....",
+        "..###############...",
+        "..################..",
+        "..###############...",
+        "...##############...",
+        "...############.....",
+        "....############....",
+        ".....##########.....",
+        ".......######.......",
+    ];
+
+    internal static bool IsSet(int x, int y) => Rows[y][x] == '#';
 }
 
 /// <summary>The drawn taskbar: rectangles and their tasks, in one order.</summary>
