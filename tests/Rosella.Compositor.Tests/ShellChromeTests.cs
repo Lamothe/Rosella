@@ -100,18 +100,20 @@ public class ShellChromeTests
         var x0 = layout.Start.X + ((layout.Start.W - 20) / 2);
         var y0 = layout.Start.Y + ((layout.Start.H - 20) / 2);
 
-        // Body: solid through the middle and at the lower right, where the
-        // silhouette is widest.
-        Assert.Equal(0xFFE8E8ECu, PixelAt(buffer, stride, x0 + 7, y0 + 13));
-        Assert.Equal(0xFFE8E8ECu, PixelAt(buffer, stride, x0 + 17, y0 + 13));
+        // Body: solid through the middle and at the widest part.
+        Assert.Equal(0xFFE8E8ECu, PixelAt(buffer, stride, x0 + 9, y0 + 13));
+        Assert.Equal(0xFFE8E8ECu, PixelAt(buffer, stride, x0 + 2, y0 + 13));
 
         // The bite: the upper-right flank is empty where the body reaches
         // further right below.
         Assert.Equal(0xFF16171Eu, PixelAt(buffer, stride, x0 + 16, y0 + 8));
+        Assert.Equal(0xFFE8E8ECu, PixelAt(buffer, stride, x0 + 16, y0 + 13));
 
-        // Stem fills the top notch; the leaf sticks out top-right.
-        Assert.Equal(0xFFE8E8ECu, PixelAt(buffer, stride, x0 + 9, y0 + 2));
-        Assert.Equal(0xFFE8E8ECu, PixelAt(buffer, stride, x0 + 14, y0 + 1));
+        // Stem fills the top notch; the leaf sticks out top-right; the
+        // bottom dimple splits the lower lobes.
+        Assert.Equal(0xFFE8E8ECu, PixelAt(buffer, stride, x0 + 8, y0 + 0));
+        Assert.Equal(0xFFE8E8ECu, PixelAt(buffer, stride, x0 + 13, y0 + 1));
+        Assert.Equal(0xFF16171Eu, PixelAt(buffer, stride, x0 + 9, y0 + 19));
 
         // Everything painted left of the clock zone lives inside the start
         // button's rect (the clock/task labels share the icon's colour).
