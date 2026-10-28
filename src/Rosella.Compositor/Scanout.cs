@@ -157,6 +157,13 @@ internal sealed class Scanout : IDisposable
             }
 
             var back = 1 - front;
+
+            if (_dumpRequested)
+            {
+                _dumpRequested = false;
+                DumpFrame("/tmp/rosella-frame.ppm");
+            }
+
             RenderInto(back, frame);
             _device.PageFlip(_output.CrtcId, _framebuffers[back], (ulong)frame);
             WaitForFlip((ulong)frame, token);
@@ -167,10 +174,20 @@ internal sealed class Scanout : IDisposable
         }
     }
 
+    private volatile bool _dumpRequested;
+
+    /// <summary>
+    /// Requests a diagnostics dump of the on-screen frame. Signal-safe:
+    /// only sets a flag — the render loop performs the write on its next
+    /// wake (the buffers are owned by the loop; writing from a signal
+    /// thread races it).
+    /// </summary>
+    internal void RequestDump() => _dumpRequested = true;
+
     /// <summary>
     /// Dumps what is on screen right now to a PPM file (diagnostics: the
     /// ground truth for visual reports — may tear mid-flip, which is fine
-    /// for its purpose).
+    /// for its purpose). Must be called from the render loop thread.
     /// </summary>
     internal void DumpFrame(string path)
     {

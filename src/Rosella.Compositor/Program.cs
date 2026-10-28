@@ -101,7 +101,13 @@ if (!OperatingSystem.IsWindows())
     sigwinch = PosixSignalRegistration.Create(PosixSignal.SIGWINCH, context =>
     {
         context.Cancel = true;
-        scanout.DumpFrame("/tmp/rosella-frame.ppm");
+
+        // Only set a flag and wake the loop: the scanout buffers are
+        // owned by the render thread, and writing the dump directly from
+        // the signal callback raced it (killing the loop). The loop
+        // writes the dump on its next wake.
+        scanout.RequestDump();
+        scene.MarkDirty();
     });
 }
 
