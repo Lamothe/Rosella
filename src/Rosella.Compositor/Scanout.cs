@@ -160,8 +160,31 @@ internal sealed class Scanout : IDisposable
 
             if (_dumpRequested)
             {
-                _dumpRequested = false;
-                DumpFrame("/tmp/rosella-frame.ppm");
+                TaskCompletionSource<byte[]>? capture;
+                bool fileDump;
+                lock (_captureGate)
+                {
+                    capture = _capture;
+                    _capture = null;
+                    fileDump = _fileDumpPending;
+                    _fileDumpPending = false;
+                    _dumpRequested = false;
+                }
+
+                // A control-socket capture gets the frame as bytes; the
+                // signal path keeps writing the diagnostics file. Both may
+                // be pending in the same wake; both are served.
+                if (capture != null)
+                {
+                    var frontBuffer = _buffers[_front];
+                    capture.TrySetResult(FrameDump.EncodePpm(
+                        _output.Mode.HDisplay, _output.Mode.VDisplay, frontBuffer.Pitch, frontBuffer.Pixels));
+                }
+
+                if (fileDump)
+                {
+                    DumpFrame("/tmp/rosella-frame.ppm");
+                }
             }
 
             RenderInto(back, frame);
@@ -175,14 +198,59 @@ internal sealed class Scanout : IDisposable
     }
 
     private volatile bool _dumpRequested;
+    private readonly object _captureGate = new();
+    private TaskCompletionSource<byte[]>? _capture;
+    private bool _fileDumpPending;
 
     /// <summary>
     /// Requests a diagnostics dump of the on-screen frame. Signal-safe:
-    /// only sets a flag — the render loop performs the write on its next
+    /// only sets flags — the render loop performs the write on its next
     /// wake (the buffers are owned by the loop; writing from a signal
     /// thread races it).
     /// </summary>
-    internal void RequestDump() => _dumpRequested = true;
+    internal void RequestDump()
+    {
+        lock (_captureGate)
+        {
+            _fileDumpPending = true;
+            _dumpRequested = true;
+        }
+    }
+
+    /// <summary>
+    /// Captures the on-screen frame as PPM bytes. Handshakes with the
+    /// render loop (which owns the buffers): wakes the loop and completes
+    /// when the loop has encoded the frame. Only one capture may be in
+    /// flight; concurrent callers get a clear error instead of a lost
+    /// request. Blocks the caller — never call from the render loop.
+    /// </summary>
+    internal Task<byte[]> CaptureFrame()
+    {
+        var tcs = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
+        lock (_captureGate)
+        {
+            if (_capture is not null)
+            {
+                throw new InvalidOperationException("a frame capture is already in flight");
+            }
+
+            _capture = tcs;
+            _dumpRequested = true;
+        }
+
+        _scene.MarkDirty();
+        return tcs.Task;
+    }
+
+    /// <summary>Called on shutdown: a pending capture must not outlive the loop.</summary>
+    internal void CancelPendingCapture()
+    {
+        lock (_captureGate)
+        {
+            _capture?.TrySetCanceled();
+            _capture = null;
+        }
+    }
 
     /// <summary>
     /// Dumps what is on screen right now to a PPM file (diagnostics: the

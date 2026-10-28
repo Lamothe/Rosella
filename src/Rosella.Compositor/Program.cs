@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using Rosella.Compositor;
+using Rosella.Control;
 using Rosella.Drm;
 using Rosella.Server;
 
@@ -111,6 +112,22 @@ if (!OperatingSystem.IsWindows())
     });
 }
 
+// The control socket: the outside hand (rosella-driver) — frame capture,
+// state reads and input injection over the session's runtime directory.
+ControlServer? control = null;
+try
+{
+    control = new ControlServer(
+        Rosella.Control.ControlClient.DefaultSocketPath,
+        new ControlAdapter(scene, input.Router, scanout));
+    Console.WriteLine($"rosella: control socket at {control.SocketPath}");
+}
+catch (Exception exception)
+{
+    // A session without a control socket is still a session.
+    Console.Error.WriteLine($"rosella: control socket unavailable: {exception.Message}");
+}
+
 try
 {
     scanout.Run(cancellation.Token);
@@ -127,6 +144,8 @@ catch (Exception exception)
     Console.Error.WriteLine($"rosella: scanout failed: {exception.Message}");
 }
 
+scanout.CancelPendingCapture(); // a racing frame request must not outlive the loop
 scanout.Dispose(); // restores the previous display state
+control?.Dispose();
 Console.WriteLine("rosella: scanout stopped, previous display state restored");
 return 0;

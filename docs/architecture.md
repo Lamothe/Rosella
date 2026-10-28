@@ -168,6 +168,27 @@ Learned from libwayland and verified against real clients:
   object's version are never sent, and requests newer than the bound version
   are rejected. Binding always honours the client's requested version.
 
+## The control socket
+
+The compositor serves a second socket beside the Wayland one —
+`$XDG_RUNTIME_DIR/rosella-control.sock` — so outside automation (the
+author's assistant over SSH) can see and drive the desktop without a
+human at the keyboard. `tools/Rosella.Driver` (`rosella-driver`) speaks it:
+
+- `frame <out.ppm>` — the composited screen, captured through the render
+  loop's buffers (the same ground truth the SIGWINCH dump writes)
+- `table` / `state` — surface state and a session summary
+- `move` / `warp` / `button` / `key` / `click` / `tap-key` — input
+  injected as evdev-shaped events through the real input router, so
+  bindings, focus and hit-testing behave exactly as for a hand
+
+Protocol: one request line (≤256 bytes) per command; answers are
+`OK <n>\n` + n raw payload bytes or `ERR <message>\n`. The socket is
+0600 and unauthenticated like the Wayland socket — it can drive the
+seat, so it is session-trusted by design. One capture may be in flight
+at a time; the server caps concurrent clients at 8 and survives wedged
+or hostile clients without touching the compositor.
+
 ## Open risks
 
 - DRM/KMS + Mesa interop was the fiddliest native surface; M3 proved the

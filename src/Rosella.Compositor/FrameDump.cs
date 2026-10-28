@@ -10,6 +10,13 @@ internal static class FrameDump
     internal static void WritePpm(string path, int width, int height, uint pitch, ReadOnlySpan<byte> pixels)
     {
         using var stream = File.Create(path);
+        stream.Write(EncodePpm(width, height, pitch, pixels));
+    }
+
+    /// <summary>The same PPM as bytes, for the control socket's frame answers.</summary>
+    internal static byte[] EncodePpm(int width, int height, uint pitch, ReadOnlySpan<byte> pixels)
+    {
+        using var stream = new MemoryStream();
         var header = Encoding.ASCII.GetBytes($"P6\n{width} {height}\n255\n");
         stream.Write(header);
 
@@ -27,5 +34,7 @@ internal static class FrameDump
 
             stream.Write(row);
         }
+
+        return stream.ToArray();
     }
 }
