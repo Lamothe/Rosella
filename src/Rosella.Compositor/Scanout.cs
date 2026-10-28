@@ -134,7 +134,11 @@ internal sealed class Scanout : IDisposable
         }
     }
 
-    /// <summary>Runs the flip loop until the token is cancelled.</summary>
+    /// <summary>
+    /// Runs the flip loop until the token is cancelled. Composites only when
+    /// the scene is dirty (commits, cursor moves, shell state) or the clock
+    /// tick bound expires — an idle desktop burns no CPU.
+    /// </summary>
     public void Run(CancellationToken token)
     {
         RenderInto(0, frame: 0);
@@ -144,6 +148,11 @@ internal sealed class Scanout : IDisposable
         long frame = 1;
         while (!token.IsCancellationRequested)
         {
+            if (!_scene.WaitForDirty(TimeSpan.FromSeconds(1), token))
+            {
+                break;
+            }
+
             var back = 1 - front;
             RenderInto(back, frame);
             _device.PageFlip(_output.CrtcId, _framebuffers[back], (ulong)frame);

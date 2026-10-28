@@ -74,10 +74,12 @@ internal sealed class XdgToplevelHandler : IRequestHandler, IXdgRoleObject
 
             case "set_title":
                 Title = request.Arguments[0].AsNullableString() ?? "";
+                _surface.MarkSceneDirty();
                 break;
 
             case "set_app_id":
                 AppId = request.Arguments[0].AsNullableString() ?? "";
+                _surface.MarkSceneDirty();
                 break;
 
             case "show_window_menu":

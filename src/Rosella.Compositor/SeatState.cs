@@ -16,6 +16,7 @@ internal sealed class SeatState
     private readonly object _gate = new();
     private readonly List<(ClientSession Session, ServerObject Object)> _keyboards = new();
     private readonly List<(ClientSession Session, ServerObject Object)> _pointers = new();
+    private readonly List<(ClientSession Session, ServerObject Object)> _seats = new();
     private readonly HashSet<int> _heldKeys = new();
     private SurfaceHandler? _keyboardFocus;
     private SurfaceHandler? _pointerFocus;
@@ -33,14 +34,64 @@ internal sealed class SeatState
     private int _pointerX;
     private int _pointerY;
 
-    /// <summary>Set by the input thread before clients can bind.</summary>
-    internal bool HasKeyboardDevice { get; set; }
+    /// <summary>Set by the input thread before clients can bind (hot-plug).</summary>
+    internal volatile bool HasKeyboardDevice;
 
-    /// <summary>Set by the input thread before clients can bind.</summary>
-    internal bool HasPointerDevice { get; set; }
+    /// <summary>Set by the input thread before clients can bind (hot-plug).</summary>
+    internal volatile bool HasPointerDevice;
 
     /// <summary>wl_seat.capabilities: pointer=1, keyboard=2, touch=4.</summary>
     internal uint Capabilities => (HasPointerDevice ? 1u : 0u) | (HasKeyboardDevice ? 2u : 0u);
+
+    /// <summary>
+    /// Registers a bound wl_seat and runs its bind announce (name, then
+    /// capabilities) under the seat gate, so a hot-plug broadcast can neither
+    /// interleave nor miss this seat.
+    /// </summary>
+    internal void RegisterSeat(ClientSession session, ServerObject seat, Action announce)
+    {
+        lock (_gate)
+        {
+            _seats.Add((session, seat));
+            announce();
+        }
+    }
+
+    /// <summary>Unregisters a bound wl_seat (its object or session is going away).</summary>
+    internal void UnregisterSeat(ServerObject seat)
+    {
+        lock (_gate)
+        {
+            _seats.RemoveAll(entry => entry.Object == seat);
+        }
+    }
+
+    /// <summary>
+    /// Re-sends wl_seat.capabilities to every bound seat: hot-plug devices
+    /// change what the seat offers (wayland.xml: "capabilities... can change
+    /// over time"). Runs under the seat gate with one capability word per
+    /// broadcast (no half-updated sends); dead sessions are dropped as they
+    /// fail.
+    /// </summary>
+    internal void NotifyCapabilitiesChanged()
+    {
+        lock (_gate)
+        {
+            var capabilities = Capabilities;
+            for (var i = _seats.Count - 1; i >= 0; i--)
+            {
+                var (session, seat) = _seats[i];
+                try
+                {
+                    session.SendEvent(seat, "capabilities", WireArgument.UInt32(capabilities));
+                }
+                catch (Exception exception) when (exception is SocketException or ObjectDisposedException or IOException)
+                {
+                    _seats.RemoveAt(i);
+                }
+            }
+        }
+    }
 
     internal SurfaceHandler? KeyboardFocus
     {
@@ -97,37 +148,62 @@ internal sealed class SeatState
     /// </summary>
     internal bool TrySetCursor(ClientSession session, ServerObject pointer, uint serial, SurfaceHandler? surface, int hotspotX, int hotspotY)
     {
+        var applied = false;
+        string log;
         lock (_gate)
         {
             if (!_pointerEnterSerials.TryGetValue(pointer, out var enterSerial) || enterSerial != serial)
             {
-                return false;
+                log = $"rosella: set_cursor ignored (serial {serial} != enter {enterSerial})";
             }
-
-            var hasFocus = _pointerFocus is { Gone: false } focus && focus.Session == session;
-            var isCurrent = surface is not null && ReferenceEquals(surface, _cursorSurface);
-            if (!hasFocus && !isCurrent)
+            else
             {
-                return false;
+                var hasFocus = _pointerFocus is { Gone: false } focus && focus.Session == session;
+                var isCurrent = surface is not null && ReferenceEquals(surface, _cursorSurface);
+                if (!hasFocus && !isCurrent)
+                {
+                    log = "rosella: set_cursor ignored (no pointer focus for the requesting client)";
+                }
+                else
+                {
+                    _cursorOwner = session;
+                    _cursorSurface = surface;
+                    _cursorHotspot = (hotspotX, hotspotY);
+                    _cursorHidden = surface is null;
+                    log = $"rosella: set_cursor ok (surface {(surface is null ? "hidden" : surface.Id.ToString())} hotspot {hotspotX},{hotspotY})";
+                    applied = true;
+                }
             }
-
-            _cursorOwner = session;
-            _cursorSurface = surface;
-            _cursorHotspot = (hotspotX, hotspotY);
-            _cursorHidden = surface is null;
-            return true;
         }
+
+        // Outside the seat gate: stderr must never stall input or rendering.
+        Console.Error.WriteLine(log);
+        Dirty?.Invoke();
+        return applied;
     }
+
+    /// <summary>
+    /// Wired by the scene: a cursor image change must re-composite (fired
+    /// outside the seat gate — the scene gate nests under it elsewhere).
+    /// </summary>
+    internal Action? Dirty;
 
     /// <summary>Clears the cursor surface when it dies with its client.</summary>
     internal void ClearCursorIf(SurfaceHandler surface)
     {
+        bool cleared;
         lock (_gate)
         {
-            if (ReferenceEquals(_cursorSurface, surface))
+            cleared = ReferenceEquals(_cursorSurface, surface);
+            if (cleared)
             {
                 ResetCursor();
             }
+        }
+
+        if (cleared)
+        {
+            Dirty?.Invoke();
         }
     }
 

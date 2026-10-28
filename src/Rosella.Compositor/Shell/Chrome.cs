@@ -39,4 +39,44 @@ internal static class Chrome
         FillRect(pixels, width, height, stride, new Rect(rect.X, rect.Y, 1, rect.H), colour, scale);
         FillRect(pixels, width, height, stride, new Rect((rect.X + rect.W) - 1, rect.Y, 1, rect.H), colour, scale);
     }
+
+    /// <summary>
+    /// Filled ellipse by logical centre and radii, clipped. The shape is
+    /// sampled per logical pixel and drawn as scale-sized blocks, so it
+    /// stays crisp on any output scale.
+    /// </summary>
+    internal static void FillEllipse(Span<byte> pixels, int width, int height, int stride, int cx, int cy, int rx, int ry, uint colour, int scale = 1)
+    {
+        rx = Math.Max(1, rx);
+        ry = Math.Max(1, ry);
+        var rowPixels = MemoryMarshal.Cast<byte, uint>(pixels);
+        var strideWords = stride / 4;
+        for (var y = cy - ry; y <= cy + ry; y++)
+        {
+            var dy = y - cy;
+            var dx = (int)Math.Floor(rx * Math.Sqrt(Math.Max(0, 1 - ((double)(dy * dy) / (ry * ry)))));
+            for (var x = cx - dx; x <= cx + dx; x++)
+            {
+                for (var sy = 0; sy < scale; sy++)
+                {
+                    var row = (y * scale) + sy;
+                    if (row < 0 || row >= height)
+                    {
+                        continue;
+                    }
+
+                    for (var sx = 0; sx < scale; sx++)
+                    {
+                        var column = (x * scale) + sx;
+                        if (column < 0 || column >= width)
+                        {
+                            continue;
+                        }
+
+                        rowPixels[(row * strideWords) + column] = colour;
+                    }
+                }
+            }
+        }
+    }
 }

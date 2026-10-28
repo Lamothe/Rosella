@@ -9,6 +9,60 @@ public sealed class Scene
 {
     private readonly object _gate = new();
     private readonly List<SurfaceHandler> _surfaces = new();
+    private bool _dirty = true;
+
+    /// <summary>
+    /// Something on screen changed: the scanout loop composites on the next
+    /// wake instead of sleeping. Everything visible funnels through here —
+    /// commits, cursor moves, focus, shell state — so an idle desktop does
+    /// no rendering work at all.
+    /// </summary>
+    internal void MarkDirty()
+    {
+        lock (_gate)
+        {
+            _dirty = true;
+            Monitor.PulseAll(_gate);
+        }
+    }
+
+    /// <summary>
+    /// Waits until the scene is dirty or <paramref name="maxWait"/> passes
+    /// (bound for clock ticks). Returns false when the token is cancelled.
+    /// Consumes the dirty flag; a change arriving during the subsequent
+    /// render re-arms it and the next frame picks it up.
+    /// </summary>
+    internal bool WaitForDirty(TimeSpan maxWait, CancellationToken token)
+    {
+        // Cancellation must end the wait promptly: the token itself pulses
+        // the gate, so the loop below re-checks it on every wake.
+        using var wake = token.Register(() =>
+        {
+            lock (_gate)
+            {
+                Monitor.PulseAll(_gate);
+            }
+        });
+
+        lock (_gate)
+        {
+            while (!_dirty)
+            {
+                if (token.IsCancellationRequested)
+                {
+                    return false;
+                }
+
+                if (!Monitor.Wait(_gate, maxWait))
+                {
+                    break;
+                }
+            }
+
+            _dirty = false;
+            return !token.IsCancellationRequested;
+        }
+    }
 
     /// <summary>Registers a surface; it gets its position in the cascade.</summary>
     internal void Register(SurfaceHandler surface)
@@ -17,6 +71,8 @@ public sealed class Scene
         {
             surface.Position = Cascade(_surfaces.Count);
             _surfaces.Add(surface);
+            _dirty = true;
+            Monitor.PulseAll(_gate);
         }
     }
 
@@ -27,6 +83,8 @@ public sealed class Scene
             // Gone first: a stale hit-test reference must not be re-focused.
             surface.Gone = true;
             _surfaces.Remove(surface);
+            _dirty = true;
+            Monitor.PulseAll(_gate);
         }
 
         // Destroy paths only: the surface id is dying or gone, so focus is
@@ -49,8 +107,24 @@ public sealed class Scene
     /// <summary>The desktop shell, when one is wired in (taskbar and Start menu).</summary>
     internal Shell? Shell { get; set; }
 
-    /// <summary>The input seat, notified when surfaces hide or go away.</summary>
-    internal SeatState? Seat { get; set; }
+    /// <summary>
+    /// The input seat, notified when surfaces hide or go away. Setting it
+    /// wires the seat's dirty callback (cursor image changes re-composite).
+    /// </summary>
+    internal SeatState? Seat
+    {
+        get => _seat;
+        set
+        {
+            _seat = value;
+            if (value is not null)
+            {
+                value.Dirty = MarkDirty;
+            }
+        }
+    }
+
+    private SeatState? _seat;
 
     /// <summary>Where the cursor arrow's hotspot sits (guarded by the scene gate).</summary>
     internal (int X, int Y) Cursor
@@ -69,6 +143,8 @@ public sealed class Scene
             {
                 _cursor = value;
             }
+
+            MarkDirty();
         }
     }
 
@@ -92,6 +168,8 @@ public sealed class Scene
         {
             _surfaces.Remove(surface);
             _surfaces.Add(surface);
+            _dirty = true;
+            Monitor.PulseAll(_gate);
             return (WorkArea.X, WorkArea.Y);
         }
     }
@@ -268,6 +346,8 @@ public sealed class Scene
             if (_surfaces.Remove(surface))
             {
                 _surfaces.Add(surface);
+                _dirty = true;
+                Monitor.PulseAll(_gate);
             }
         }
     }

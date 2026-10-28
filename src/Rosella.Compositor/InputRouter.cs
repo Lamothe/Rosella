@@ -100,6 +100,7 @@ internal sealed class InputRouter
                     or InputConstants.ButtonRight
                     or InputConstants.ButtonMiddle:
                     HandleButton(e);
+                    _scene.MarkDirty();
                     break;
 
                 case InputConstants.EventKey when e.Code >= 0x100:
@@ -109,6 +110,7 @@ internal sealed class InputRouter
 
                 case InputConstants.EventKey:
                     HandleKey(e);
+                    _scene.MarkDirty();
                     break;
             }
         }

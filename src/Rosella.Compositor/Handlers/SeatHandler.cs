@@ -10,11 +10,12 @@ namespace Rosella.Compositor;
 /// capability the seat never had is missing_capability (0), per wayland.xml —
 /// that includes touch: Rosella is opinionated and has no touch support.
 /// </summary>
-internal sealed class SeatHandler : IRequestHandler, IBindEvents
+internal sealed class SeatHandler : IRequestHandler, IBindEvents, IDisposable
 {
     private const uint ErrorMissingCapability = 0;
 
     private readonly SeatState _seat;
+    private ServerObject? _bound;
 
     internal SeatHandler(SeatState seat)
     {
@@ -23,13 +24,30 @@ internal sealed class SeatHandler : IRequestHandler, IBindEvents
 
     public void SendBindEvents(ClientSession session, ServerObject bound)
     {
-        // wayland.xml: the name "should be sent before announcing capabilities".
-        if (bound.Version >= 2)
-        {
-            session.SendEvent(bound, "name", WireArgument.String("seat0"));
-        }
+        _bound = bound;
 
-        session.SendEvent(bound, "capabilities", WireArgument.UInt32(_seat.Capabilities));
+        // Registered and announced under the seat gate, so a hot-plug
+        // broadcast can neither interleave nor miss this seat. wayland.xml:
+        // the name "should be sent before announcing capabilities".
+        _seat.RegisterSeat(session, bound, () =>
+        {
+            if (bound.Version >= 2)
+            {
+                session.SendEvent(bound, "name", WireArgument.String("seat0"));
+            }
+
+            session.SendEvent(bound, "capabilities", WireArgument.UInt32(_seat.Capabilities));
+        });
+    }
+
+    /// <summary>Session end: stop the capability broadcast list.</summary>
+    public void Dispose()
+    {
+        if (_bound is not null)
+        {
+            _seat.UnregisterSeat(_bound);
+            _bound = null;
+        }
     }
 
     public void HandleRequest(ClientSession session, ServerObject target, DecodedMessage request)
@@ -57,6 +75,9 @@ internal sealed class SeatHandler : IRequestHandler, IBindEvents
                 throw new ProtocolErrorException(target.Id, ErrorMissingCapability, "the seat has no touch capability");
 
             case "release":
+                // Unregister before destroy: after delete_id the id may be
+                // recycled and a broadcast must never name it again.
+                Dispose();
                 session.DestroyObject(target);
                 break;
 

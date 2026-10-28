@@ -92,66 +92,87 @@ internal static class Blitter
         var targetStrideWords = targetStride / 4;
         var targetWords = target.Length / 4;
 
-        for (var targetY = startY; targetY < endY; targetY++)
+        // One source column per target column, computed once and reused for
+        // every row: the scaling divide is O(width) per blit, not per pixel.
+        // Rented, not allocated (this runs per window per frame); the used
+        // span is [0, columns) — rented arrays may be longer, and their tail
+        // is stale data that must never be indexed.
+        var columns = endX - startX;
+        var columnMap = System.Buffers.ArrayPool<int>.Shared.Rent(columns);
+        try
         {
-            // Nearest-neighbour source row for this target row.
-            var sourceRow = (int)(((long)(targetY - y) * sourceHeight) / destinationHeight);
-            if (sourceRow < 0 || sourceRow >= sourceHeight)
-            {
-                continue;
-            }
-
-            var sourceRowOffset = sourceRow * sourceStrideWords;
-            var targetRowOffset = targetY * targetStrideWords;
             for (var targetX = startX; targetX < endX; targetX++)
             {
                 var sourceColumn = (int)(((long)(targetX - x) * sourceWidth) / destinationWidth);
-                if (sourceColumn < 0 || sourceColumn >= sourceWidth)
-                {
-                    continue;
-                }
-
-                var sourceIndex = sourceRowOffset + sourceColumn;
-                if ((uint)sourceIndex >= (uint)sourcePixels.Length)
-                {
-                    continue;
-                }
-
-                var sourceColour = sourcePixels[sourceIndex];
-                var targetIndex = targetRowOffset + targetX;
-                if ((uint)targetIndex >= (uint)targetWords)
-                {
-                    continue;
-                }
-
-                if (opaque)
-                {
-                    // xrgb: the alpha byte is undefined; the scanout ignores
-                    // it — copy verbatim, exactly like the 1:1 fast path.
-                    targetPixels[targetIndex] = sourceColour;
-                    continue;
-                }
-
-                var alpha = sourceColour >> 24;
-                if (alpha == 0)
-                {
-                    continue;
-                }
-
-                if (alpha == 255)
-                {
-                    targetPixels[targetIndex] = sourceColour;
-                    continue;
-                }
-
-                // Source-over with premultiplied source: d = s + d * (1 - a).
-                var inverse = 255 - alpha;
-                var destination = targetPixels[targetIndex];
-                var red = ((sourceColour >> 16) & 0xFF) + ((((destination >> 16) & 0xFF) * inverse) / 255);
-                var green = ((sourceColour >> 8) & 0xFF) + ((((destination >> 8) & 0xFF) * inverse) / 255);
-                var blue = (sourceColour & 0xFF) + (((destination & 0xFF) * inverse) / 255);
-                targetPixels[targetIndex] = 0xFF000000u | ((uint)red << 16) | ((uint)green << 8) | (uint)blue;
+                columnMap[targetX - startX] = sourceColumn >= 0 && sourceColumn < sourceWidth ? sourceColumn : -1;
             }
+
+            for (var targetY = startY; targetY < endY; targetY++)
+            {
+                // Nearest-neighbour source row for this target row.
+                var sourceRow = (int)(((long)(targetY - y) * sourceHeight) / destinationHeight);
+                if (sourceRow < 0 || sourceRow >= sourceHeight)
+                {
+                    continue;
+                }
+
+                var sourceRowOffset = sourceRow * sourceStrideWords;
+                var targetRowOffset = targetY * targetStrideWords;
+                for (var i = 0; i < columns; i++)
+                {
+                    var sourceColumn = columnMap[i];
+                    if (sourceColumn < 0)
+                    {
+                        continue;
+                    }
+
+                    var targetX = startX + i;
+                    var sourceIndex = sourceRowOffset + sourceColumn;
+                    if ((uint)sourceIndex >= (uint)sourcePixels.Length)
+                    {
+                        continue;
+                    }
+
+                    var sourceColour = sourcePixels[sourceIndex];
+                    var targetIndex = targetRowOffset + targetX;
+                    if ((uint)targetIndex >= (uint)targetWords)
+                    {
+                        continue;
+                    }
+
+                    if (opaque)
+                    {
+                        // xrgb: the alpha byte is undefined; the scanout ignores
+                        // it — copy verbatim, exactly like the 1:1 fast path.
+                        targetPixels[targetIndex] = sourceColour;
+                        continue;
+                    }
+
+                    var alpha = sourceColour >> 24;
+                    if (alpha == 0)
+                    {
+                        continue;
+                    }
+
+                    if (alpha == 255)
+                    {
+                        targetPixels[targetIndex] = sourceColour;
+                        continue;
+                    }
+
+                    // Source-over with premultiplied source: d = s + d * (1 - a).
+                    var inverse = 255 - alpha;
+                    var destination = targetPixels[targetIndex];
+                    var red = ((sourceColour >> 16) & 0xFF) + ((((destination >> 16) & 0xFF) * inverse) / 255);
+                    var green = ((sourceColour >> 8) & 0xFF) + ((((destination >> 8) & 0xFF) * inverse) / 255);
+                    var blue = (sourceColour & 0xFF) + (((destination & 0xFF) * inverse) / 255);
+                    targetPixels[targetIndex] = 0xFF000000u | ((uint)red << 16) | ((uint)green << 8) | (uint)blue;
+                }
+            }
+        }
+        finally
+        {
+            System.Buffers.ArrayPool<int>.Shared.Return(columnMap);
         }
     }
 }

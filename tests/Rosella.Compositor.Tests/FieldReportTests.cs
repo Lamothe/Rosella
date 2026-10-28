@@ -507,6 +507,76 @@ public class FieldReportTests
         Assert.Equal(0xFF000000u, PixelAt(render, 1920 * 4, 200, 100));
     }
 
+    // --- Idle compositing (the CPU-burn fix) ------------------------------
+
+    [Fact]
+    public async Task SceneWaitForDirty_WakesOnMarkDirty_AndConsumesTheFlag()
+    {
+        var scene = new Scene();
+        Assert.True(scene.WaitForDirty(TimeSpan.FromMilliseconds(50), CancellationToken.None), "initial state must be dirty");
+
+        // Consumed: the second wait times out without a new mark.
+        Assert.True(scene.WaitForDirty(TimeSpan.FromMilliseconds(50), CancellationToken.None));
+
+        // A background MarkDirty wakes a waiting scanout immediately.
+        var waiter = Task.Run(() => scene.WaitForDirty(TimeSpan.FromSeconds(30), CancellationToken.None));
+        await Task.Delay(50);
+        Assert.False(waiter.IsCompleted, "waiter must still be parked");
+        scene.MarkDirty();
+        var woke = await Task.WhenAny(waiter, Task.Delay(2000)) == waiter;
+        Assert.True(woke, "MarkDirty must wake the scanout");
+        Assert.True(await waiter);
+    }
+
+    [Fact]
+    public async Task SceneWaitForDirty_ReturnsFalseWhenCancelled()
+    {
+        var scene = new Scene();
+        scene.WaitForDirty(TimeSpan.FromMilliseconds(50), CancellationToken.None); // consume
+        using var cancellation = new CancellationTokenSource();
+        var waiter = Task.Run(() => scene.WaitForDirty(TimeSpan.FromSeconds(30), cancellation.Token));
+        await Task.Delay(50);
+        cancellation.Cancel();
+        var ended = await Task.WhenAny(waiter, Task.Delay(2000)) == waiter;
+        Assert.True(ended, "cancellation must end the wait");
+        Assert.False(await waiter);
+    }
+
+    // --- Hot-plug capabilities (the dead-mouse fix) -----------------------
+
+    [Fact]
+    public void NotifyCapabilitiesChanged_ReachesBoundSeats()
+    {
+        using var harness = new Harness();
+
+        // Bind manually (BindSeat's round trip would discard the events):
+        // wayland.xml: name first, then the bind-time capabilities.
+        harness.Client.SendRequest(2, "wl_registry", "bind", WireArgument.UInt32(4), WireArgument.String("wl_seat"), WireArgument.UInt32(7), WireArgument.NewId(40));
+        harness.Client.RegisterObject(40, "wl_seat");
+        harness.Client.ReadUntil(40, "name");
+        var initial = harness.Client.ReadUntil(40, "capabilities");
+        Assert.Equal(3u, initial.Arguments[0].AsUInt32());
+
+        // The device set changed after the bind: the seat re-announces.
+        harness.Seat.HasPointerDevice = false;
+        harness.Seat.NotifyCapabilitiesChanged();
+        var updated = harness.Client.ReadUntil(40, "capabilities");
+        Assert.Equal(2u, updated.Arguments[0].AsUInt32());
+    }
+
+    [Fact]
+    public void UnregisteredSeats_AreNotBroadcastTo()
+    {
+        using var harness = new Harness();
+        harness.BindSeat(40, 41);
+
+        // Session teardown unregisters the seat; a later broadcast must not
+        // error the compositor (the dead socket is dropped silently).
+        harness.Seat.HasPointerDevice = false;
+        harness.Client.Dispose();
+        harness.Seat.NotifyCapabilitiesChanged();
+    }
+
     private sealed class Harness : IDisposable
     {
         private readonly DisplayServer _server;

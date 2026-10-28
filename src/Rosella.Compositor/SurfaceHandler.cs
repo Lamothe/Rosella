@@ -267,6 +267,9 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
 
         // The object still exists, so the seat may send leave events.
         _scene.OnSurfaceHidden(this, canSendLeave: true);
+
+        // The window left the scene; the frame must reflect it.
+        _scene.MarkDirty();
     }
 
     public void Bind(ClientSession session, ServerObject self)
@@ -589,6 +592,10 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
             // seat sends proper leave events.
             _scene.OnSurfaceHidden(this, canSendLeave: true);
         }
+
+        // Every commit earns the next composited frame (frame callbacks
+        // fire "when the next frame is displayed after the commit").
+        _scene.MarkDirty();
     }
 
     private void Destroy(ClientSession session, ServerObject target)

@@ -25,11 +25,9 @@ internal static class Background
         var strideWords = stride / 4;
         for (var y = 0; y < height; y++)
         {
-            var colour = ColourAt(y, height);
-            for (var x = 0; x < width; x++)
-            {
-                rowPixels[(y * strideWords) + x] = colour;
-            }
+            // The gradient is one solid colour per row: a span fill is the
+            // whole job (JIT memset), not width scalar writes.
+            rowPixels.Slice(y * strideWords, width).Fill(ColourAt(y, height));
         }
     }
 }

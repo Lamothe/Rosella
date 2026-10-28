@@ -80,6 +80,9 @@ internal sealed class XdgSurfaceHandler : IRequestHandler, ISurfaceRole, IDispos
     internal (int X, int Y) WindowPosition => _windowPosition;
 
     /// <summary>The work area of the output this surface is on (logical pixels).</summary>
+    /// <summary>Marks the scene dirty (taskbar labels track title/app id).</summary>
+    internal void MarkSceneDirty() => _scene.MarkDirty();
+
     internal (int Width, int Height) WorkArea
     {
         get
@@ -441,7 +444,20 @@ internal sealed class XdgSurfaceHandler : IRequestHandler, ISurfaceRole, IDispos
         var placeY = _windowPosition.Y - (geometry.Height > 0 ? (int)(((long)geometry.Y * rectHeight) / geometry.Height) : geometry.Y);
         surface.Place(placeX, placeY, placeWidth, placeHeight);
         surface.SetVisible(_windowPosition.X, _windowPosition.Y, rectWidth, rectHeight);
+
+        // Diagnostics: the mapping the compositor settled on, logged when it
+        // changes (not per commit) — the ground truth for geometry reports.
+        var placed = (contentWidth, contentHeight, geometry.X, geometry.Y, geometry.Width, geometry.Height, placeX, placeY, placeWidth, placeHeight);
+        if (_lastPlaceLog != placed)
+        {
+            _lastPlaceLog = placed;
+            Console.Error.WriteLine(
+                $"rosella: place: content {contentWidth}x{contentHeight} geometry {geometry.X},{geometry.Y} {geometry.Width}x{geometry.Height} " +
+                $"policy {rectWidth}x{rectHeight} -> place {placeX},{placeY} {placeWidth}x{placeHeight}");
+        }
     }
+
+    private (int ContentWidth, int ContentHeight, int GeometryX, int GeometryY, int GeometryW, int GeometryH, int PlaceX, int PlaceY, int PlaceW, int PlaceH)? _lastPlaceLog;
 
     /// <summary>Dismisses this popup: popup_done to the client, then unmap.</summary>
     internal void DismissPopup()

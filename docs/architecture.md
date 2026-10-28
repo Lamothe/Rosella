@@ -201,7 +201,10 @@ Learned from libwayland and verified against real clients:
   delivery to others (accepted on a single-seat desktop); kernel autorepeat
   is dropped (clients repeat via repeat_info); no touch support; a keyboard
   bound mid-focus receives enter with the seat's last held-keys snapshot;
-  input device hot-plug is not handled (the device set is fixed at startup).
+  input devices are polled for hot-plug once a second (a replug can lag up
+  to a second, and udev permission lag is retried on later polls); the idle
+  compositor composites only on scene changes and wakes at most once a
+  second for the clock tick.
 - The M2/M3 code has been reviewed three times at the code level; M4 adds the
   surface layer, reviewed once. Only `wayland-info` and `SmokeClient` have
   exercised the protocol as clients so far — toolkits (GTK/Qt) will stress it

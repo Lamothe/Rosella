@@ -100,21 +100,26 @@ internal static class Bar
         BitmapFont.DrawText(pixels, clipW, clipH, stride, clock, (layout.Clock.X + Pad) * scale, clockY * scale, TextColour, scale);
     }
 
-    /// <summary>The Start button icon: four small squares, Windows style.</summary>
+    /// <summary>
+    /// The Start button icon: an apple silhouette with a bite and a leaf
+    /// (Mac style, per the desktop's opinionated aesthetic). The bite is
+    /// punched in the bar background the icon sits on.
+    /// </summary>
     private static void DrawStartIcon(Span<byte> pixels, int clipW, int clipH, int stride, int scale, Rect start)
     {
-        const int cell = 8;
-        const int gap = 3;
-        var total = (cell * 2) + gap;
-        var x0 = start.X + ((start.W - total) / 2);
-        var y0 = start.Y + ((start.H - total) / 2);
-        for (var row = 0; row < 2; row++)
-        {
-            for (var col = 0; col < 2; col++)
-            {
-                Chrome.FillRect(pixels, clipW, clipH, stride, new Rect(x0 + (col * (cell + gap)), y0 + (row * (cell + gap)), cell, cell), StartIconColour, scale);
-            }
-        }
+        var cx = start.X + (start.W / 2);
+        var cy = start.Y + (start.H / 2);
+
+        // Body: one roundish ellipse, slightly low in the box.
+        Chrome.FillEllipse(pixels, clipW, clipH, stride, cx, cy + 2, 8, 8, StartIconColour, scale);
+
+        // Bite: punch a small ellipse out of the body's right edge.
+        Chrome.FillEllipse(pixels, clipW, clipH, stride, cx + 7, cy + 1, 3, 3, BarBackground, scale);
+
+        // Leaf and stem above the body (overlapping it slightly, so the
+        // silhouette has no hairline gaps at small sizes).
+        Chrome.FillEllipse(pixels, clipW, clipH, stride, cx + 3, cy - 7, 4, 2, StartIconColour, scale);
+        Chrome.FillRect(pixels, clipW, clipH, stride, new Rect(cx - 1, cy - 9, 2, 5), StartIconColour, scale);
     }
 }
 

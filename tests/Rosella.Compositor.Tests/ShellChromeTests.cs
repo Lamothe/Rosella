@@ -87,4 +87,43 @@ public class ShellChromeTests
         var (rect, _) = layout.Tasks[0];
         Assert.Equal(0xFF7B86E8, PixelAt(pixels, width * 4, rect.X + (rect.W / 2), rect.Y + rect.H - 1));
     }
+
+    [Fact]
+    public void StartIcon_IsAnAppleWithABiteAndALeaf()
+    {
+        var w = 600;
+        var h = 48;
+        var stride = w * 4;
+        var buffer = new byte[stride * h];
+        var layout = Bar.ComputeLayout(w, h, "14:33  28/10/2026", []);
+        Bar.Draw(buffer, w, h, stride, 1, layout, "14:33  28/10/2026", null);
+        var cx = layout.Start.X + (layout.Start.W / 2);
+        var cy = layout.Start.Y + (layout.Start.H / 2);
+
+        // Body: icon pixels well inside the start rect.
+        Assert.Equal(0xFFE8E8ECu, PixelAt(buffer, stride, cx, cy + 2));
+        Assert.Equal(0xFFE8E8ECu, PixelAt(buffer, stride, cx - 4, cy + 2));
+
+        // The bite: a notch punched out of the body's right edge at the
+        // punch centre row, while the body extends further right below it.
+        Assert.Equal(0xFF16171Eu, PixelAt(buffer, stride, cx + 5, cy + 1));
+        Assert.Equal(0xFFE8E8ECu, PixelAt(buffer, stride, cx + 6, cy + 4));
+
+        // Leaf and stem above the body.
+        Assert.Equal(0xFFE8E8ECu, PixelAt(buffer, stride, cx + 3, cy - 7));
+        Assert.Equal(0xFFE8E8ECu, PixelAt(buffer, stride, cx, cy - 8));
+
+        // Everything painted left of the clock zone lives inside the start
+        // button's rect (the clock/task labels share the icon's colour).
+        for (var y = 0; y < h; y++)
+        {
+            for (var x = 0; x < layout.Clock.X - 4; x++)
+            {
+                if (PixelAt(buffer, stride, x, y) == 0xFFE8E8ECu)
+                {
+                    Assert.True(layout.Start.Contains(x, y), $"icon pixel outside the start rect at {x},{y}");
+                }
+            }
+        }
+    }
 }
