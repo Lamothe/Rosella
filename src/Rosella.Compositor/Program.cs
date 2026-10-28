@@ -27,13 +27,10 @@ scene.Shell = shell;
 // The device set is fixed before clients bind, so wl_seat capabilities are
 // right from the first moment (no hot-plug in M6).
 using var cancellation = new CancellationTokenSource();
-using var input = new InputThread(scene, seat, () => cancellation.Cancel(), shell);
-input.Discover();
 
-using var server = new DisplayServer(socketPath, handlerFactory: new CompositorHandlerFactory(scene, seat));
-server.Start();
-Console.WriteLine($"rosella: display server listening on {socketPath}");
-
+// The output is detected first: its physical size, mode and computed
+// scale are what clients hear over wl_output, so they must be fixed
+// before the server accepts its first connection.
 var detection = Scanout.Detect();
 if (detection is null)
 {
@@ -41,8 +38,34 @@ if (detection is null)
     return 1;
 }
 
-// Windows are placed relative to the real output.
-scene.OutputSize = (detection.Value.Output.Mode.HDisplay, detection.Value.Output.Mode.VDisplay);
+var output = detection.Value.Output;
+var scale = ScalePolicy.For(output.Mode.HDisplay, output.Mode.VDisplay, output.Connector.MmWidth, output.Connector.MmHeight);
+
+// Everything in the scene is logical pixels: the physical scanout is
+// Scale times that. Windows, chrome and input all live in logical space.
+scene.Scale = scale;
+scene.OutputSize = (output.Mode.HDisplay / scale, output.Mode.VDisplay / scale);
+var outputInfo = new OutputInfo(
+    output.Mode.HDisplay,
+    output.Mode.VDisplay,
+    output.Connector.MmWidth,
+    output.Connector.MmHeight,
+    (int)(output.Mode.VRefresh * 1000),
+    scale,
+    output.Connector.TypeName,
+    output.Mode.Name,
+    $"{output.Connector.TypeName}-{output.Connector.TypeId}");
+
+using var input = new InputThread(scene, seat, () => cancellation.Cancel(), shell);
+input.Discover();
+
+using var server = new DisplayServer(
+    socketPath,
+    handlerFactory: new CompositorHandlerFactory(scene, seat, outputInfo));
+server.Start();
+Console.WriteLine($"rosella: display server listening on {socketPath}");
+Console.WriteLine($"rosella: output scale {scale} ({scene.OutputSize.Width}x{scene.OutputSize.Height} logical)");
+
 input.Router.PlaceCursor(scene.OutputSize.Width / 2, scene.OutputSize.Height / 2);
 
 // Signal handling is registered first so it stays alive through cleanup and
@@ -64,7 +87,6 @@ Console.CancelKeyPress += (_, eventArgs) =>
 };
 
 using var device = detection.Value.Device;
-var output = detection.Value.Output;
 Console.WriteLine($"rosella: driving {output.Connector} at {output.Mode} via CRTC {output.CrtcId}");
 input.Start();
 

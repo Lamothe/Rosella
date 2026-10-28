@@ -15,12 +15,8 @@ public class XdgShellTests
 
     // Object ids: surface 8, xdg_surface 11, toplevel 12, popup 13,
     // positioner 14, popup surface 15, popup xdg_surface 16.
-    // Policy: first window centred on the 1920×1080 default output.
-    private const int FirstX = (1920 - Width) / 2;
-
-    // Centred in the work area: 8px margins, the taskbar side only applies
-    // when a shell is present (this harness runs bare).
-    private const int FirstY = 8 + ((1080 - 8 - Height) / 2);
+    // Policy: every toplevel opens maximised to the work area (the full
+    // output here — this harness runs bare, without a shell).
 
     [Fact]
     public void Toplevel_FollowsTheConfigureAckMapDance()
@@ -28,19 +24,25 @@ public class XdgShellTests
         using var harness = new Harness();
         harness.CreateToplevel(8, 11, 12);
 
-        // Initial commit: the role's configure first, then the serial.
+        // Initial commit: the role's configure first, then the serial. The
+        // configure carries the work-area size and the maximized state —
+        // windows open fullscreen, always.
         harness.Client.SendRequest(8, "wl_surface", "commit");
         var roleConfigure = harness.Client.ReadUntil(12, "configure");
-        Assert.Equal(0, roleConfigure.Arguments[0].AsInt32()); // client picks its size
-        Assert.Equal(0, roleConfigure.Arguments[1].AsInt32());
+        Assert.Equal(1920, roleConfigure.Arguments[0].AsInt32());
+        Assert.Equal(1080, roleConfigure.Arguments[1].AsInt32());
+        var states = roleConfigure.Arguments[2].AsArray().ToArray();
+        Assert.Equal(BitConverter.GetBytes(1u), states); // maximized; activated follows focus
         var configure = harness.Client.ReadUntil(11, "configure");
         var serial = configure.Arguments[0].AsUInt32();
 
-        // ack + buffer commit = mapped at the policy position.
+        // ack + buffer commit = mapped, filling the work area.
         harness.Client.SendRequest(11, "xdg_surface", "ack_configure", WireArgument.UInt32(serial));
         harness.CommitBuffer(8);
         var surface = CompositorSessionTests.WaitFor(() => harness.Scene.Surfaces.FirstOrDefault(), value => value is { IsMapped: true })!;
-        Assert.Equal((FirstX, FirstY), surface.Position);
+        Assert.Equal((0, 0), surface.Position);
+        Assert.Equal(1920, surface.Width);
+        Assert.Equal(1080, surface.Height);
         Assert.Equal(harness.Content, surface.Content);
     }
 
@@ -111,9 +113,13 @@ public class XdgShellTests
 
         var surface = harness.MapWindow(8, 11, 12);
 
-        // The visible corner is centred for the geometry size (20×20); the
-        // buffer origin is shifted back by the geometry offset (4, 6).
-        Assert.Equal((((1920 - 20) / 2) - 4, 8 + ((1080 - 8 - 20) / 2) - 6), surface.Position);
+        // The geometry rect (20×20 of the 32×32 content) fills the work
+        // area: content scales by 1920/20 = 96 and 1080/20 = 54, and the
+        // content origin is pulled back by the scaled geometry offset.
+        Assert.Equal((0, 0), (surface.Visible.X, surface.Visible.Y));
+        Assert.Equal((1920, 1080), (surface.Visible.W, surface.Visible.H));
+        Assert.Equal((-4 * 96, -6 * 54), surface.Position);
+        Assert.Equal((32 * 96, 32 * 54), (surface.Width, surface.Height));
     }
 
     [Fact]
@@ -163,7 +169,7 @@ public class XdgShellTests
     }
 
     [Fact]
-    public void SecondWindow_CascadesFromTheFirst()
+    public void SecondWindow_IsRaisedAboveTheFirst()
     {
         using var harness = new Harness();
         harness.CreateToplevel(8, 11, 12);
@@ -171,8 +177,14 @@ public class XdgShellTests
         harness.CreateToplevel(20, 21, 22);
         var second = harness.MapWindow(20, 21, 22);
 
-        Assert.Equal((FirstX, FirstY), first.Position);
-        Assert.Equal((FirstX + 48, FirstY + 48), second.Position);
+        // Both open maximised at the work-area origin; the newer one covers
+        // the older, which is exactly how an always-fullscreen desktop
+        // stacks. Order in the scene is the raise order.
+        Assert.Equal(first.Position, second.Position);
+        Assert.Equal((0, 0), second.Position);
+        var surfaces = harness.Scene.Surfaces;
+        Assert.Equal(8u, surfaces[surfaces.Count - 2].Id);
+        Assert.Equal(20u, surfaces[^1].Id);
     }
 
     [Fact]

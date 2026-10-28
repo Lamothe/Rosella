@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Net.Sockets;
+using Microsoft.Win32.SafeHandles;
 using Rosella.Protocol;
 using Rosella.Transport;
 
@@ -27,9 +28,9 @@ internal static class Program
     private const uint XdgToplevelId = 12;
     private const uint FirstFrameCallbackId = 13;
 
-    private const int Width = 640;
-    private const int Height = 360;
-    private const int Stride = Width * 4;
+    private static int Width = 640;
+    private static int Height = 360;
+    private static int Stride => Width * 4;
 
     private static readonly Dictionary<uint, string> Interfaces = new()
     {
@@ -84,16 +85,10 @@ internal static class Program
 
         var globals = Handshake(connection, stream);
 
-        // The pool: a temp file handed to the compositor as a descriptor.
-        var poolPath = Path.GetTempFileName();
-        File.WriteAllBytes(poolPath, new byte[Stride * Height]);
-        using var poolHandle = File.OpenHandle(poolPath, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite);
-
-        Request(connection, ShmId, "wl_shm", "create_pool", WireArgument.NewId(PoolId), WireArgument.FileDescriptor(unchecked((int)poolHandle.DangerousGetHandle())), WireArgument.Int32(Stride * Height));
-        Request(connection, PoolId, "wl_shm_pool", "create_buffer", WireArgument.NewId(BufferId), WireArgument.Int32(0), WireArgument.Int32(Width), WireArgument.Int32(Height), WireArgument.Int32(Stride), WireArgument.UInt32(1));
-
         // The xdg-shell window: surface + xdg_surface + toplevel, then the
-        // initial buffer-less commit that triggers the configure dance.
+        // initial buffer-less commit that triggers the configure dance. The
+        // pool is allocated after the configure arrives: windows open
+        // maximised to the work area, and the buffer is sized to match.
         Request(connection, CompositorId, "wl_compositor", "create_surface", WireArgument.NewId(SurfaceId));
         Request(connection, WmBaseId, "xdg_wm_base", "get_xdg_surface", WireArgument.NewId(XdgSurfaceId), WireArgument.Object(SurfaceId));
         Request(connection, XdgSurfaceId, "xdg_surface", "get_toplevel", WireArgument.NewId(XdgToplevelId));
@@ -104,7 +99,10 @@ internal static class Program
 
         var frame = 0;
         var mapped = false;
-        var buffer = new byte[Stride * Height];
+        var buffer = Array.Empty<byte>();
+        SafeFileHandle? poolHandle = null;
+        var pendingWidth = Width;
+        var pendingHeight = Height;
         var receiveBuffer = new byte[4096];
         var receiveDescriptors = new int[WireConnection.MaxDescriptorsPerReceive];
         while (true)
@@ -112,7 +110,7 @@ internal static class Program
             if (mapped)
             {
                 Draw(buffer, frame);
-                RandomAccess.Write(poolHandle, new ReadOnlyMemory<byte>[] { buffer }, 0);
+                RandomAccess.Write(poolHandle!, new ReadOnlyMemory<byte>[] { buffer }, 0);
             }
 
             foreach (var message in ReadEvents(connection, stream, receiveBuffer, receiveDescriptors))
@@ -133,7 +131,18 @@ internal static class Program
                 if (message.ObjectId == XdgToplevelId && eventName == "close")
                 {
                     Console.WriteLine("rosella-smoke: compositor closed the window");
+                    poolHandle?.Dispose();
                     return;
+                }
+
+                // The role's configure carries the size the client should
+                // adopt: windows open maximised to the work area, and a
+                // well-behaved client resizes its buffer to match.
+                if (message.ObjectId == XdgToplevelId && eventName == "configure")
+                {
+                    pendingWidth = message.Arguments[0].AsInt32();
+                    pendingHeight = message.Arguments[1].AsInt32();
+                    continue;
                 }
 
                 if (message.ObjectId == XdgSurfaceId && eventName == "configure")
@@ -143,11 +152,20 @@ internal static class Program
                     if (!mapped)
                     {
                         mapped = true;
+                        if (pendingWidth > 0 && pendingHeight > 0)
+                        {
+                            Width = pendingWidth;
+                            Height = pendingHeight;
+                        }
+
+                        buffer = new byte[Stride * Height];
+                        poolHandle = CreatePool(connection, buffer.Length);
+                        Request(connection, PoolId, "wl_shm_pool", "create_buffer", WireArgument.NewId(BufferId), WireArgument.Int32(0), WireArgument.Int32(Width), WireArgument.Int32(Height), WireArgument.Int32(Stride), WireArgument.UInt32(1));
                         Request(connection, SurfaceId, "wl_surface", "attach", WireArgument.Object(BufferId), WireArgument.Int32(0), WireArgument.Int32(0));
                         Request(connection, SurfaceId, "wl_surface", "damage", WireArgument.Int32(0), WireArgument.Int32(0), WireArgument.Int32(Width), WireArgument.Int32(Height));
                         Request(connection, SurfaceId, "wl_surface", "frame", WireArgument.NewId(AllocateCallback()));
                         Request(connection, SurfaceId, "wl_surface", "commit");
-                        Console.WriteLine("rosella-smoke: window mapped — look for it on the output");
+                        Console.WriteLine($"rosella-smoke: window mapped at {Width}x{Height} — look for it on the output");
                     }
 
                     continue;
@@ -250,6 +268,20 @@ internal static class Program
 
             stream.Push(buffer.AsSpan(0, received), descriptors.AsSpan(0, descriptorCount));
         }
+    }
+
+    /// <summary>
+    /// Creates the shm pool from a temp file handed over as a descriptor,
+    /// sized exactly for the buffer. Returns the open handle: the draw loop
+    /// writes frames through it.
+    /// </summary>
+    private static SafeFileHandle CreatePool(WireConnection connection, int size)
+    {
+        var poolPath = Path.GetTempFileName();
+        File.WriteAllBytes(poolPath, new byte[size]);
+        var poolHandle = File.OpenHandle(poolPath, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite);
+        Request(connection, ShmId, "wl_shm", "create_pool", WireArgument.NewId(PoolId), WireArgument.FileDescriptor(unchecked((int)poolHandle.DangerousGetHandle())), WireArgument.Int32(size));
+        return poolHandle;
     }
 
     private static void Request(WireConnection connection, uint objectId, string interfaceName, string requestName, params WireArgument[] arguments)

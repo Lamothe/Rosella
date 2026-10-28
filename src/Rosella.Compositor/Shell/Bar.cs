@@ -8,7 +8,8 @@ internal sealed record BarTask(string Label, SurfaceHandler Surface);
 /// <summary>
 /// The taskbar: Windows 11 style — a bottom strip with a Start button, one
 /// button per window, and the clock at the right. No workspaces, no
-/// configuration.
+/// configuration. Layout is logical pixels (the input thread hit-tests the
+/// same rectangles); drawing scales by the output factor.
 /// </summary>
 internal static class Bar
 {
@@ -62,33 +63,45 @@ internal static class Bar
         return new BarLayout(start, clockRect, [.. list]);
     }
 
-    internal static void Draw(Span<byte> pixels, int width, int height, int stride, BarLayout layout, string clock, SurfaceHandler? focused)
+    internal static void Draw(Span<byte> pixels, int width, int height, int stride, int scale, BarLayout layout, string clock, SurfaceHandler? focused)
     {
-        var barY = height - Shell.BarHeight;
-        Chrome.FillRect(pixels, width, height, stride, new Rect(0, barY, width, Shell.BarHeight), BarBackground);
-        Chrome.FillRect(pixels, width, height, stride, new Rect(0, barY, width, 1), BarHairline);
+        // Chrome primitives take logical rects and the output scale. The
+        // clip bounds are the true physical buffer extent (stride and row
+        // count), so a mode not divisible by the scale still gets full
+        // bleed — full-width rects round up to cover the remainder.
+        var clipW = stride / 4;
+        var clipH = pixels.Length / stride;
+        var fullW = (clipW + scale - 1) / scale;
 
-        DrawStartIcon(pixels, width, height, stride, layout.Start);
+        // Chrome primitives take logical rects and the output scale.
+        var barY = height - Shell.BarHeight;
+
+        // + scale on the height overshoots the bottom edge on purpose:
+        // clipped to clipH, so a non-divisible mode has no un-drawn strip.
+        Chrome.FillRect(pixels, clipW, clipH, stride, new Rect(0, barY, fullW, Shell.BarHeight + scale), BarBackground, scale);
+        Chrome.FillRect(pixels, clipW, clipH, stride, new Rect(0, barY, fullW, 1), BarHairline, scale);
+
+        DrawStartIcon(pixels, clipW, clipH, stride, scale, layout.Start);
 
         foreach (var (rect, task) in layout.Tasks)
         {
             var isFocused = task.Surface == focused;
-            Chrome.FillRect(pixels, width, height, stride, rect, isFocused ? TaskFocusedBackground : TaskBackground);
+            Chrome.FillRect(pixels, clipW, clipH, stride, rect, isFocused ? TaskFocusedBackground : TaskBackground, scale);
             if (isFocused)
             {
-                Chrome.FillRect(pixels, width, height, stride, new Rect(rect.X, rect.Y + rect.H - 2, rect.W, 2), TaskFocusedAccent);
+                Chrome.FillRect(pixels, clipW, clipH, stride, new Rect(rect.X, rect.Y + rect.H - 2, rect.W, 2), TaskFocusedAccent, scale);
             }
 
             var textY = rect.Y + ((rect.H - BitmapFont.GlyphHeight) / 2);
-            BitmapFont.DrawText(pixels, width, height, stride, task.Label, rect.X + 12, textY, TextColour, 1);
+            BitmapFont.DrawText(pixels, clipW, clipH, stride, task.Label, (rect.X + 12) * scale, textY * scale, TextColour, scale);
         }
 
         var clockY = layout.Clock.Y + ((layout.Clock.H - BitmapFont.GlyphHeight) / 2);
-        BitmapFont.DrawText(pixels, width, height, stride, clock, layout.Clock.X + Pad, clockY, TextColour, 1);
+        BitmapFont.DrawText(pixels, clipW, clipH, stride, clock, (layout.Clock.X + Pad) * scale, clockY * scale, TextColour, scale);
     }
 
     /// <summary>The Start button icon: four small squares, Windows style.</summary>
-    private static void DrawStartIcon(Span<byte> pixels, int width, int height, int stride, Rect start)
+    private static void DrawStartIcon(Span<byte> pixels, int clipW, int clipH, int stride, int scale, Rect start)
     {
         const int cell = 8;
         const int gap = 3;
@@ -99,7 +112,7 @@ internal static class Bar
         {
             for (var col = 0; col < 2; col++)
             {
-                Chrome.FillRect(pixels, width, height, stride, new Rect(x0 + (col * (cell + gap)), y0 + (row * (cell + gap)), cell, cell), StartIconColour);
+                Chrome.FillRect(pixels, clipW, clipH, stride, new Rect(x0 + (col * (cell + gap)), y0 + (row * (cell + gap)), cell, cell), StartIconColour, scale);
             }
         }
     }

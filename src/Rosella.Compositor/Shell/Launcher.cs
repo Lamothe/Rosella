@@ -111,12 +111,17 @@ internal sealed class Launcher
         return true;
     }
 
-    internal void Draw(Span<byte> pixels, int width, int height, int stride)
+    internal void Draw(Span<byte> pixels, int width, int height, int stride, int scale)
     {
         var panel = PanelRect(width, height);
-        Chrome.FillRect(pixels, width, height, stride, panel, PanelBackground);
-        Chrome.FrameRect(pixels, width, height, stride, panel, PanelBorder);
-        BitmapFont.DrawText(pixels, width, height, stride, "Pinned", panel.X + 16, panel.Y + 12, TextColour, Shell.FontScale);
+
+        // True physical clip bounds (see Bar.Draw): the panel is interior
+        // geometry, so only the clip changes with a non-divisible mode.
+        var clipW = stride / 4;
+        var clipH = pixels.Length / stride;
+        Chrome.FillRect(pixels, clipW, clipH, stride, panel, PanelBackground, scale);
+        Chrome.FrameRect(pixels, clipW, clipH, stride, panel, PanelBorder, scale);
+        BitmapFont.DrawText(pixels, clipW, clipH, stride, "Pinned", (panel.X + 16) * scale, (panel.Y + 12) * scale, TextColour, Shell.FontScale * scale);
 
         for (var i = 0; i < Apps.Length; i++)
         {
@@ -124,10 +129,10 @@ internal sealed class Launcher
             var selected = i == Selection;
             if (selected)
             {
-                Chrome.FillRect(pixels, width, height, stride, row, RowSelected);
+                Chrome.FillRect(pixels, clipW, clipH, stride, row, RowSelected, scale);
             }
 
-            BitmapFont.DrawText(pixels, width, height, stride, Apps[i].Name, row.X + 12, row.Y + ((row.H - BitmapFont.GlyphHeight * Shell.FontScale) / 2), selected ? RowSelectedText : TextColour, Shell.FontScale);
+            BitmapFont.DrawText(pixels, clipW, clipH, stride, Apps[i].Name, (row.X + 12) * scale, (row.Y + ((row.H - BitmapFont.GlyphHeight * Shell.FontScale) / 2)) * scale, selected ? RowSelectedText : TextColour, Shell.FontScale * scale);
         }
     }
 
@@ -154,13 +159,7 @@ internal sealed class Launcher
 
         try
         {
-            var startInfo = new ProcessStartInfo { FileName = command, UseShellExecute = false };
-            if (SocketName is { } socket)
-            {
-                startInfo.Environment["WAYLAND_DISPLAY"] = socket;
-            }
-
-            var process = Process.Start(startInfo);
+            var process = Process.Start(CreateStartInfo(command, SocketName));
             Console.WriteLine($"spawn: {command} pid {process?.Id.ToString() ?? "none"}");
             process?.Dispose();
         }
@@ -169,5 +168,23 @@ internal sealed class Launcher
             // Opinionated: a missing app simply does not open.
             Console.WriteLine($"spawn: {command} failed: {exception.Message}");
         }
+    }
+
+    /// <summary>
+    /// The spawn environment for a launched app: its Wayland socket and dark
+    /// mode, always (GTK3 reads GTK_THEME, GTK4/libadwaita reads the debug
+    /// colour-scheme override). There is no setting.
+    /// </summary>
+    internal static ProcessStartInfo CreateStartInfo(string command, string? socket = null)
+    {
+        var startInfo = new ProcessStartInfo { FileName = command, UseShellExecute = false };
+        if (socket is not null)
+        {
+            startInfo.Environment["WAYLAND_DISPLAY"] = socket;
+        }
+
+        startInfo.Environment["GTK_THEME"] = "Adwaita:dark";
+        startInfo.Environment["ADW_DEBUG_COLOR_SCHEME"] = "prefer-dark";
+        return startInfo;
     }
 }

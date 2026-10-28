@@ -17,16 +17,19 @@ public class ShellTests
         MemoryMarshal.Read<uint>(buffer.AsSpan((y * stride) + (x * 4)));
 
     [Fact]
-    public void MapWindow_LandsAboveTheTaskbar()
+    public void MapWindow_FillsTheWorkArea()
     {
         using var harness = new Harness();
         harness.MapWindow(8, 11, 12, title: "Hello");
 
         var surface = harness.MappedSurface(8);
-        Assert.True(surface.Position.Y >= 8, $"window at y={surface.Position.Y}");
+        Assert.Equal((0, 0), surface.Position);
         Assert.True(surface.Position.Y + surface.Height <= harness.Scene.OutputSize.Height - Shell.BarHeight,
             $"window bottom at y={surface.Position.Y + surface.Height}");
 
+        // Park the cursor away: its sprite would otherwise overwrite the
+        // sampled pixel now that windows start at the origin.
+        harness.Router.PlaceCursor(500, 500);
         var render = harness.RenderFrame();
         Assert.Equal(harness.ContentPixel, PixelAt(render, 1920 * 4, surface.Position.X + 2, surface.Position.Y + 2));
     }
@@ -39,8 +42,10 @@ public class ShellTests
         var surface = harness.MappedSurface(8);
         harness.ClickAt(surface.Position.X + 2, surface.Position.Y + 2);
 
+        // The border hugs the visible rect: its left edge is at x = 0 for a
+        // maximised window, drawn over the content.
         var render = harness.RenderFrame();
-        Assert.Equal(0xFF7B86E8, PixelAt(render, 1920 * 4, surface.Position.X - 1, surface.Position.Y + 2));
+        Assert.Equal(0xFF7B86E8, PixelAt(render, 1920 * 4, 0, surface.Position.Y + 2));
     }
 
     [Fact]
@@ -330,19 +335,18 @@ public class ShellTests
     }
 
     [Fact]
-    public void LargeWindow_StaysInsideTheWorkArea()
+    public void PlaceWindow_OpensAtTheWorkAreaOrigin()
     {
         var scene = new Scene { Shell = new Shell() };
         scene.OutputSize = (800, 600);
 
-        var (x, y) = scene.PlaceWindow(new SurfaceHandler(scene), 700, 300);
-        Assert.True(y + 300 <= 600 - Shell.BarHeight, $"bottom at {y + 300}");
-        Assert.True(x + 700 <= 800, $"right edge at {x + 700}");
-
-        // Taller than the work area: pinned to the top margin rather than
-        // stranded under the taskbar.
-        var (_, y2) = scene.PlaceWindow(new SurfaceHandler(scene), 400, 700);
-        Assert.Equal(8, y2);
+        // Every toplevel opens maximised to the work area: the policy
+        // position is the work-area origin whatever the window size.
+        var surface = new SurfaceHandler(scene);
+        var (x, y) = scene.PlaceWindow(surface, 700, 300);
+        Assert.Equal((0, 0), (x, y));
+        Assert.Equal((0, 0), (scene.WorkArea.X, scene.WorkArea.Y));
+        Assert.Equal((800, 600 - Shell.BarHeight), (scene.WorkArea.W, scene.WorkArea.H));
     }
 
     [Fact]

@@ -25,6 +25,8 @@ internal sealed class InputRouter
     private int _chromePressConsumedButton = -1;
     private SurfaceHandler? _buttonPressTarget;
     private SurfaceHandler? _focusBeforeLauncher;
+    private int _moveRemainderX;
+    private int _moveRemainderY;
 
     // Multitouch slot state (protocol B): slot -> last per-axis position
     // with per-axis seeding (the first coordinates after finger-down are a
@@ -196,9 +198,19 @@ internal sealed class InputRouter
 
     private void MoveCursor(int dx, int dy, uint time)
     {
+        // Device deltas are physical pixels; the scene is logical (physical /
+        // output scale). Dividing keeps the tuned pointer feel identical at
+        // every scale — the cursor crosses the same fraction of the screen
+        // per swipe. The remainder carries, so slow motion still moves.
+        var scale = Math.Max(1, _scene.Scale);
+        var moveX = (dx + _moveRemainderX) / scale;
+        _moveRemainderX = (dx + _moveRemainderX) % scale;
+        var moveY = (dy + _moveRemainderY) / scale;
+        _moveRemainderY = (dy + _moveRemainderY) % scale;
+
         var (outputWidth, outputHeight) = _scene.OutputSize;
-        _cursorX = Math.Clamp(_cursorX + dx, 0, Math.Max(0, outputWidth - 1));
-        _cursorY = Math.Clamp(_cursorY + dy, 0, Math.Max(0, outputHeight - 1));
+        _cursorX = Math.Clamp(_cursorX + moveX, 0, Math.Max(0, outputWidth - 1));
+        _cursorY = Math.Clamp(_cursorY + moveY, 0, Math.Max(0, outputHeight - 1));
         _scene.Cursor = (_cursorX, _cursorY);
 
         var target = _scene.HitTest(_cursorX, _cursorY);
@@ -548,7 +560,7 @@ internal sealed class InputRouter
         }
     }
 
-    private int LocalX(SurfaceHandler? target) => target is null ? 0 : _cursorX - target.Position.X;
+    private int LocalX(SurfaceHandler? target) => target is null ? 0 : target.LocalX(_cursorX);
 
-    private int LocalY(SurfaceHandler? target) => target is null ? 0 : _cursorY - target.Position.Y;
+    private int LocalY(SurfaceHandler? target) => target is null ? 0 : target.LocalY(_cursorY);
 }

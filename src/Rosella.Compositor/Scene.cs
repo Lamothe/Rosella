@@ -34,8 +34,17 @@ public sealed class Scene
         Seat?.OnSurfaceHidden(surface, canSendLeave: false);
     }
 
-    /// <summary>The scanout's size; windows are placed relative to it.</summary>
+    /// <summary>The scanout's logical size (physical pixels / Scale); windows are placed in it.</summary>
     internal (int Width, int Height) OutputSize { get; set; } = (1920, 1080);
+
+    /// <summary>
+    /// Physical pixels per logical pixel on this output (ScalePolicy): all
+    /// scene coordinates are logical, rendering multiplies by this.
+    /// </summary>
+    internal int Scale { get; set; } = 1;
+
+    /// <summary>Where windows live: the output minus the taskbar band.</summary>
+    internal Rect WorkArea => new(0, 0, OutputSize.Width, OutputSize.Height - (Shell is null ? 0 : Shell.BarHeight));
 
     /// <summary>The desktop shell, when one is wired in (taskbar and Start menu).</summary>
     internal Shell? Shell { get; set; }
@@ -72,62 +81,81 @@ public sealed class Scene
     }
 
     /// <summary>
-    /// The window policy: every mapped window goes to the centre of the
-    /// output's work area (below the bar, when there is a shell) with a
-    /// small per-window cascade offset, raised to the top. Returns where the
-    /// window's visible corner belongs.
+    /// The window policy: every mapped toplevel opens maximised to the work
+    /// area, always (opinionated — there is no floating). Popups place
+    /// themselves via their positioner corner. Whatever the path, a freshly
+    /// mapped surface is raised to the top.
     /// </summary>
     internal (int X, int Y) PlaceWindow(SurfaceHandler surface, int windowWidth, int windowHeight)
     {
         lock (_gate)
         {
-            var (outputWidth, outputHeight) = OutputSize;
-            const int topMargin = 8;
-            var workBottom = Shell is null ? outputHeight : outputHeight - Shell.BarHeight;
-            var offset = (_placed++ % 8) * 48;
-
-            // Centred with a cascade, clamped to stay inside the work area:
-            // no window may land under the taskbar or off the right edge.
-            var maxX = Math.Max(0, outputWidth - windowWidth);
-            var maxY = Math.Max(topMargin, workBottom - windowHeight);
-            var x = Math.Clamp(((outputWidth - windowWidth) / 2) + offset, 0, maxX);
-            var y = Math.Clamp(topMargin + ((workBottom - topMargin - windowHeight) / 2) + offset, topMargin, maxY);
-
-            // Raise: later in the list renders on top.
             _surfaces.Remove(surface);
             _surfaces.Add(surface);
-            return (x, y);
+            return (WorkArea.X, WorkArea.Y);
         }
     }
 
-    private int _placed;
-
-    /// <summary>Draws the background, the windows, the shell chrome, and the cursor.</summary>
+    /// <summary>
+    /// Draws the background, the windows, the shell chrome, and the cursor —
+    /// all in logical pixels scaled to the physical scanout by Scale.
+    /// </summary>
     public void Render(Span<byte> pixels, int width, int height, int stride, long frame)
     {
         Background.Render(pixels, width, height, stride);
+        var scale = Math.Max(1, Scale);
         lock (_gate)
         {
             foreach (var surface in _surfaces)
             {
-                if (surface.IsMapped)
+                // Cursor surfaces are drawn at the pointer, never as windows.
+                if (surface.IsMapped && !surface.IsCursorSurface)
                 {
-                    surface.BlitInto(pixels, width, height, stride);
+                    surface.BlitInto(pixels, width, height, stride, scale);
                 }
             }
 
-            // Windows 11 style: the focused window wears an accent border,
-            // so a click has a visible consequence.
+            // Windows 11 style: the focused window wears an accent border
+            // hugging its visible rect, so a click has a visible consequence.
             if (Seat?.KeyboardFocus is { IsMapped: true } focus)
             {
+                var visible = focus.Visible;
                 Chrome.FrameRect(pixels, width, height, stride,
-                    new Rect(focus.Position.X - 1, focus.Position.Y - 1, focus.Width + 2, focus.Height + 2),
-                    0xFF7B86E8);
+                    new Rect(visible.X, visible.Y, visible.W, visible.H),
+                    0xFF7B86E8, scale);
             }
         }
 
-        Shell?.Draw(pixels, width, height, stride, Bar.ClockString(), TaskWindows(), Seat?.KeyboardFocus);
-        CursorSprite.Draw(pixels, width, height, stride, Cursor.X, Cursor.Y);
+        // Chrome lays out in logical pixels (matching the input thread's
+        // hit-tests exactly) and draws scaled onto the physical scanout.
+        Shell?.Draw(pixels, width / scale, height / scale, stride, scale, Bar.ClockString(), TaskWindows(), Seat?.KeyboardFocus);
+
+        // The cursor: the client's cursor surface when the focused client set
+        // one (context shapes — text beam, hand — as the apps intend), hidden
+        // when the focused client hid it, else our arrow. Once a client has
+        // named a cursor surface the image is that surface's — never our
+        // arrow over the app's intent (content may still be in flight).
+        var (cursorX, cursorY) = Cursor;
+        var cursor = Seat?.CurrentCursor() ?? default;
+        if (cursor.Hidden)
+        {
+            // The focused client hid the pointer image (spec: NULL surface).
+        }
+        else if (cursor.Surface is { } cursorSurface)
+        {
+            if (cursorSurface is { IsMapped: true, Gone: false })
+            {
+                var (hotspotX, hotspotY) = (cursor.HotspotX, cursor.HotspotY);
+                cursorSurface.BlitAt(
+                    pixels, width, height, stride,
+                    (cursorX - hotspotX) * scale, (cursorY - hotspotY) * scale,
+                    cursorSurface.ContentWidth * scale, cursorSurface.ContentHeight * scale);
+            }
+        }
+        else
+        {
+            CursorSprite.Draw(pixels, width, height, stride, cursorX * scale, cursorY * scale, scale);
+        }
     }
 
     /// <summary>Fires frame callbacks for the frame just composited.</summary>
@@ -165,7 +193,7 @@ public sealed class Scene
             for (var i = _surfaces.Count - 1; i >= 0; i--)
             {
                 var surface = _surfaces[i];
-                if (!surface.IsMapped)
+                if (!surface.IsMapped || surface.IsCursorSurface)
                 {
                     continue;
                 }
@@ -189,7 +217,7 @@ public sealed class Scene
             var tasks = new List<BarTask>();
             foreach (var surface in _surfaces)
             {
-                if (!surface.IsMapped || surface.Gone)
+                if (!surface.IsMapped || surface.Gone || surface.IsCursorSurface)
                 {
                     continue;
                 }

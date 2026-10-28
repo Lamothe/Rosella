@@ -63,6 +63,17 @@ Verified against libwayland's marshalling code and the protocol docs:
 5. **Test in a VM, iterate nested.** Real seat/KMS testing happens in a VM
    (virtio-gpu, virtio-input). A nested/windowed development backend can come
    later for fast iteration; the DE logic itself is testable anywhere.
+6. **The field-report policies** (all hardcoded, no settings): per-output
+   integer DPI scaling chosen like mutter (`ScalePolicy`: 135 DPI target
+   under 20″, 110 above; falls back to 2× for laptop-class panels whose
+   firmware fabricates a 96-DPI placeholder size); every toplevel opens
+   maximised to the work area, always — there is no floating; apps launch
+   with `GTK_THEME=Adwaita:dark` / `ADW_DEBUG_COLOR_SCHEME=prefer-dark`;
+   ARGB buffers blend source-over with premultiplied alpha (client-side
+   decoration shadows render as translucent veils, not black squares); the
+   pointer image is the focused client's `set_cursor` surface at
+   pointer−hotspot (hidden on NULL), else the built-in arrow — always scoped
+   to the owning client's pointer focus.
 
 ## Milestones
 
@@ -171,22 +182,26 @@ Learned from libwayland and verified against real clients:
   the message stream (fd exhaustion); a client that stops reading can stall
   event sends and briefly stall the scanout thread; a commit landing in the
   microseconds between render and `CompleteFrame` can get its frame callback
-  fired one frame early; argb8888 alpha is ignored (opaque copy) until
-  blending; a client that truncates its pool file after mapping can still
-  SIGBUS the compositor (the common lying-size case is checked up front);
-  `get_xdg_surface` on a surface that already has content is not rejected
-  (the spec names no error code); popup stacking rules
+  fired one frame early; a client that truncates its pool file after mapping
+  can still SIGBUS the compositor (the common lying-size case is checked up
+  front); `get_xdg_surface` on a surface that already has content is not
+  rejected (the spec names no error code); popup stacking rules
   (`not_the_topmost_popup`, parent-mapped-first) and positioner constraint
-  adjustment (flip/slide to stay on screen) are unimplemented; maximise/
-  fullscreen requests are still ignored (window states are M8: the shell
-  chrome shipped in M7 without them). M6 additions: seat
-  sends hold the seat gate during socket writes, so one stalled client can
-  briefly delay input delivery to others (accepted on a single-seat
-  desktop); kernel autorepeat is dropped (clients repeat via repeat_info);
-  no touch support; `wl_pointer.set_cursor` is ignored (one built-in
-  cursor); a keyboard bound mid-focus receives enter with the seat's last
-  held-keys snapshot; input device hot-plug is not handled (the device set
-  is fixed at startup).
+  adjustment (flip/slide to stay on screen) are unimplemented; `xdg_toplevel`
+  state *requests* (maximise/fullscreen/minimise) are ignored — the policy is
+  always-maximised, and the states we send are M8's concern; the serial match
+  for `set_cursor` is per pointer device where the spec words it per client
+  (GTK/Qt bind one pointer per seat); `wl_surface.offset` on a cursor surface
+  is accepted but the hotspot is not decremented at commit (clients pass the
+  hotspot in `set_cursor`); evicted configure serials stay ackable but never
+  count as mapping consent; the 96-DPI placeholder guard cannot distinguish a
+  fabricated size from a genuine 96-DPI ≥2560×1600 panel (the rare real panel
+  would get 2× instead of 1×). M6 additions: seat sends hold the seat gate
+  during socket writes, so one stalled client can briefly delay input
+  delivery to others (accepted on a single-seat desktop); kernel autorepeat
+  is dropped (clients repeat via repeat_info); no touch support; a keyboard
+  bound mid-focus receives enter with the seat's last held-keys snapshot;
+  input device hot-plug is not handled (the device set is fixed at startup).
 - The M2/M3 code has been reviewed three times at the code level; M4 adds the
   surface layer, reviewed once. Only `wayland-info` and `SmokeClient` have
   exercised the protocol as clients so far — toolkits (GTK/Qt) will stress it

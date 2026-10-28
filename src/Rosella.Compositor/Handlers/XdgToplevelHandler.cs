@@ -132,7 +132,7 @@ internal sealed class XdgToplevelHandler : IRequestHandler, IXdgRoleObject
         }
     }
 
-    /// <summary>Sends xdg_toplevel.configure: the client picks its own size.</summary>
+    /// <summary>Sends xdg_toplevel.configure: windows are always maximised.</summary>
     public void SendRoleConfigure()
     {
         if (!_capabilitiesSent && _self!.Version >= 5)
@@ -143,15 +143,28 @@ internal sealed class XdgToplevelHandler : IRequestHandler, IXdgRoleObject
             _session!.SendEvent(_self, "wm_capabilities", WireArgument.Array([]));
         }
 
-        // xdg_toplevel.state.activated = 4 (pinned against xdg-shell.xml).
-        var states = Activated ? BitConverter.GetBytes(4u) : [];
-        _session!.SendEvent(_self!, "configure", WireArgument.Int32(0), WireArgument.Int32(0), WireArgument.Array(states));
+        // Always maximised to the work area: the configure size is the work
+        // area, and the state bits say so (xdg_toplevel.state: maximized=1,
+        // activated=4 — pinned against xdg-shell.xml).
+        var (workWidth, workHeight) = _surface.WorkArea;
+        var states = new List<byte>();
+        states.AddRange(BitConverter.GetBytes(1u));
+        if (Activated)
+        {
+            states.AddRange(BitConverter.GetBytes(4u));
+        }
+
+        _session!.SendEvent(_self!, "configure", WireArgument.Int32(workWidth), WireArgument.Int32(workHeight), WireArgument.Array([.. states]));
     }
 
-    /// <summary>Toplevels are placed by the window policy.</summary>
+    /// <summary>
+    /// Toplevels are placed by the window policy (maximised at the work-area
+    /// origin); the size is the work area the configure asked for.
+    /// </summary>
     public (int Width, int Height, (int X, int Y)? Corner) GetPlacement(SurfaceHandler surface, (int X, int Y, int Width, int Height) geometry)
     {
-        return (geometry.Width, geometry.Height, null);
+        var (workWidth, workHeight) = _surface.WorkArea;
+        return (workWidth, workHeight, null);
     }
 
     /// <summary>Asks the compositor to close the window (M6+ input, M7 shell).</summary>

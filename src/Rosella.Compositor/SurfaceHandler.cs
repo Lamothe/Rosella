@@ -55,6 +55,9 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
     private byte[]? _content;
     private int _width;
     private int _height;
+    private uint _format = ShmFormats.Xrgb8888;
+    private int _bufferScale = 1;
+    private int _pendingBufferScale = 1;
     private ISurfaceRole? _role;
 
     public SurfaceHandler(Scene scene)
@@ -62,8 +65,73 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
         _scene = scene;
     }
 
-    /// <summary>Where the surface is composited, assigned by the scene.</summary>
-    internal (int X, int Y) Position { get; set; }
+    /// <summary>Where the surface is composited (logical pixels), assigned by the scene.</summary>
+    internal (int X, int Y) Position
+    {
+        get
+        {
+            lock (_state)
+            {
+                return _position;
+            }
+        }
+
+        set
+        {
+            lock (_state)
+            {
+                _position = value;
+            }
+        }
+    }
+
+    private (int X, int Y) _position;
+
+    /// <summary>
+    /// Where the content renders (logical pixels): defaults to the content's
+    /// own size at <see cref="Position"/>; the window policy sets a window
+    /// rect to maximise a toplevel into the work area. Guarded by the same
+    /// lock as the content it maps (session threads write, the scanout and
+    /// input threads read).
+    /// </summary>
+    internal void Place(int x, int y, int width, int height)
+    {
+        lock (_state)
+        {
+            Position = (x, y);
+            _placeWidth = width;
+            _placeHeight = height;
+        }
+    }
+
+    /// <summary>
+    /// The visible window's rect on screen (logical pixels): the window
+    /// geometry after placement — what a focus frame should hug. Defaults to
+    /// the placed rect until the window policy says otherwise.
+    /// </summary>
+    internal void SetVisible(int x, int y, int width, int height)
+    {
+        lock (_state)
+        {
+            _visible = (x, y, width, height);
+        }
+    }
+
+    private (int X, int Y, int W, int H)? _visible;
+
+    internal (int X, int Y, int W, int H) Visible
+    {
+        get
+        {
+            lock (_state)
+            {
+                return _visible ?? (Position.X, Position.Y, Width, Height);
+            }
+        }
+    }
+
+    private int _placeWidth;
+    private int _placeHeight;
 
     /// <summary>The session that owns this surface, for input routing.</summary>
     internal ClientSession? Session => _session;
@@ -74,6 +142,12 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
 
     /// <summary>Set once the surface is destroyed: focus must skip it.</summary>
     internal volatile bool Gone;
+
+    /// <summary>
+    /// True once the client names this surface as its pointer cursor: it is
+    /// drawn at the pointer (not as a window) and never hit-tested.
+    /// </summary>
+    internal volatile bool IsCursorSurface;
 
     internal bool IsMapped
     {
@@ -86,9 +160,88 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
         }
     }
 
-    internal int Width => _width;
+    /// <summary>The surface's logical width: the placed rect, else the content's own.</summary>
+    internal int Width
+    {
+        get
+        {
+            lock (_state)
+            {
+                return _placeWidth > 0 ? _placeWidth : _width / _bufferScale;
+            }
+        }
+    }
 
-    internal int Height => _height;
+    /// <summary>The surface's logical height: the placed rect, else the content's own.</summary>
+    internal int Height
+    {
+        get
+        {
+            lock (_state)
+            {
+                return _placeHeight > 0 ? _placeHeight : _height / _bufferScale;
+            }
+        }
+    }
+
+    /// <summary>The content's own logical width (buffer pixels / buffer scale).</summary>
+    internal int ContentWidth
+    {
+        get
+        {
+            lock (_state)
+            {
+                return _width / _bufferScale;
+            }
+        }
+    }
+
+    /// <summary>The content's own logical height (buffer pixels / buffer scale).</summary>
+    internal int ContentHeight
+    {
+        get
+        {
+            lock (_state)
+            {
+                return _height / _bufferScale;
+            }
+        }
+    }
+
+    /// <summary>How many buffer pixels make one logical pixel.</summary>
+    internal int BufferScale
+    {
+        get
+        {
+            lock (_state)
+            {
+                return _bufferScale;
+            }
+        }
+    }
+
+    /// <summary>The committed buffer's pixel format (argb blends, xrgb copies).</summary>
+    internal uint Format => _format;
+
+    /// <summary>Maps a scene x to the surface's own coordinate space.</summary>
+    internal int LocalX(int sceneX)
+    {
+        lock (_state)
+        {
+            var width = _placeWidth > 0 ? _placeWidth : _width / _bufferScale;
+            return width > 0 ? (int)(((long)(sceneX - _position.X) * (_width / _bufferScale)) / width) : 0;
+        }
+    }
+
+    /// <summary>Maps a scene y to the surface's own coordinate space.</summary>
+    internal int LocalY(int sceneY)
+    {
+        lock (_state)
+        {
+            var height = _placeHeight > 0 ? _placeHeight : _height / _bufferScale;
+            return height > 0 ? (int)(((long)(sceneY - _position.Y) * (_height / _bufferScale)) / height) : 0;
+        }
+    }
 
     /// <summary>Test seam: the committed content, if any.</summary>
     internal byte[]? Content
@@ -130,11 +283,12 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
 
     /// <summary>
     /// Assigns the surface's xdg role. A surface's role never changes, so the
-    /// first assignment wins for the wl_surface's lifetime.
+    /// first assignment wins for the wl_surface's lifetime — and a surface
+    /// named as the pointer cursor (role: cursor) cannot become a window.
     /// </summary>
     internal bool TryAssignRole(ISurfaceRole role)
     {
-        if (HasXdgRole)
+        if (HasXdgRole || IsCursorSurface)
         {
             return false;
         }
@@ -178,12 +332,17 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
                 break;
 
             case "set_buffer_scale":
-                if (request.Arguments[0].AsInt32() <= 0)
+            {
+                var scale = request.Arguments[0].AsInt32();
+                if (scale <= 0)
                 {
                     throw new ProtocolErrorException(target.Id, SurfaceErrors.InvalidScale, "buffer scale must be positive");
                 }
 
+                // Double-buffered: applied at the next commit.
+                _pendingBufferScale = scale;
                 break;
+            }
 
             case "set_buffer_transform":
                 if (request.Arguments[0].AsInt32() is < 0 or > 7)
@@ -230,15 +389,63 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
         }
     }
 
-    /// <summary>Draws the surface's content at its position, if mapped.</summary>
-    internal void BlitInto(Span<byte> pixels, int width, int height, int stride)
+    /// <summary>
+    /// Draws the surface's content into its placed rect, if mapped. The
+    /// scene is logical pixels; the scanout is <paramref name="outputScale"/>
+    /// times that, and the buffer may be at its own buffer scale — the blit
+    /// maps buffer pixels onto the scaled destination rect, blending ARGB
+    /// and copying XRGB.
+    /// </summary>
+    internal void BlitInto(Span<byte> pixels, int width, int height, int stride, int outputScale)
     {
         lock (_state)
         {
-            if (_content is not null)
+            if (_content is null)
             {
-                Blitter.Copy(pixels, width, height, stride, _content, _width, _height, Position.X, Position.Y);
+                return;
             }
+
+            Blitter.Blit(
+                pixels,
+                width,
+                height,
+                stride,
+                _content,
+                _width,
+                _height,
+                _width * 4,
+                _format,
+                Position.X * outputScale,
+                Position.Y * outputScale,
+                Width * outputScale,
+                Height * outputScale);
+        }
+    }
+
+    /// <summary>Blits the content at a physical position (the pointer cursor).</summary>
+    internal void BlitAt(Span<byte> pixels, int width, int height, int stride, int x, int y, int destinationWidth, int destinationHeight)
+    {
+        lock (_state)
+        {
+            if (_content is null)
+            {
+                return;
+            }
+
+            Blitter.Blit(
+                pixels,
+                width,
+                height,
+                stride,
+                _content,
+                _width,
+                _height,
+                _width * 4,
+                _format,
+                x,
+                y,
+                destinationWidth,
+                destinationHeight);
         }
     }
 
@@ -302,6 +509,8 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
         byte[]? newContent;
         var newWidth = 0;
         var newHeight = 0;
+        uint newFormat;
+        int newBufferScale;
         lock (_state)
         {
             // get_release requires a non-null buffer in this content update.
@@ -314,6 +523,11 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
             newContent = _content;
             newWidth = _width;
             newHeight = _height;
+            newFormat = _format;
+
+            // set_buffer_scale is double-buffered state: applied at every
+            // commit, with or without a new buffer (spec: wl_surface.commit).
+            newBufferScale = _pendingBufferScale;
             if (_pendingAttach)
             {
                 _pendingAttach = false;
@@ -322,6 +536,7 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
                     newContent = buffer.Buffer.ReadPixels();
                     newWidth = buffer.Buffer.Width;
                     newHeight = buffer.Buffer.Height;
+                    newFormat = buffer.Buffer.Format;
                     _pendingBuffer = null;
                     buffer.ReleaseReference();
                     buffer.MarkReleased(_pendingReleaseCallbacks);
@@ -339,7 +554,14 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
         // The role hook runs outside the state lock (lock order: scene ->
         // surface state) and BEFORE the content becomes visible, so a mapped
         // window is at its final position the moment its pixels appear.
-        _role?.OnCommit(this, contentChanged, newContent is not null, newWidth, newHeight);
+        // Sizes are logical (buffer pixels / buffer scale), the coordinate
+        // space the window policy and the protocol speak.
+        _role?.OnCommit(
+            this,
+            contentChanged,
+            newContent is not null,
+            newWidth / newBufferScale,
+            newHeight / newBufferScale);
 
         var unmapped = false;
         lock (_state)
@@ -350,7 +572,12 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
                 _content = newContent;
                 _width = newWidth;
                 _height = newHeight;
+                _format = newFormat;
             }
+
+            // Applied on every commit, buffer or not — double-buffered
+            // state is committed, not attached.
+            _bufferScale = newBufferScale;
 
             _activeCallbacks.AddRange(_pendingCallbacks);
             _pendingCallbacks.Clear();

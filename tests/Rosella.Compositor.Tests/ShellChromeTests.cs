@@ -78,7 +78,7 @@ public class ShellChromeTests
         var layout = Bar.ComputeLayout(width, height, Bar.ClockString(), [task]);
 
         var pixels = new byte[width * height * 4];
-        Bar.Draw(pixels, width, height, width * 4, layout, Bar.ClockString(), task.Surface);
+        Bar.Draw(pixels, width, height, width * 4, 1, layout, Bar.ClockString(), task.Surface);
 
         var barY = height - Shell.BarHeight;
         Assert.NotEqual(0u, PixelAt(pixels, width * 4, width / 2, barY + 2));

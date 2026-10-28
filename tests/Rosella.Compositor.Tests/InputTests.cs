@@ -55,7 +55,6 @@ public class InputTests
         using var harness = new Harness();
         harness.BindXdg();
         harness.MapWindow(8, 11, 12);
-        harness.MapWindow(30, 31, 32);
         harness.Client.SendRequest(20, "wl_seat", "get_keyboard", WireArgument.NewId(21));
         harness.Client.RegisterObject(21, "wl_keyboard");
         harness.RoundTrip();
@@ -63,21 +62,23 @@ public class InputTests
         harness.Client.RegisterObject(22, "wl_pointer");
         harness.RoundTrip();
 
-        // Click window A (first policy slot): it raises and activates.
+        // Click window A (the only window): it activates.
         harness.ClickAt(950, 530);
         var enter = harness.Client.ReadUntil(21, "enter");
         Assert.Equal(8u, enter.Arguments[1].AsObject());
         var activated = harness.Client.ReadUntil(12, "configure");
-        Assert.Equal(BitConverter.GetBytes(4u), activated.Arguments[2].AsArray().ToArray());
+        Assert.Equal([.. BitConverter.GetBytes(1u), .. BitConverter.GetBytes(4u)], activated.Arguments[2].AsArray().ToArray());
 
-        // Click window B: A deactivates, B activates and raises.
+        // Mapping B puts it on top (always-fullscreen windows stack); a
+        // click anywhere lands on B: A deactivates, B activates.
+        harness.MapWindow(30, 31, 32);
         harness.ClickAt(1000, 580);
         var deactivated = harness.NextEventOn(12);
         Assert.Equal("configure", harness.Client.EventName(deactivated));
-        Assert.Empty(deactivated.Arguments[2].AsArray().ToArray());
+        Assert.Equal(BitConverter.GetBytes(1u), deactivated.Arguments[2].AsArray().ToArray());
         var bActivated = harness.NextEventOn(32);
         Assert.Equal("configure", harness.Client.EventName(bActivated));
-        Assert.Equal(BitConverter.GetBytes(4u), bActivated.Arguments[2].AsArray().ToArray());
+        Assert.Equal([.. BitConverter.GetBytes(1u), .. BitConverter.GetBytes(4u)], bActivated.Arguments[2].AsArray().ToArray());
 
         CompositorSessionTests.WaitFor(
             () => harness.Scene.Surfaces.ToArray(),
@@ -161,21 +162,28 @@ public class InputTests
     public void Motion_SendsEnterMotionFrameAndLeave()
     {
         using var harness = new Harness();
-        harness.BindXdg();
-        harness.MapWindow(8, 11, 12);
+
+        // A role-less surface keeps its natural size (window policy only
+        // governs xdg toplevels), so the pointer can enter and leave it.
+        harness.Client.SendRequest(4, "wl_compositor", "create_surface", WireArgument.NewId(8));
+        harness.Client.RegisterObject(8, "wl_surface");
+        harness.Client.SendRequest(8, "wl_surface", "attach", WireArgument.Object(7), WireArgument.Int32(0), WireArgument.Int32(0));
+        harness.Client.SendRequest(8, "wl_surface", "commit");
+        CompositorSessionTests.WaitFor(() => harness.Scene.Surfaces.FirstOrDefault(), value => value is { IsMapped: true });
+
         harness.Client.SendRequest(20, "wl_seat", "get_pointer", WireArgument.NewId(22));
         harness.Client.RegisterObject(22, "wl_pointer");
         harness.RoundTrip();
 
-        // Move onto the window from outside: enter then motion then frame.
-        harness.Router.PlaceCursor(930, 530);
-        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventRelative, InputConstants.RelativeX, 20));
+        // Move onto the surface from outside: enter then motion then frame.
+        harness.Router.PlaceCursor(40, 70);
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventRelative, InputConstants.RelativeX, 30));
         var enter = harness.Client.ReadUntil(22, "enter");
         Assert.Equal(8u, enter.Arguments[1].AsObject());
         harness.Client.ReadUntil(22, "motion");
         harness.Client.ReadUntil(22, "frame");
 
-        // Move off the window: leave.
+        // Move off the surface: leave.
         harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventRelative, InputConstants.RelativeX, 4000));
         harness.Client.ReadUntil(22, "leave");
     }

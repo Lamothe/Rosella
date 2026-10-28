@@ -19,6 +19,15 @@ internal sealed class SeatState
     private readonly HashSet<int> _heldKeys = new();
     private SurfaceHandler? _keyboardFocus;
     private SurfaceHandler? _pointerFocus;
+    private SurfaceHandler? _cursorSurface;
+    private (int X, int Y) _cursorHotspot;
+    private bool _cursorHidden;
+
+    /// <summary>Which client's cursor state _cursorSurface/_cursorHidden are.</summary>
+    private ClientSession? _cursorOwner;
+
+    /// <summary>The latest wl_pointer.enter serial sent on each pointer.</summary>
+    private readonly Dictionary<ServerObject, uint> _pointerEnterSerials = new();
     private int _depressed;
     private int _locked;
     private int _pointerX;
@@ -53,6 +62,82 @@ internal sealed class SeatState
                 return _pointerFocus;
             }
         }
+    }
+
+    /// <summary>What to draw at the pointer: built-in arrow, client surface, or nothing.</summary>
+    internal readonly record struct CursorImage(SurfaceHandler? Surface, int HotspotX, int HotspotY, bool Hidden);
+
+    /// <summary>
+    /// The pointer image right now. The client's cursor applies only while
+    /// one of its own surfaces holds the pointer focus (spec: "the cursor
+    /// actually changes only if the pointer focus for this device is one of
+    /// the requesting client's surfaces"); elsewhere the built-in arrow.
+    /// </summary>
+    internal CursorImage CurrentCursor()
+    {
+        lock (_gate)
+        {
+            if (_cursorOwner is null || !ReferenceEquals(_pointerFocus?.Session, _cursorOwner))
+            {
+                return new CursorImage(null, 0, 0, false);
+            }
+
+            return new CursorImage(_cursorSurface, _cursorHotspot.X, _cursorHotspot.Y, _cursorHidden);
+        }
+    }
+
+    /// <summary>
+    /// Applies wl_pointer.set_cursor, or ignores it: the serial must match
+    /// the latest wl_pointer.enter (spec: "otherwise the request will be
+    /// ignored"), and the cursor changes only when this device's pointer
+    /// focus is one of the requesting client's surfaces, or the surface is
+    /// the current pointer surface (a hotspot update). A null surface hides
+    /// the pointer image. The enter serial is matched per pointer device;
+    /// the spec words it per client, and GTK/Qt bind one pointer per seat.
+    /// </summary>
+    internal bool TrySetCursor(ClientSession session, ServerObject pointer, uint serial, SurfaceHandler? surface, int hotspotX, int hotspotY)
+    {
+        lock (_gate)
+        {
+            if (!_pointerEnterSerials.TryGetValue(pointer, out var enterSerial) || enterSerial != serial)
+            {
+                return false;
+            }
+
+            var hasFocus = _pointerFocus is { Gone: false } focus && focus.Session == session;
+            var isCurrent = surface is not null && ReferenceEquals(surface, _cursorSurface);
+            if (!hasFocus && !isCurrent)
+            {
+                return false;
+            }
+
+            _cursorOwner = session;
+            _cursorSurface = surface;
+            _cursorHotspot = (hotspotX, hotspotY);
+            _cursorHidden = surface is null;
+            return true;
+        }
+    }
+
+    /// <summary>Clears the cursor surface when it dies with its client.</summary>
+    internal void ClearCursorIf(SurfaceHandler surface)
+    {
+        lock (_gate)
+        {
+            if (ReferenceEquals(_cursorSurface, surface))
+            {
+                ResetCursor();
+            }
+        }
+    }
+
+    /// <summary>Back to the built-in arrow: the client cursor is gone or out of scope.</summary>
+    private void ResetCursor()
+    {
+        _cursorSurface = null;
+        _cursorHotspot = (0, 0);
+        _cursorHidden = false;
+        _cursorOwner = null;
     }
 
     /// <summary>
@@ -102,6 +187,7 @@ internal sealed class SeatState
         lock (_gate)
         {
             _pointers.RemoveAll(entry => entry.Session == session && entry.Object == pointer);
+            _pointerEnterSerials.Remove(pointer);
         }
     }
 
@@ -173,6 +259,15 @@ internal sealed class SeatState
             }
 
             _pointerFocus = focus;
+
+            // The client cursor is scoped to its owner's focus (spec: the
+            // cursor applies only when this device's pointer focus is one of
+            // the requesting client's surfaces). Focus left that client:
+            // back to the built-in arrow.
+            if (_cursorOwner is not null && !ReferenceEquals(focus?.Session, _cursorOwner))
+            {
+                ResetCursor();
+            }
 
             if (previous is not null)
             {
@@ -320,6 +415,10 @@ internal sealed class SeatState
     {
         lock (_gate)
         {
+            // Both teardown paths land here (unmap and destroy). The cursor
+            // clear shares this lock scope so a concurrent set_cursor cannot
+            // re-claim a dying surface in the gap.
+            ClearCursorIf(surface);
             var keyboardHadFocus = ReferenceEquals(_keyboardFocus, surface);
             var pointerHadFocus = ReferenceEquals(_pointerFocus, surface);
             if (keyboardHadFocus)
@@ -383,11 +482,13 @@ internal sealed class SeatState
 
     private void SendEnterOn(ClientSession session, ServerObject pointer, SurfaceHandler focus)
     {
+        var serial = session.NextSerial();
+        _pointerEnterSerials[pointer] = serial;
         TrySend(
             session,
             pointer,
             "enter",
-            WireArgument.UInt32(session.NextSerial()),
+            WireArgument.UInt32(serial),
             WireArgument.Object(focus.Id),
             WireArgument.FixedPoint(Protocol.Fixed.FromRaw(_pointerX << 8)),
             WireArgument.FixedPoint(Protocol.Fixed.FromRaw(_pointerY << 8)));

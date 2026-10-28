@@ -13,7 +13,10 @@ public class CompositorSessionTests
     internal const int Width = 32;
     internal const int Height = 32;
     private const int Stride = Width * 4;
-    internal const uint ContentColour = 0x7F123456;
+
+    // Opaque so pixel assertions are exact; ARGB transparency gets its own
+    // dedicated blending tests (the black-square regression).
+    internal const uint ContentColour = 0xFF123456;
 
     private static string TempSocket()
     {
@@ -181,5 +184,22 @@ public class CompositorSessionTests
         }
 
         return (content, path);
+    }
+
+    /// <summary>
+    /// Creates pool (6) and buffer (7) with exact content and dimensions —
+    /// for windows whose pixel size or format differs from the shared
+    /// 32×32 pattern (CSD margins, HiDPI buffers).
+    /// </summary>
+    internal static string SetupShmBuffer(TestClient client, byte[] content, int width, int height)
+    {
+        var path = Path.GetTempFileName();
+        File.WriteAllBytes(path, content);
+        var handle = File.OpenHandle(path, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite);
+        client.SendRequest(5, "wl_shm", "create_pool", WireArgument.NewId(6), WireArgument.FileDescriptor(unchecked((int)handle.DangerousGetHandle())), WireArgument.Int32(content.Length));
+        client.RegisterObject(6, "wl_shm_pool");
+        client.SendRequest(6, "wl_shm_pool", "create_buffer", WireArgument.NewId(7), WireArgument.Int32(0), WireArgument.Int32(width), WireArgument.Int32(height), WireArgument.Int32(width * 4), WireArgument.UInt32(0));
+        client.RegisterObject(7, "wl_buffer");
+        return path;
     }
 }

@@ -36,8 +36,10 @@ public class SmokeClientTests
                 var surface = scene.Surfaces.FirstOrDefault();
                 if (surface is { IsMapped: true })
                 {
-                    Assert.Equal(640, surface.Width);
-                    Assert.Equal(360, surface.Height);
+                    // Windows open maximised to the work area, and the
+                    // client honours the configure size.
+                    Assert.Equal(scene.WorkArea.W, surface.Width);
+                    Assert.Equal(scene.WorkArea.H, surface.Height);
                     Assert.NotNull(surface.Content);
                     return;
                 }
