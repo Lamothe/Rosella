@@ -281,6 +281,18 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
     /// <summary>The wl_surface id, for role errors raised elsewhere.</summary>
     internal uint Id => _self!.Id;
 
+    /// <summary>One-line runtime state dump (diagnostics: ground truth for render reports).</summary>
+    internal string Describe()
+    {
+        lock (_state)
+        {
+            var visible = _visible ?? (Position.X, Position.Y, Width, Height);
+            return $"surface {Id}: mapped={IsMapped} cursor={IsCursorSurface} xdg={HasXdgRole} gone={Gone} " +
+                   $"content={_width}x{_height} fmt={_format:X} pos={Position.X},{Position.Y} " +
+                   $"place={_placeWidth}x{_placeHeight} visible={visible.X},{visible.Y} {visible.W}x{visible.H}";
+        }
+    }
+
     /// <summary>True once any xdg role object has been created for this surface.</summary>
     internal bool HasXdgRole { get; private set; }
 

@@ -194,6 +194,10 @@ internal sealed class Scanout : IDisposable
         var buffer = _buffers[_front];
         FrameDump.WritePpm(path, _output.Mode.HDisplay, _output.Mode.VDisplay, buffer.Pitch, buffer.Pixels);
         Console.Error.WriteLine($"rosella: frame dumped to {path}");
+        foreach (var line in _scene.DescribeSurfaces())
+        {
+            Console.Error.WriteLine($"rosella: {line}");
+        }
     }
 
     public void Dispose()

@@ -178,6 +178,18 @@ public sealed class Scene
     /// Draws the background, the windows, the shell chrome, and the cursor —
     /// all in logical pixels scaled to the physical scanout by Scale.
     /// </summary>
+    /// <summary>One line per surface (diagnostics: the runtime truth behind a render report).</summary>
+    internal string[] DescribeSurfaces()
+    {
+        SurfaceHandler[] snapshot;
+        lock (_gate)
+        {
+            snapshot = _surfaces.ToArray();
+        }
+
+        return snapshot.Select(s => s.Describe()).ToArray();
+    }
+
     public void Render(Span<byte> pixels, int width, int height, int stride, long frame)
     {
         Background.Render(pixels, width, height, stride);
