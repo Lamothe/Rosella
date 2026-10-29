@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Text;
 using Microsoft.Win32.SafeHandles;
 
 namespace Rosella.Drm;
@@ -10,6 +11,9 @@ public sealed unsafe class DrmDevice : IDisposable
 {
     private const int VersionStringCapacity = 256;
     private const int MaxPasses = 5;
+
+    /// <summary>Offset of the name field in <see cref="DrmModeGetProperty"/>, pinned by layout tests.</summary>
+    private const int PropNameFieldOffset = 24;
 
     private readonly SafeFileHandle _handle;
     private readonly int _fd;
@@ -269,6 +273,97 @@ public sealed unsafe class DrmDevice : IDisposable
             UserData = userData,
         };
         Ioctl(DrmConstants.IoctlModePageFlip, ref native);
+    }
+
+    // Modeset base-object properties: how DPMS is read and written. The
+    // property *id* is allocated per driver, so callers look it up by name.
+
+    /// <summary>Reads the property ids and values attached to a modeset object.</summary>
+    public (uint[] PropIds, ulong[] Values) GetObjectProperties(uint objectId, uint objectType)
+    {
+        for (var pass = 0; pass < MaxPasses; pass++)
+        {
+            var native = new DrmModeObjGetProperties { ObjId = objectId, ObjType = objectType };
+            Ioctl(DrmConstants.IoctlModeObjGetProperties, ref native);
+
+            var propIds = new uint[native.CountProps];
+            var values = new ulong[native.CountProps];
+            fixed (uint* propPointer = propIds)
+            fixed (ulong* valuePointer = values)
+            {
+                native.PropsPtr = (ulong)propPointer;
+                native.PropValuesPtr = (ulong)valuePointer;
+                Ioctl(DrmConstants.IoctlModeObjGetProperties, ref native);
+            }
+
+            if (propIds.Length == native.CountProps)
+            {
+                return (propIds, values);
+            }
+        }
+
+        throw new DrmException("OBJ_GETPROPERTIES kept changing", 0);
+    }
+
+    /// <summary>
+    /// Reads a property's symbolic name (the key callers match on).
+    /// </summary>
+    public string GetPropertyName(uint propId)
+    {
+        var native = new DrmModeGetProperty { PropId = propId };
+        Ioctl(DrmConstants.IoctlModeGetProperty, ref native);
+
+        // Offset of the name field, pinned by layout tests.
+        var copy = native;
+        var bytes = MemoryMarshal.AsBytes(MemoryMarshal.CreateReadOnlySpan(ref copy, 1));
+        var nameBytes = bytes.Slice(PropNameFieldOffset, DrmConstants.PropNameLength);
+        var terminator = nameBytes.IndexOf((byte)0);
+        return Encoding.UTF8.GetString(nameBytes[..(terminator < 0 ? nameBytes.Length : terminator)]);
+    }
+
+    /// <summary>Sets one property on a connector (e.g. DPMS).</summary>
+    public void SetConnectorProperty(uint connectorId, uint propId, ulong value)
+    {
+        var native = new DrmModeConnectorSetProperty
+        {
+            Value = value,
+            PropId = propId,
+            ConnectorId = connectorId,
+        };
+        Ioctl(DrmConstants.IoctlModeSetProperty, ref native);
+    }
+
+    /// <summary>
+    /// Turns a connector's DPMS on or off — a real power state, not black
+    /// pixels: the panel stops being driven. The property id is looked up by
+    /// name ("DPMS") because ids are allocated per driver; the lookup is
+    /// cached, and a driver without the property simply reports false.
+    /// </summary>
+    public bool SetDpms(uint connectorId, bool on)
+    {
+        var propId = FindProperty(connectorId, "DPMS");
+        if (propId is null)
+        {
+            return false;
+        }
+
+        SetConnectorProperty(connectorId, propId.Value, on ? DrmConstants.DpmsOn : DrmConstants.DpmsOff);
+        return true;
+    }
+
+    /// <summary>Finds a named property on a connector, or null when absent.</summary>
+    public uint? FindProperty(uint connectorId, string name)
+    {
+        var (propIds, _) = GetObjectProperties(connectorId, DrmConstants.ObjectConnector);
+        foreach (var propId in propIds)
+        {
+            if (string.Equals(GetPropertyName(propId), name, StringComparison.Ordinal))
+            {
+                return propId;
+            }
+        }
+
+        return null;
     }
 
     /// <summary>

@@ -28,10 +28,10 @@ internal sealed class InputThread : IDisposable
     private int _keyboardCount;
     private int _pointerCount;
 
-    internal InputThread(Scene scene, SeatState seat, Action quit, Shell? shell = null)
+    internal InputThread(Scene scene, SeatState seat, Action quit, Shell? shell = null, ScreenPower? screenPower = null)
     {
         _seat = seat;
-        _router = new InputRouter(scene, seat, quit, shell);
+        _router = new InputRouter(scene, seat, quit, shell, screenPower);
     }
 
     internal InputRouter Router => _router;

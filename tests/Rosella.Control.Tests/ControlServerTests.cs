@@ -58,6 +58,13 @@ internal sealed class FakeTarget : IControlTarget
         MaybeThrow();
     }
 
+    public string SetBlanked(bool blank)
+    {
+        Calls.Add(blank ? "blank" : "unblank");
+        MaybeThrow();
+        return blank ? "blanked" : "awake";
+    }
+
     private void MaybeThrow()
     {
         if (ThrowOn is not null && Calls[^1].StartsWith(ThrowOn, StringComparison.Ordinal))
@@ -97,6 +104,38 @@ public sealed class ControlServerTests : IDisposable
             var (ok, payload) = client.Send("ping");
             Assert.True(ok);
             Assert.Equal("pong", Encoding.UTF8.GetString(payload));
+        }
+    }
+
+    [Fact]
+    public void Blank_and_unblank_drive_the_target()
+    {
+        var (server, target, client) = Start();
+        using (server)
+        using (client)
+        {
+            var (ok, payload) = client.Send("blank");
+            Assert.True(ok);
+            Assert.Equal("blanked", Encoding.UTF8.GetString(payload).TrimEnd('\n'));
+
+            var (ok2, payload2) = client.Send("unblank");
+            Assert.True(ok2);
+            Assert.Equal("awake", Encoding.UTF8.GetString(payload2).TrimEnd('\n'));
+
+            Assert.Equal(new[] { "blank", "unblank" }, target.Calls);
+        }
+    }
+
+    [Fact]
+    public void Blank_takes_no_arguments()
+    {
+        var (server, target, client) = Start();
+        using (server)
+        using (client)
+        {
+            var (ok, _) = client.Send("blank now");
+            Assert.False(ok);
+            Assert.Empty(target.Calls);
         }
     }
 

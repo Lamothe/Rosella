@@ -35,6 +35,8 @@ if (argsList.Count == 0)
           key <code> <0|1>           key down/up (evdev codes)
           click <code>               button down+up (e.g. 272 = left)
           tap-key <code>             key down+up (e.g. 28 = Enter)
+          blank                      force the screen dark (DPMS off)
+          unblank                    force the screen lit
         """);
     return 2;
 }
@@ -137,6 +139,26 @@ try
 
             var r = OkOrError(client, $"key {code} 1");
             return r == 0 ? OkOrError(client, $"key {code} 0") : r;
+        }
+
+        case "blank":
+        case "unblank":
+        {
+            if (rest.Length != 0)
+            {
+                Console.Error.WriteLine($"usage: rosella-driver {command}");
+                return 2;
+            }
+
+            var (ok, payload) = client.Send(command);
+            if (!ok)
+            {
+                Console.Error.WriteLine("error: " + System.Text.Encoding.UTF8.GetString(payload));
+                return 1;
+            }
+
+            Console.Write(System.Text.Encoding.UTF8.GetString(payload));
+            return 0;
         }
 
         default:

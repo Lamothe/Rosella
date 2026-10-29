@@ -24,12 +24,12 @@ public class PinnedAppsTests
             ["google-chrome.desktop", "google-chrome-stable.desktop", "com.google.Chrome.desktop"],
             PinnedApps.Table[0].DesktopIds);
         Assert.Equal(
-            ["org.gnome.Console.desktop", "gnome-terminal.desktop", "org.gnome.Terminal.desktop"],
+            ["org.gnome.Ptyxis.desktop", "org.gnome.Console.desktop", "gnome-terminal.desktop", "org.gnome.Terminal.desktop"],
             PinnedApps.Table[1].DesktopIds);
         Assert.Equal(["org.gnome.Nautilus.desktop", "nautilus.desktop"], PinnedApps.Table[2].DesktopIds);
-        Assert.Equal(["com.microsoft.VSCode.desktop", "code.desktop", "code-oss.desktop"], PinnedApps.Table[3].DesktopIds);
-        Assert.Equal(["steam.desktop", "com.valvesoftware.Steam.desktop"], PinnedApps.Table[4].DesktopIds);
-        Assert.Equal(["org.gnome.World.Resources.desktop", "resources.desktop"], PinnedApps.Table[5].DesktopIds);
+        Assert.Equal(["com.visualstudio.code.desktop", "com.microsoft.VSCode.desktop", "code.desktop", "code-oss.desktop"], PinnedApps.Table[3].DesktopIds);
+        Assert.Equal(["com.valvesoftware.Steam.desktop", "steam.desktop"], PinnedApps.Table[4].DesktopIds);
+        Assert.Equal(["net.nokyan.Resources.desktop", "org.gnome.World.Resources.desktop", "resources.desktop"], PinnedApps.Table[5].DesktopIds);
     }
 
     [Fact]

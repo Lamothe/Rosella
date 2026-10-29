@@ -175,3 +175,37 @@ internal struct DrmEventVblank
     internal uint Sequence;
     internal uint CrtcId;
 }
+
+// Modeset base-object properties (drm_mode.h:602-638) — the DPMS path. The
+// property id is *not* stable across drivers, so the connector's properties
+// are enumerated and the one named "DPMS" is used.
+
+[StructLayout(LayoutKind.Sequential)]
+internal struct DrmModeConnectorSetProperty
+{
+    internal ulong Value;
+    internal uint PropId;
+    internal uint ConnectorId;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+internal struct DrmModeObjGetProperties
+{
+    internal ulong PropsPtr;
+    internal ulong PropValuesPtr;
+    internal uint CountProps;
+    internal uint ObjId;
+    internal uint ObjType;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+internal unsafe struct DrmModeGetProperty
+{
+    internal ulong ValuesPtr;
+    internal ulong EnumBlobPtr;
+    internal uint PropId;
+    internal uint Flags;
+    internal fixed byte Name[DrmConstants.PropNameLength];
+    internal uint CountValues;
+    internal uint CountEnumBlobs;
+}

@@ -14,6 +14,7 @@ internal sealed class Scanout : IDisposable
     private readonly DrmDevice _device;
     private readonly DrmOutput _output;
     private readonly Scene _scene;
+    private readonly ScreenPower? _screenPower;
     private readonly DrmCrtcState _savedState;
     private readonly DrmDumbBuffer[] _buffers = new DrmDumbBuffer[2];
     private readonly uint[] _framebuffers = new uint[2];
@@ -22,11 +23,15 @@ internal sealed class Scanout : IDisposable
     /// <summary>Index of the buffer currently scanned out (diagnostics).</summary>
     private volatile int _front;
 
-    public Scanout(DrmDevice device, DrmOutput output, Scene scene)
+    /// <summary>Whether the panel is currently unlit (DPMS off).</summary>
+    private volatile bool _blanked;
+
+    public Scanout(DrmDevice device, DrmOutput output, Scene scene, ScreenPower? screenPower = null)
     {
         _device = device;
         _output = output;
         _scene = scene;
+        _screenPower = screenPower;
         _savedState = device.GetCrtc(output.CrtcId);
         try
         {
@@ -140,7 +145,9 @@ internal sealed class Scanout : IDisposable
     /// <summary>
     /// Runs the flip loop until the token is cancelled. Composites only when
     /// the scene is dirty (commits, cursor moves, shell state) or the clock
-    /// tick bound expires — an idle desktop burns no CPU.
+    /// tick bound expires — an idle desktop burns no CPU. While the screen is
+    /// blanked nothing is rendered at all: the panel is unlit (DPMS off), so
+    /// there is no point drawing into it.
     /// </summary>
     public void Run(CancellationToken token)
     {
@@ -151,42 +158,41 @@ internal sealed class Scanout : IDisposable
         long frame = 1;
         while (!token.IsCancellationRequested)
         {
-            if (!_scene.WaitForDirty(TimeSpan.FromSeconds(1), token))
+            // Sync the panel's power state with the policy. The policy flips
+            // to blanked on its own when idle, and back on the input thread's
+            // MarkActivity; the hardware change happens only here, on the one
+            // thread that owns the DRM device. SetBlanked commits state only
+            // on success, so a failed ioctl is retried on the next turn
+            // instead of leaving the two out of step.
+            _screenPower?.Tick();
+            var wantBlank = _screenPower?.IsBlanked == true;
+            if (wantBlank != _blanked)
+            {
+                SetBlanked(wantBlank);
+            }
+
+            var blanked = _blanked;
+
+            // While the panel is unlit there is nothing to draw: wait for
+            // input rather than the one-second clock bound.
+            var wait = blanked ? TimeSpan.FromSeconds(30) : TimeSpan.FromSeconds(1);
+            if (!_scene.WaitForDirty(wait, token))
             {
                 break;
             }
 
-            var back = 1 - front;
-
-            if (_dumpRequested)
+            if (blanked)
             {
-                TaskCompletionSource<byte[]>? capture;
-                bool fileDump;
-                lock (_captureGate)
-                {
-                    capture = _capture;
-                    _capture = null;
-                    fileDump = _fileDumpPending;
-                    _fileDumpPending = false;
-                    _dumpRequested = false;
-                }
-
-                // A control-socket capture gets the frame as bytes; the
-                // signal path keeps writing the diagnostics file. Both may
-                // be pending in the same wake; both are served.
-                if (capture != null)
-                {
-                    var frontBuffer = _buffers[_front];
-                    capture.TrySetResult(FrameDump.EncodePpm(
-                        _output.Mode.HDisplay, _output.Mode.VDisplay, frontBuffer.Pitch, frontBuffer.Pixels));
-                }
-
-                if (fileDump)
-                {
-                    DumpFrame("/tmp/rosella-frame.ppm");
-                }
+                // The panel is unlit but the front buffer still holds the
+                // last drawn frame, so a capture can be served from it. This
+                // must happen here: leaving a request pending would wedge the
+                // control socket's timeout and poison every later capture.
+                ServePendingDiagnostics();
+                continue;
             }
 
+            var back = 1 - front;
+            ServePendingDiagnostics();
             RenderInto(back, frame);
             _device.PageFlip(_output.CrtcId, _framebuffers[back], (ulong)frame);
             WaitForFlip((ulong)frame, token);
@@ -201,6 +207,44 @@ internal sealed class Scanout : IDisposable
     private readonly object _captureGate = new();
     private TaskCompletionSource<byte[]>? _capture;
     private bool _fileDumpPending;
+
+    /// <summary>
+    /// Serves whatever diagnostics are pending against the front buffer: a
+    /// control-socket capture gets the frame as bytes, the signal path writes
+    /// the file. Both may be pending in the same wake; both are served. Runs
+    /// on the render loop (which owns the buffers), so it must never be
+    /// called from anywhere else.
+    /// </summary>
+    private void ServePendingDiagnostics()
+    {
+        if (!_dumpRequested)
+        {
+            return;
+        }
+
+        TaskCompletionSource<byte[]>? capture;
+        bool fileDump;
+        lock (_captureGate)
+        {
+            capture = _capture;
+            _capture = null;
+            fileDump = _fileDumpPending;
+            _fileDumpPending = false;
+            _dumpRequested = false;
+        }
+
+        if (capture != null)
+        {
+            var frontBuffer = _buffers[_front];
+            capture.TrySetResult(FrameDump.EncodePpm(
+                _output.Mode.HDisplay, _output.Mode.VDisplay, frontBuffer.Pitch, frontBuffer.Pixels));
+        }
+
+        if (fileDump)
+        {
+            DumpFrame("/tmp/rosella-frame.ppm");
+        }
+    }
 
     /// <summary>
     /// Requests a diagnostics dump of the on-screen frame. Signal-safe:
@@ -277,6 +321,15 @@ internal sealed class Scanout : IDisposable
 
         _disposed = true;
 
+        // A blanked panel must be woken before anything else, or the person
+        // logging back in sees a dead screen. A failed wake is retried: the
+        // CRTC restore below may bring the display back regardless, but DPMS
+        // state is per connector and must be undone here.
+        for (var attempt = 0; attempt < 3 && _blanked; attempt++)
+        {
+            SetBlanked(false);
+        }
+
         // Restore what the previous session had, if the kernel still accepts it.
         if (_savedState is { ModeValid: true, Mode: not null })
         {
@@ -313,6 +366,51 @@ internal sealed class Scanout : IDisposable
         var buffer = _buffers[bufferIndex];
         _scene.Render(buffer.Pixels, _output.Mode.HDisplay, _output.Mode.VDisplay, checked((int)buffer.Pitch), frame);
     }
+
+    /// <summary>
+    /// Drives the panel's real power state through DPMS. A driver without a
+    /// DPMS property simply keeps the panel lit (reported once); either way
+    /// compositing stops while blanked, so the CPU stays idle. State is only
+    /// committed on success — a failed ioctl leaves the previous state in
+    /// place, so the render loop's next turn retries rather than believing a
+    /// panel is lit when it is not. Must run on the render loop thread.
+    /// </summary>
+    private void SetBlanked(bool blank)
+    {
+        try
+        {
+            if (!_device.SetDpms(_output.Connector.Id, !blank))
+            {
+                if (!_dpmsMissingLogged)
+                {
+                    _dpmsMissingLogged = true;
+                    Console.Error.WriteLine("rosella: connector has no DPMS property; screen cannot be powered down");
+                }
+
+                // Nothing to drive, but stop compositing all the same.
+                _blanked = blank;
+                _scene.MarkDirty();
+                return;
+            }
+        }
+        catch (DrmException exception)
+        {
+            Console.Error.WriteLine($"rosella: DPMS {(blank ? "off" : "on")} failed: {exception.Message}; retrying");
+            return;
+        }
+
+        _blanked = blank;
+        Console.Error.WriteLine($"rosella: screen {(blank ? "blanked" : "awake")}");
+
+        // The panel is back on: show something immediately rather than
+        // waiting for the next scene change.
+        if (!blank)
+        {
+            _scene.MarkDirty();
+        }
+    }
+
+    private bool _dpmsMissingLogged;
 
     private void WaitForFlip(ulong userData, CancellationToken token)
     {

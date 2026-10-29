@@ -248,6 +248,20 @@ public sealed class ControlServer : IDisposable
                     SendPayload(client, Array.Empty<byte>());
                     break;
 
+                case "blank":
+                case "unblank":
+                {
+                    var blank = parts[0] == "blank";
+                    if (parts.Length != 1)
+                    {
+                        SendError(client, $"usage: {parts[0]}");
+                        break;
+                    }
+
+                    SendPayload(client, Encoding.UTF8.GetBytes(_target.SetBlanked(blank) + "\n"));
+                    break;
+                }
+
                 default:
                     SendError(client, $"unknown command: {parts[0]}");
                     break;

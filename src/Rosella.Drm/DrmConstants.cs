@@ -21,6 +21,19 @@ public static class DrmConstants
     // DRM_MODE_TYPE_PREFERRED
     public const uint ModeTypePreferred = 1 << 3;
 
+    // DRM_MODE_OBJECT_* (drm_mode.h: object types for the modeset base object
+    // property ioctls; the kernel compares the full magic value, not a small int).
+    public const uint ObjectConnector = 0xc0c0c0c0;
+
+    // DRM_MODE_DPMS_* (drm_mode.h:129-132)
+    public const uint DpmsOn = 0;
+    public const uint DpmsStandby = 1;
+    public const uint DpmsSuspend = 2;
+    public const uint DpmsOff = 3;
+
+    /// <summary>DRM_PROP_NAME_LEN: the name field of drm_mode_get_property.</summary>
+    public const int PropNameLength = 32;
+
     // enum drm_connector_status
     public const uint ConnectorConnected = 1;
     public const uint ConnectorDisconnected = 2;
@@ -61,6 +74,12 @@ public static class DrmConstants
     internal static readonly uint IoctlModeCreateDumb = ReadWrite('d', 0xB2, Size<DrmModeCreateDumb>());
     internal static readonly uint IoctlModeMapDumb = ReadWrite('d', 0xB3, Size<DrmModeMapDumb>());
     internal static readonly uint IoctlModeDestroyDumb = ReadWrite('d', 0xB4, Size<DrmModeDestroyDumb>());
+
+    // Modeset base-object properties: how DPMS (and every other connector
+    // property) is read and written. drm.h:1201-1202, 1247.
+    internal static readonly uint IoctlModeGetProperty = ReadWrite('d', 0xAA, Size<DrmModeGetProperty>());
+    internal static readonly uint IoctlModeSetProperty = ReadWrite('d', 0xAB, Size<DrmModeConnectorSetProperty>());
+    internal static readonly uint IoctlModeObjGetProperties = ReadWrite('d', 0xB9, Size<DrmModeObjGetProperties>());
 }
 
 /// <summary>Thrown when the kernel rejects a DRM operation.</summary>

@@ -15,12 +15,14 @@ internal sealed class ControlAdapter : IControlTarget
     private readonly Scene _scene;
     private readonly InputRouter _router;
     private readonly Scanout _scanout;
+    private readonly ScreenPower _screenPower;
 
-    internal ControlAdapter(Scene scene, InputRouter router, Scanout scanout)
+    internal ControlAdapter(Scene scene, InputRouter router, Scanout scanout, ScreenPower screenPower)
     {
         _scene = scene;
         _router = router;
         _scanout = scanout;
+        _screenPower = screenPower;
     }
 
     public byte[] CaptureFrame()
@@ -28,6 +30,21 @@ internal sealed class ControlAdapter : IControlTarget
         // Never call this from the render loop (it is the loop's
         // counterpart). A wedged loop must not wedge the driver forever.
         return _scanout.CaptureFrame().WaitAsync(TimeSpan.FromSeconds(5)).GetAwaiter().GetResult();
+    }
+
+    public string SetBlanked(bool blank)
+    {
+        // The policy flips here and the render loop performs the DPMS change
+        // on its next turn, so wake it first — otherwise a blank could sit
+        // unapplied for the length of a long idle wait.
+        var action = _screenPower.Force(blank);
+        _scene.MarkDirty();
+        return action switch
+        {
+            ScreenPowerAction.Blank => "blanked",
+            ScreenPowerAction.Unblank => "awake",
+            _ => "unchanged",
+        };
     }
 
     public string SurfaceTable() => string.Join('\n', _scene.DescribeSurfaces());
@@ -38,6 +55,7 @@ internal sealed class ControlAdapter : IControlTarget
         var lines = new List<string>
         {
             $"output {_scene.OutputSize.Width}x{_scene.OutputSize.Height} logical",
+            $"screen {(_screenPower.IsBlanked ? "blanked" : "awake")}",
             $"cursor {cursor.X},{cursor.Y}",
             "surfaces:",
         };

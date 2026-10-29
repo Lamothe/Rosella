@@ -28,4 +28,10 @@ public interface IControlTarget
 
     /// <summary>Key: value 1 = down, 0 = up (evdev key codes).</summary>
     void Key(ushort code, int value);
+
+    /// <summary>
+    /// Forces the screen dark or lit regardless of idleness (a test hand for
+    /// blanking). Returns the action that actually happened.
+    /// </summary>
+    string SetBlanked(bool blank);
 }

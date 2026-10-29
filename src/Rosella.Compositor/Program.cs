@@ -26,6 +26,10 @@ using var cancellation = new CancellationTokenSource();
 var scene = new Scene();
 var seat = new SeatState();
 
+// Screen blanking: input keeps the panel lit, five idle minutes power it
+// down (DPMS off). The policy holds no hardware; the render loop acts on it.
+var screenPower = new ScreenPower();
+
 // The shell: the pinned launchers resolved from real desktop files, the
 // apple system menu wired to the session's actions, and the taskbar's
 // focus-or-launch view of the scene. Log out is the graceful quit — the
@@ -67,7 +71,7 @@ var outputInfo = new OutputInfo(
     output.Mode.Name,
     $"{output.Connector.TypeName}-{output.Connector.TypeId}");
 
-using var input = new InputThread(scene, seat, () => cancellation.Cancel(), shell);
+using var input = new InputThread(scene, seat, () => cancellation.Cancel(), shell, screenPower);
 input.Discover();
 
 using var server = new DisplayServer(
@@ -101,7 +105,7 @@ using var device = detection.Value.Device;
 Console.WriteLine($"rosella: driving {output.Connector} at {output.Mode} via CRTC {output.CrtcId}");
 input.Start();
 
-var scanout = new Scanout(device, output, scene);
+var scanout = new Scanout(device, output, scene, screenPower);
 
 // Diagnostics: SIGWINCH (kill -WINCH <pid>) dumps what is on screen at
 // that instant (PPM), so visual reports can be checked against ground
@@ -129,7 +133,7 @@ try
 {
     control = new ControlServer(
         Rosella.Control.ControlClient.DefaultSocketPath,
-        new ControlAdapter(scene, input.Router, scanout));
+        new ControlAdapter(scene, input.Router, scanout, screenPower));
     Console.WriteLine($"rosella: control socket at {control.SocketPath}");
 }
 catch (Exception exception)

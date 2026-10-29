@@ -24,6 +24,9 @@ public class DrmLayoutTests
     [InlineData(typeof(DrmModeDestroyDumb), 4)]
     [InlineData(typeof(DrmEvent), 8)]
     [InlineData(typeof(DrmEventVblank), 32)]
+    [InlineData(typeof(DrmModeConnectorSetProperty), 16)]
+    [InlineData(typeof(DrmModeObjGetProperties), 32)]
+    [InlineData(typeof(DrmModeGetProperty), 64)]
     public void StructSizes_MatchKernelAbi(Type type, int expectedSize)
     {
         Assert.Equal(expectedSize, Marshal.SizeOf(type));
@@ -58,6 +61,19 @@ public class DrmLayoutTests
     [InlineData(typeof(DrmEventVblank), "UserData", 8)]
     [InlineData(typeof(DrmEventVblank), "Sequence", 24)]
     [InlineData(typeof(DrmEventVblank), "CrtcId", 28)]
+    [InlineData(typeof(DrmModeConnectorSetProperty), "Value", 0)]
+    [InlineData(typeof(DrmModeConnectorSetProperty), "PropId", 8)]
+    [InlineData(typeof(DrmModeConnectorSetProperty), "ConnectorId", 12)]
+    [InlineData(typeof(DrmModeObjGetProperties), "PropsPtr", 0)]
+    [InlineData(typeof(DrmModeObjGetProperties), "PropValuesPtr", 8)]
+    [InlineData(typeof(DrmModeObjGetProperties), "CountProps", 16)]
+    [InlineData(typeof(DrmModeObjGetProperties), "ObjType", 24)]
+    [InlineData(typeof(DrmModeGetProperty), "EnumBlobPtr", 8)]
+    [InlineData(typeof(DrmModeGetProperty), "PropId", 16)]
+    [InlineData(typeof(DrmModeGetProperty), "Flags", 20)]
+    [InlineData(typeof(DrmModeGetProperty), "Name", 24)]
+    [InlineData(typeof(DrmModeGetProperty), "CountValues", 56)]
+    [InlineData(typeof(DrmModeGetProperty), "CountEnumBlobs", 60)]
     public void FieldOffsets_MatchKernelAbi(Type type, string field, int expectedOffset)
     {
         Assert.Equal(expectedOffset, Marshal.OffsetOf(type, field).ToInt32());

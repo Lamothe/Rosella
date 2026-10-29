@@ -15,6 +15,7 @@ internal sealed class InputRouter
     private readonly SeatState _seat;
     private readonly Action _quit;
     private readonly Shell? _shell;
+    private readonly ScreenPower? _screenPower;
     private readonly object _gate = new();
     private readonly HashSet<int> _pressedKeys = new();
     private readonly HashSet<int> _consumedKeys = new();
@@ -37,12 +38,13 @@ internal sealed class InputRouter
     private int _lastDepressed = -1;
     private int _lastLocked = -1;
 
-    internal InputRouter(Scene scene, SeatState seat, Action quit, Shell? shell = null)
+    internal InputRouter(Scene scene, SeatState seat, Action quit, Shell? shell = null, ScreenPower? screenPower = null)
     {
         _scene = scene;
         _seat = seat;
         _quit = quit;
         _shell = shell;
+        _screenPower = screenPower;
     }
 
     /// <summary>Where the arrow's hotspot sits.</summary>
@@ -71,6 +73,16 @@ internal sealed class InputRouter
     /// <summary>Processes one evdev event (thread-safe; called by device readers).</summary>
     internal void ProcessEvent(InputEvent e)
     {
+        // Any real input keeps the screen alive, and wakes it if it had
+        // blanked. Deliberately outside _gate: the power object has its own
+        // lock and the render loop must be woken even if this event goes no
+        // further. The event itself is still delivered — the first move after
+        // a blank both lights the panel and moves the cursor.
+        if (_screenPower is not null && _screenPower.MarkActivity() == ScreenPowerAction.Unblank)
+        {
+            _scene.MarkDirty();
+        }
+
         lock (_gate)
         {
             switch (e.Type)
