@@ -7,14 +7,17 @@ namespace Rosella.Compositor.Tests;
 
 /// <summary>
 /// The Windows 11 style shell over a real socket: windows land above the
-/// taskbar, Super toggles the Start menu, the taskbar's Start button and
-/// task buttons are clickable, binding keys never leak to clients, and the
-/// focused window wears the accent border.
+/// taskbar, the taskbar's apple, pinned and task buttons are clickable,
+/// binding keys never leak to clients, and the focused window wears the
+/// accent border. The Super key by itself does nothing.
 /// </summary>
 public class ShellTests
 {
     private static uint PixelAt(byte[] buffer, int stride, int x, int y) =>
         MemoryMarshal.Read<uint>(buffer.AsSpan((y * stride) + (x * 4)));
+
+    private static PinnedLauncher Pin(string name, string[] matchKeys, string[]? argv = null) =>
+        new(name, $"{name.ToLowerInvariant()}.desktop", matchKeys, argv ?? matchKeys, null, null);
 
     [Fact]
     public void MapWindow_FillsTheWorkArea()
@@ -60,35 +63,6 @@ public class ShellTests
     }
 
     [Fact]
-    public void SuperAlone_TogglesTheLauncher()
-    {
-        using var harness = new Harness();
-
-        harness.Press(InputConstants.KeyLeftMeta);
-        harness.Release(InputConstants.KeyLeftMeta);
-        Assert.True(harness.Shell.Launcher.IsOpen);
-
-        harness.Press(InputConstants.KeyLeftMeta);
-        harness.Release(InputConstants.KeyLeftMeta);
-        Assert.False(harness.Shell.Launcher.IsOpen);
-    }
-
-    [Fact]
-    public void StartButton_TogglesTheLauncher()
-    {
-        using var harness = new Harness();
-        var start = Bar.ComputeLayout(1920, 1080, Bar.ClockString(), []).Start;
-        var cx = start.X + (start.W / 2);
-        var cy = start.Y + (start.H / 2);
-
-        harness.ClickAt(cx, cy);
-        Assert.True(harness.Shell.Launcher.IsOpen);
-
-        harness.ClickAt(cx, cy);
-        Assert.False(harness.Shell.Launcher.IsOpen);
-    }
-
-    [Fact]
     public void TaskButton_FocusesAndRaisesTheWindow()
     {
         using var harness = new Harness();
@@ -101,53 +75,6 @@ public class ShellTests
         harness.ClickAt(rect.X + (rect.W / 2), rect.Y + (rect.H / 2));
 
         Assert.Equal(surface, harness.Seat.KeyboardFocus);
-    }
-
-    [Fact]
-    public void LauncherEnter_SpawnsAndClosesThroughTheRouter()
-    {
-        using var harness = new Harness();
-        var spawned = new List<string>();
-        harness.Shell.Launcher.SpawnOverride = (command, socket) =>
-        {
-            spawned.Add(command);
-            return true;
-        };
-
-        harness.Press(InputConstants.KeyLeftMeta);
-        harness.Release(InputConstants.KeyLeftMeta);
-        Assert.True(harness.Shell.Launcher.IsOpen);
-
-        harness.Press(InputConstants.KeyDown);
-        harness.Press(InputConstants.KeyEnter);
-
-        Assert.Equal([Launcher.Apps[1].Command], spawned);
-        Assert.False(harness.Shell.Launcher.IsOpen);
-    }
-
-    [Fact]
-    public void LauncherOpen_StealsKeysFromTheFocusedWindow()
-    {
-        using var harness = new Harness();
-
-        harness.MapWindow(8, 11, 12, title: "Hello");
-        var surface = harness.MappedSurface(8);
-        harness.ClickAt(surface.Position.X + 2, surface.Position.Y + 2);
-        harness.OpenKeyboard();
-
-        harness.Press(InputConstants.KeyLeftMeta);
-        harness.Release(InputConstants.KeyLeftMeta);
-        Assert.True(harness.Shell.Launcher.IsOpen);
-
-        // Drain what the focus handover sent: the meta press key and the
-        // leave are legitimate, they predate the launcher's opening.
-        harness.CollectUntilRoundTrip();
-
-        // Focus left the window for the launcher: typing reaches nobody.
-        Assert.Null(harness.Seat.KeyboardFocus);
-        harness.Press(InputConstants.KeyA);
-        harness.Release(InputConstants.KeyA);
-        Assert.DoesNotContain(harness.CollectUntilRoundTrip(), e => e.EventName == "key");
     }
 
     [Fact]
@@ -188,86 +115,6 @@ public class ShellTests
     }
 
     [Fact]
-    public void LauncherClick_OutsideClosesIt()
-    {
-        using var harness = new Harness();
-        harness.Press(InputConstants.KeyLeftMeta);
-        harness.Release(InputConstants.KeyLeftMeta);
-        Assert.True(harness.Shell.Launcher.IsOpen);
-
-        harness.ClickAt(0, 200);
-        Assert.False(harness.Shell.Launcher.IsOpen);
-    }
-
-    [Fact]
-    public void LauncherEscRestoresKeyboardFocus()
-    {
-        using var harness = new Harness();
-        harness.MapWindow(8, 11, 12, title: "Hello");
-        var surface = harness.MappedSurface(8);
-        harness.ClickAt(surface.Position.X + 2, surface.Position.Y + 2);
-
-        harness.Press(InputConstants.KeyLeftMeta);
-        harness.Release(InputConstants.KeyLeftMeta);
-        Assert.Null(harness.Seat.KeyboardFocus);
-
-        harness.Press(InputConstants.KeyEsc);
-        Assert.False(harness.Shell.Launcher.IsOpen);
-        Assert.Equal(surface, harness.Seat.KeyboardFocus);
-    }
-
-    [Fact]
-    public void LauncherEnterRestoresKeyboardFocus()
-    {
-        using var harness = new Harness();
-        harness.Shell.Launcher.SpawnOverride = (_, _) => true;
-        harness.MapWindow(8, 11, 12, title: "Hello");
-        var surface = harness.MappedSurface(8);
-        harness.ClickAt(surface.Position.X + 2, surface.Position.Y + 2);
-
-        harness.Press(InputConstants.KeyLeftMeta);
-        harness.Release(InputConstants.KeyLeftMeta);
-        harness.Press(InputConstants.KeyEnter);
-
-        Assert.False(harness.Shell.Launcher.IsOpen);
-        Assert.Equal(surface, harness.Seat.KeyboardFocus);
-    }
-
-    [Fact]
-    public void SecondMetaDoesNotResetAUsedChord()
-    {
-        using var harness = new Harness();
-        var start = Bar.ComputeLayout(1920, 1080, Bar.ClockString(), []).Start;
-
-        harness.Press(InputConstants.KeyLeftMeta);
-        harness.ClickAt(start.X + (start.W / 2), start.Y + (start.H / 2));
-        Assert.True(harness.Shell.Launcher.IsOpen);
-
-        harness.Press(InputConstants.KeyRightMeta);
-        harness.Release(InputConstants.KeyLeftMeta);
-        harness.Release(InputConstants.KeyRightMeta);
-
-        Assert.True(harness.Shell.Launcher.IsOpen);
-    }
-
-    [Fact]
-    public void ClickDismissWhileMetaHeld_DoesNotReopenOnRelease()
-    {
-        using var harness = new Harness();
-
-        harness.Press(InputConstants.KeyLeftMeta);
-        harness.Release(InputConstants.KeyLeftMeta);
-        Assert.True(harness.Shell.Launcher.IsOpen);
-
-        harness.Press(InputConstants.KeyLeftMeta);
-        harness.ClickAt(0, 200);
-        Assert.False(harness.Shell.Launcher.IsOpen);
-
-        harness.Release(InputConstants.KeyLeftMeta);
-        Assert.False(harness.Shell.Launcher.IsOpen);
-    }
-
-    [Fact]
     public void DismissingPopups_UnmapsThemAndSendsPopupDone()
     {
         using var harness = new Harness();
@@ -279,35 +126,6 @@ public class ShellTests
 
         Assert.False(harness.MappedSurface(15).IsMapped);
         Assert.Equal("popup_done", harness.Client.EventName(harness.Client.ReadUntil(13, "popup_done")));
-    }
-
-    [Fact]
-    public void TaskbarDismissWhileMetaHeld_DoesNotReopenOnRelease()
-    {
-        using var harness = new Harness();
-        harness.Press(InputConstants.KeyLeftMeta);
-        harness.Release(InputConstants.KeyLeftMeta);
-        Assert.True(harness.Shell.Launcher.IsOpen);
-
-        harness.Press(InputConstants.KeyLeftMeta);
-        harness.ClickAt(400, harness.Scene.OutputSize.Height - (Shell.BarHeight / 2));
-        Assert.False(harness.Shell.Launcher.IsOpen);
-
-        harness.Release(InputConstants.KeyLeftMeta);
-        Assert.False(harness.Shell.Launcher.IsOpen);
-    }
-
-    [Fact]
-    public void SuperPlusKey_IsAChordNotALauncherToggle()
-    {
-        using var harness = new Harness();
-
-        harness.Press(InputConstants.KeyLeftMeta);
-        harness.Press(InputConstants.KeyA);
-        harness.Release(InputConstants.KeyA);
-        harness.Release(InputConstants.KeyLeftMeta);
-
-        Assert.False(harness.Shell.Launcher.IsOpen);
     }
 
     [Fact]
@@ -367,6 +185,172 @@ public class ShellTests
         Assert.Null(harness.Seat.KeyboardFocus);
     }
 
+    // --- The Super key: unbound, the menu launcher is gone --------------
+
+    [Fact]
+    public void SuperAlone_DoesNothing()
+    {
+        using var harness = new Harness();
+
+        harness.Press(InputConstants.KeyLeftMeta);
+        harness.Release(InputConstants.KeyLeftMeta);
+        harness.Press(InputConstants.KeyRightMeta);
+        harness.Release(InputConstants.KeyRightMeta);
+
+        Assert.False(harness.Shell.Menu.IsOpen);
+        Assert.False(harness.Quit);
+    }
+
+    [Fact]
+    public void SuperWithAKey_IsOrdinaryInputNotABinding()
+    {
+        using var harness = new Harness();
+
+        harness.Press(InputConstants.KeyLeftMeta);
+        harness.Press(InputConstants.KeyA);
+        harness.Release(InputConstants.KeyA);
+        harness.Release(InputConstants.KeyLeftMeta);
+
+        Assert.False(harness.Shell.Menu.IsOpen);
+        Assert.False(harness.Quit);
+    }
+
+    // --- The apple system menu -----------------------------------------
+
+    [Fact]
+    public void AppleButton_TogglesTheSystemMenu()
+    {
+        using var harness = new Harness();
+        var start = Bar.ComputeLayout(1920, 1080, Bar.ClockString(), []).Start;
+
+        harness.ClickAt(start.X + (start.W / 2), start.Y + (start.H / 2));
+        Assert.True(harness.Shell.Menu.IsOpen);
+
+        harness.ClickAt(start.X + (start.W / 2), start.Y + (start.H / 2));
+        Assert.False(harness.Shell.Menu.IsOpen);
+    }
+
+    [Fact]
+    public void AppleMenu_ItemClickRunsTheActionAndCloses()
+    {
+        using var harness = new Harness();
+        var start = Bar.ComputeLayout(1920, 1080, Bar.ClockString(), []).Start;
+        harness.ClickAt(start.X + (start.W / 2), start.Y + (start.H / 2));
+
+        var row = SystemMenu.RowRect(harness.Shell.Menu.PanelRect(1920, 1080), 1);
+        harness.ClickAt(row.X + (row.W / 2), row.Y + (row.H / 2));
+
+        Assert.False(harness.Shell.Menu.IsOpen);
+        Assert.Equal(["Restart"], harness.Actions.Calls);
+    }
+
+    [Fact]
+    public void AppleMenuClick_OutsideClosesWithoutActing()
+    {
+        using var harness = new Harness();
+        var start = Bar.ComputeLayout(1920, 1080, Bar.ClockString(), []).Start;
+        harness.ClickAt(start.X + (start.W / 2), start.Y + (start.H / 2));
+
+        harness.ClickAt(0, 200);
+        Assert.False(harness.Shell.Menu.IsOpen);
+        Assert.Empty(harness.Actions.Calls);
+    }
+
+    [Fact]
+    public void AppleMenu_EscClosesThePanel()
+    {
+        using var harness = new Harness();
+        var start = Bar.ComputeLayout(1920, 1080, Bar.ClockString(), []).Start;
+        harness.ClickAt(start.X + (start.W / 2), start.Y + (start.H / 2));
+
+        harness.Press(InputConstants.KeyEsc);
+        harness.Release(InputConstants.KeyEsc);
+        Assert.False(harness.Shell.Menu.IsOpen);
+    }
+
+    // --- Pinned launchers: focus-or-launch and window claims ------------
+
+    [Fact]
+    public void PinnedButton_FocusesTheMatchingWindow()
+    {
+        using var harness = new Harness();
+        harness.Shell.Pinned = [Pin("Test", ["test-app"])];
+        harness.MapWindow(8, 11, 12, appId: "test-app");
+        var surface = harness.MappedSurface(8);
+
+        var layout = Bar.ComputeLayout(1920, 1080, Bar.ClockString(), harness.Scene.TaskWindows(), harness.Shell.Pinned);
+        var rect = layout.Pinned[0].Rect;
+        harness.ClickAt(rect.X + (rect.W / 2), rect.Y + (rect.H / 2));
+
+        Assert.Equal(surface, harness.Seat.KeyboardFocus);
+    }
+
+    [Fact]
+    public void PinnedButton_LaunchesWhenNoWindowMatches()
+    {
+        using var harness = new Harness();
+        var fake = new FakeWindowRegistry();
+        harness.Shell.Windows = fake;
+        harness.Shell.Pinned = [Pin("Test", ["test-app"], ["test-app", "--flag"])];
+
+        var layout = Bar.ComputeLayout(1920, 1080, Bar.ClockString(), harness.Scene.TaskWindows(), harness.Shell.Pinned);
+        var rect = layout.Pinned[0].Rect;
+        harness.ClickAt(rect.X + (rect.W / 2), rect.Y + (rect.H / 2));
+
+        Assert.Single(fake.Launched);
+        Assert.Equal(["test-app", "--flag"], fake.Launched[0]);
+    }
+
+    [Fact]
+    public void MostRecentMatching_PicksTheNewestMatchingWindow()
+    {
+        using var harness = new Harness();
+        harness.MapWindow(8, 11, 12, appId: "test-app");
+        harness.MapWindow(30, 31, 32, appId: "TEST-APP");
+
+        var registry = new SceneWindowRegistry(harness.Scene, harness.Seat, "wayland-test");
+        Assert.Equal(harness.MappedSurface(30), registry.MostRecentMatching(["test-app"]));
+    }
+
+    [Fact]
+    public void TaskButtons_SkipWindowsClaimedByPinnedLaunchers()
+    {
+        using var harness = new Harness();
+        harness.Shell.Pinned = [Pin("Test", ["test-app"])];
+        harness.MapWindow(8, 11, 12, title: "One", appId: "test-app");
+        harness.MapWindow(30, 31, 32, title: "Two");
+
+        harness.RenderFrame();
+        var layout = harness.Shell.LastBarLayout!;
+
+        Assert.True(layout.Pinned[0].Running);
+        Assert.Equal("Two", Assert.Single(layout.Tasks).Task.Label);
+    }
+
+    private sealed class FakeSystemActions : ISystemActions
+    {
+        public List<string> Calls { get; } = [];
+
+        public void LogOut() => Calls.Add("LogOut");
+
+        public void Restart() => Calls.Add("Restart");
+
+        public void ShutDown() => Calls.Add("ShutDown");
+    }
+
+    private sealed class FakeWindowRegistry : IWindowRegistry
+    {
+        public List<string[]> Launched { get; } = [];
+
+        public SurfaceHandler? MostRecentMatching(IReadOnlyList<string> matchKeys) => null;
+
+        public void RaiseAndFocus(SurfaceHandler surface, IReadOnlyList<int> heldKeys)
+        {
+        }
+
+        public void Launch(IReadOnlyList<string> argv) => Launched.Add([.. argv]);
+    }
+
     private sealed class Harness : IDisposable
     {
         private readonly DisplayServer _server;
@@ -376,7 +360,9 @@ public class ShellTests
         {
             Scene = new Scene();
             Seat = new SeatState { HasKeyboardDevice = true, HasPointerDevice = true };
-            Shell = new Shell { Launcher = { SocketName = "wayland-test" } };
+            Actions = new FakeSystemActions();
+            Shell = new Shell(Actions) { SocketName = "wayland-test" };
+            Shell.Windows = new SceneWindowRegistry(Scene, Seat, "wayland-test");
             Scene.Shell = Shell;
             Router = new InputRouter(Scene, Seat, () => Quit = true, Shell);
             var socketPath = Path.Combine(Path.GetTempPath(), $"rosella-test-{Guid.NewGuid():N}");
@@ -396,6 +382,8 @@ public class ShellTests
 
         public Shell Shell { get; }
 
+        public FakeSystemActions Actions { get; }
+
         public InputRouter Router { get; }
 
         public TestClient Client { get; }
@@ -413,8 +401,8 @@ public class ShellTests
             Client.RegisterObject(10, "xdg_wm_base");
         }
 
-        /// <summary>Maps a window through the full dance, optionally titled.</summary>
-        public void MapWindow(uint surfaceId, uint xdgSurfaceId, uint toplevelId, string? title = null)
+        /// <summary>Maps a window through the full dance, optionally titled and app-id'd.</summary>
+        public void MapWindow(uint surfaceId, uint xdgSurfaceId, uint toplevelId, string? title = null, string? appId = null)
         {
             Client.SendRequest(4, "wl_compositor", "create_surface", WireArgument.NewId(surfaceId));
             Client.RegisterObject(surfaceId, "wl_surface");
@@ -425,6 +413,11 @@ public class ShellTests
             if (title is not null)
             {
                 Client.SendRequest(toplevelId, "xdg_toplevel", "set_title", WireArgument.String(title));
+            }
+
+            if (appId is not null)
+            {
+                Client.SendRequest(toplevelId, "xdg_toplevel", "set_app_id", WireArgument.String(appId));
             }
 
             Client.SendRequest(surfaceId, "wl_surface", "commit");

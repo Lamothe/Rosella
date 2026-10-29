@@ -41,6 +41,33 @@ internal static class Chrome
     }
 
     /// <summary>
+    /// Filled rounded rectangle: the union of the two full-width/height
+    /// bands and one disc per corner — exact, clipped, and crisp at any
+    /// output scale like every other primitive here.
+    /// </summary>
+    internal static void FillRoundedRect(Span<byte> pixels, int width, int height, int stride, Rect rect, int radius, uint colour, int scale = 1)
+    {
+        if (rect.W <= 0 || rect.H <= 0)
+        {
+            return;
+        }
+
+        var r = Math.Clamp(radius, 0, Math.Min(rect.W, rect.H) / 2);
+        if (r == 0)
+        {
+            FillRect(pixels, width, height, stride, rect, colour, scale);
+            return;
+        }
+
+        FillRect(pixels, width, height, stride, new Rect(rect.X + r, rect.Y, rect.W - (2 * r), rect.H), colour, scale);
+        FillRect(pixels, width, height, stride, new Rect(rect.X, rect.Y + r, rect.W, rect.H - (2 * r)), colour, scale);
+        FillEllipse(pixels, width, height, stride, rect.X + r, rect.Y + r, r, r, colour, scale);
+        FillEllipse(pixels, width, height, stride, (rect.X + rect.W) - 1 - r, rect.Y + r, r, r, colour, scale);
+        FillEllipse(pixels, width, height, stride, rect.X + r, (rect.Y + rect.H) - 1 - r, r, r, colour, scale);
+        FillEllipse(pixels, width, height, stride, (rect.X + rect.W) - 1 - r, (rect.Y + rect.H) - 1 - r, r, r, colour, scale);
+    }
+
+    /// <summary>
     /// Filled ellipse by logical centre and radii, clipped. The shape is
     /// sampled per logical pixel and drawn as scale-sized blocks, so it
     /// stays crisp on any output scale.

@@ -6,9 +6,8 @@ namespace Rosella.Compositor;
 /// The input policy, and deliberately the only policy there is: the cursor
 /// moves and hit-tests windows, a click focuses and raises, keys go to the
 /// keyboard focus, and the keybindings are fixed: Alt+F4 closes the focused
-/// window, Super+Esc quits, Super alone toggles the Start menu. Anything
-/// else typed or clicked while Super is held counts as a chord use (the
-/// menu opens only on a bare Super tap). Nothing is configurable.
+/// window, Super+Esc quits. The Super key by itself is unbound. Anything
+/// else typed or clicked is ordinary input. Nothing is configurable.
 /// </summary>
 internal sealed class InputRouter
 {
@@ -21,10 +20,10 @@ internal sealed class InputRouter
     private readonly HashSet<int> _consumedKeys = new();
     private int _cursorX;
     private int _cursorY;
-    private bool _superChordUsed;
-    private int _chromePressConsumedButton = -1;
+
+    /// <summary>Button codes pressed over the shell chrome and consumed there.</summary>
+    private readonly HashSet<int> _chromePressConsumedButtons = new();
     private SurfaceHandler? _buttonPressTarget;
-    private SurfaceHandler? _focusBeforeLauncher;
     private int _moveRemainderX;
     private int _moveRemainderY;
 
@@ -228,50 +227,50 @@ internal sealed class InputRouter
     {
         var pressed = e.Value != InputConstants.KeyReleased;
 
-        // Any click while Super is held counts as a chord use.
-        if (pressed && SuperDown)
-        {
-            _superChordUsed = true;
-        }
-
         // A press eaten by the shell chrome swallows its own release: no
         // client may see a release for a press it never received, and no
-        // press may lose the release it is owed.
-        if (!pressed && e.Code == _chromePressConsumedButton)
+        // press may lose the release it is owed. Consumed buttons are a set
+        // of codes, so a second chrome press with another button cannot
+        // orphan the first button's release.
+        if (!pressed)
         {
-            _chromePressConsumedButton = -1;
-            return;
+            if (_shell is { } openShell)
+            {
+                openShell.PressedPin = -1;
+            }
+
+            if (_chromePressConsumedButtons.Remove(e.Code))
+            {
+                return;
+            }
         }
 
-        // Shell chrome eats clicks first: the Start menu (it draws over the
-        // taskbar on small outputs, so what you see is what you click), the
-        // taskbar strip, then the click-outside dismissal. None may leak
-        // into client windows underneath.
+        // Shell chrome eats clicks first: the system menu panel (it draws
+        // over the taskbar on small outputs, so what you see is what you
+        // click), the taskbar strip, then the click-outside dismissal. None
+        // may leak into client windows underneath.
         if (pressed && _shell is { } shell)
         {
             var (outputWidth, outputHeight) = _scene.OutputSize;
-            if (shell.Launcher.IsOpen && shell.Launcher.PanelRect(outputWidth, outputHeight).Contains(_cursorX, _cursorY))
+            if (shell.Menu.IsOpen && shell.Menu.PanelRect(outputWidth, outputHeight).Contains(_cursorX, _cursorY))
             {
-                shell.Launcher.HandleClick(_cursorX, _cursorY, outputWidth, outputHeight);
-                _chromePressConsumedButton = e.Code;
-                RestoreLauncherFocusIfClosed();
+                shell.Menu.HandleClick(_cursorX, _cursorY, outputWidth, outputHeight);
+                _chromePressConsumedButtons.Add(e.Code);
                 return;
             }
 
             if (_cursorY >= outputHeight - Shell.BarHeight)
             {
                 HandleTaskbarClick(shell, outputWidth, outputHeight, _cursorX, _cursorY);
-                _chromePressConsumedButton = e.Code;
-                RestoreLauncherFocusIfClosed();
+                _chromePressConsumedButtons.Add(e.Code);
                 return;
             }
 
-            if (shell.Launcher.IsOpen)
+            if (shell.Menu.IsOpen)
             {
                 // A click outside the panel dismisses it.
-                ToggleLauncher();
-                _chromePressConsumedButton = e.Code;
-                RestoreLauncherFocusIfClosed();
+                shell.Menu.Close();
+                _chromePressConsumedButtons.Add(e.Code);
                 return;
             }
         }
@@ -329,7 +328,15 @@ internal sealed class InputRouter
             return;
         }
 
-        var superWasDown = SuperDown;
+        // The system menu, when open, eats Esc: it closes the menu, and the
+        // key never reaches a client (press and release alike).
+        if (pressed && _shell is { Menu.IsOpen: true } menuShell && menuShell.Menu.HandleKey(e.Code))
+        {
+            _consumedKeys.Add(e.Code);
+            SendModifiers(_seat.KeyboardFocus);
+            return;
+        }
+
         if (pressed)
         {
             _pressedKeys.Add(e.Code);
@@ -337,20 +344,6 @@ internal sealed class InputRouter
         else
         {
             _pressedKeys.Remove(e.Code);
-        }
-
-        // Only the Super up->down transition arms a fresh chord: a second
-        // Meta must not reset one already made.
-        if (pressed && !superWasDown && (e.Code is InputConstants.KeyLeftMeta or InputConstants.KeyRightMeta))
-        {
-            _superChordUsed = false;
-        }
-
-        // Any other key while Super is held is a chord use: typing under a
-        // held Super must not open the Start menu on its release.
-        if (pressed && SuperDown && e.Code is not (InputConstants.KeyLeftMeta or InputConstants.KeyRightMeta))
-        {
-            _superChordUsed = true;
         }
 
         if (pressed && e.Code == InputConstants.KeyCapsLock)
@@ -361,25 +354,6 @@ internal sealed class InputRouter
         if (pressed && e.Code == InputConstants.KeyNumLock)
         {
             _numLocked = !_numLocked;
-        }
-
-        // Super released with no chord: the launcher toggles.
-        if (!pressed
-            && (e.Code is InputConstants.KeyLeftMeta or InputConstants.KeyRightMeta)
-            && !SuperDown && !_superChordUsed)
-        {
-            ToggleLauncher();
-        }
-
-        // The launcher, when open, eats its navigation keys outright.
-        if (pressed && _shell is { Launcher.IsOpen: true } openShell && openShell.Launcher.HandleKey(e.Code))
-        {
-            // Any consumed key counts as a chord while Super may still be
-            // held: its release must not also toggle the launcher.
-            _superChordUsed = true;
-            RestoreLauncherFocusIfClosed();
-            SendModifiers(_seat.KeyboardFocus);
-            return;
         }
 
         if (_seat.KeyboardFocus is { } focus)
@@ -402,7 +376,6 @@ internal sealed class InputRouter
 
         if (code == InputConstants.KeyEsc && SuperDown)
         {
-            _superChordUsed = true;
             _quit();
             return true;
         }
@@ -410,80 +383,37 @@ internal sealed class InputRouter
         return false;
     }
 
-    private void ToggleLauncher()
-    {
-        if (_shell is not { } shell)
-        {
-            return;
-        }
-
-        // Every open/close counts as a chord: if Super is still held when
-        // the launcher closes some other way, its release must not re-open.
-        _superChordUsed = true;
-        if (shell.Launcher.IsOpen)
-        {
-            CloseLauncher();
-        }
-        else
-        {
-            _focusBeforeLauncher = _seat.KeyboardFocus;
-            shell.Launcher.Open();
-            _seat.SetKeyboardFocus(null, _pressedKeys);
-        }
-    }
-
-    /// <summary>Closes the launcher and hands the keyboard back.</summary>
-    private void CloseLauncher()
-    {
-        // Any dismissal while Super is held is a chord use: its release
-        // must not re-open the menu.
-        if (SuperDown)
-        {
-            _superChordUsed = true;
-        }
-
-        _shell?.Launcher.Close();
-        RestoreLauncherFocus();
-    }
-
-    /// <summary>Restores the pre-launcher focus once the launcher is shut.</summary>
-    private void RestoreLauncherFocusIfClosed()
-    {
-        if (_shell is not { Launcher.IsOpen: true })
-        {
-            RestoreLauncherFocus();
-        }
-    }
-
-    private void RestoreLauncherFocus()
-    {
-        if (_focusBeforeLauncher is null)
-        {
-            return;
-        }
-
-        var previous = _focusBeforeLauncher is { Gone: false } stale && stale.IsMapped ? stale : null;
-        _focusBeforeLauncher = null;
-        _seat.SetKeyboardFocus(previous, _pressedKeys);
-    }
-
     private void HandleTaskbarClick(Shell shell, int outputWidth, int outputHeight, int x, int y)
     {
         // The cached layout is exactly what the scanout drew, so drawn and
         // hit rectangles cannot disagree; without a frame yet, compute one.
-        var layout = shell.LastBarLayout ?? Bar.ComputeLayout(outputWidth, outputHeight, Bar.ClockString(), _scene.TaskWindows());
+        var layout = shell.LastBarLayout ?? Bar.ComputeLayout(outputWidth, outputHeight, Bar.ClockString(), _scene.TaskWindows(), shell.Pinned);
 
-        // Any taskbar click closes the Start menu first, except a click on
-        // Start itself, which toggles it.
-        if (shell.Launcher.IsOpen && !layout.Start.Contains(x, y))
+        // Any taskbar click closes the system menu first, except a click on
+        // the apple button itself, which toggles it.
+        if (shell.Menu.IsOpen && !layout.Start.Contains(x, y))
         {
-            CloseLauncher();
+            shell.Menu.Close();
         }
 
         if (layout.Start.Contains(x, y))
         {
-            ToggleLauncher();
+            shell.Menu.Toggle();
             return;
+        }
+
+        for (var i = 0; i < layout.Pinned.Length; i++)
+        {
+            if (layout.Pinned[i].Rect.Contains(x, y))
+            {
+                shell.PressedPin = i;
+                if (shell.Windows is { } windows)
+                {
+                    layout.Pinned[i].Launcher.Click(windows, [.. _pressedKeys]);
+                }
+
+                return;
+            }
         }
 
         foreach (var (rect, task) in layout.Tasks)

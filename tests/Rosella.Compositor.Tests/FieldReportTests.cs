@@ -55,7 +55,7 @@ public class FieldReportTests
     [Fact]
     public void LaunchedApps_AreDark()
     {
-        var startInfo = Launcher.CreateStartInfo("nautilus", "wayland-1");
+        var startInfo = AppLaunch.CreateStartInfo(["nautilus"], "wayland-1");
 
         Assert.Equal("wayland-1", startInfo.Environment["WAYLAND_DISPLAY"]);
         Assert.Equal("Adwaita:dark", startInfo.Environment["GTK_THEME"]);

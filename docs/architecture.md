@@ -14,7 +14,7 @@ something — and the DE logic is fully testable there).
 | Userspace | Mesa: GBM (buffers), EGL/GL or Vulkan (rendering) | Rosella, via P/Invoke |
 | Userspace | libinput (gesture/keyboard/mouse semantics) | Rosella, via P/Invoke |
 | Protocol | Wayland wire format (client ⇄ compositor IPC) | **Rosella implements both sides** |
-| Shell | taskbar, Start menu, windows | Rosella (managed, in-process) |
+| Shell | taskbar, pinned launchers, system menu, windows | Rosella (managed, in-process) |
 
 A key mental-model point: Wayland is *not* a driver API. It is the IPC between
 apps (clients) and the compositor. The compositor itself talks to drivers:
@@ -133,10 +133,14 @@ Verified against libwayland's marshalling code and the protocol docs:
   destroy id resurrection, unlocked xdg configure state), 10 new regression
   tests. Known accepted limits are in Open risks.
 - **M7 — the shell**: ✅ done, then redesigned to Windows 11 style on the
-  user's request: a bottom taskbar (Start button, task buttons with a focus
-  accent, clock in AU format), a Start menu centred above the taskbar
-  (Super tap, fixed app list, arrows/Enter/Esc, spawns with the right
-  WAYLAND_DISPLAY), and **no workspaces** — one desktop, by design. The
+  user's request: a bottom taskbar (apple button, task buttons with a focus
+  accent, clock in AU format), the pinned app launchers centred on the bar
+  (six fixed entries resolved from XDG desktop files — GLib-style Exec
+  parsing, icons decoded through gdk-pixbuf into premultiplied ARGB, click
+  focuses the app's newest window or launches it with the right
+  WAYLAND_DISPLAY), and an apple system menu (Log Out, Restart, Shut Down —
+  ISystemActions so tests can fake them). No workspaces — one desktop, by
+  design. The
   background is a calm dark gradient (the milestone-3 colour bars and
   moving stripe are gone: the user found them annoying). Windows sit in
   the work area above the taskbar, clamped to stay there, and wear an

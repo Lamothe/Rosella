@@ -104,7 +104,7 @@ public sealed class Scene
     /// <summary>Where windows live: the output minus the taskbar band.</summary>
     internal Rect WorkArea => new(0, 0, OutputSize.Width, OutputSize.Height - (Shell is null ? 0 : Shell.BarHeight));
 
-    /// <summary>The desktop shell, when one is wired in (taskbar and Start menu).</summary>
+    /// <summary>The desktop shell, when one is wired in (taskbar and system menu).</summary>
     internal Shell? Shell { get; set; }
 
     /// <summary>
@@ -218,7 +218,7 @@ public sealed class Scene
 
         // Chrome lays out in logical pixels (matching the input thread's
         // hit-tests exactly) and draws scaled onto the physical scanout.
-        Shell?.Draw(pixels, width / scale, height / scale, stride, scale, Bar.ClockString(), TaskWindows(), Seat?.KeyboardFocus);
+        Shell?.Draw(pixels, width / scale, height / scale, stride, scale, Bar.ClockString(), TaskWindows(), Seat?.KeyboardFocus, Cursor);
 
         // The cursor: the client's cursor surface when the focused client set
         // one (context shapes — text beam, hand — as the apps intend), hidden
@@ -314,7 +314,7 @@ public sealed class Scene
 
                 if (surface.XdgRole?.Toplevel is { } toplevel)
                 {
-                    tasks.Add(new BarTask(Bar.LabelFor(toplevel.Title, toplevel.AppId), surface));
+                    tasks.Add(new BarTask(Bar.LabelFor(toplevel.Title, toplevel.AppId), toplevel.AppId, surface));
                 }
             }
 

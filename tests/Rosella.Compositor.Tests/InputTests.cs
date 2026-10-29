@@ -86,6 +86,36 @@ public class InputTests
     }
 
     [Fact]
+    public void ChromePresses_SwallowEveryOwnRelease()
+    {
+        var shell = new Shell();
+        using var harness = new Harness(shell: shell);
+        harness.BindXdg();
+        harness.MapWindow(8, 11, 12);
+        harness.Client.SendRequest(20, "wl_seat", "get_pointer", WireArgument.NewId(22));
+        harness.Client.RegisterObject(22, "wl_pointer");
+        harness.RoundTrip();
+
+        // The cursor sits on the open system-menu panel, just off its rows:
+        // a press there is consumed by the chrome and the panel stays open.
+        shell.Menu.Open();
+        var panel = shell.Menu.PanelRect(1920, 1080);
+        harness.Router.PlaceCursor(panel.X + 2, panel.Y + 2);
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventKey, InputConstants.ButtonLeft, InputConstants.KeyPressed));
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventKey, InputConstants.ButtonRight, InputConstants.KeyPressed));
+
+        // Both presses were the chrome's, so both releases are the chrome's
+        // too: each consumed button swallows its own release, and no button
+        // event may reach the window under the cursor.
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventKey, InputConstants.ButtonLeft, InputConstants.KeyReleased));
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventKey, InputConstants.ButtonRight, InputConstants.KeyReleased));
+        foreach (var (objectId, eventName) in harness.CollectUntilRoundTrip())
+        {
+            Assert.NotEqual((22u, "button"), (objectId, eventName));
+        }
+    }
+
+    [Fact]
     public void Keys_RouteToTheKeyboardFocus()
     {
         using var harness = new Harness();
@@ -470,11 +500,11 @@ public class InputTests
         private readonly DisplayServer _server;
         private readonly string _poolFile;
 
-        public Harness(uint seatVersion = 7)
+        public Harness(uint seatVersion = 7, Shell? shell = null)
         {
             Scene = new Scene();
             Seat = new SeatState { HasKeyboardDevice = true, HasPointerDevice = true };
-            Router = new InputRouter(Scene, Seat, () => Quit = true);
+            Router = new InputRouter(Scene, Seat, () => Quit = true, shell);
             var socketPath = Path.Combine(Path.GetTempPath(), $"rosella-test-{Guid.NewGuid():N}");
             _server = new DisplayServer(socketPath, handlerFactory: new CompositorHandlerFactory(Scene, Seat));
             _server.Start();

@@ -19,15 +19,22 @@ var runtimeDirectory = Environment.GetEnvironmentVariable("XDG_RUNTIME_DIR") ?? 
 var displayName = args.Length > 0 ? args[0] : Path.GetFileName(DisplayServer.FindFreeSocketPath(runtimeDirectory));
 var socketPath = Path.Combine(runtimeDirectory, displayName);
 
-var scene = new Scene();
-var seat = new SeatState();
-var shell = new Shell();
-shell.Launcher.SocketName = displayName;
-scene.Shell = shell;
-
 // The device set is fixed before clients bind, so wl_seat capabilities are
 // right from the first moment (no hot-plug in M6).
 using var cancellation = new CancellationTokenSource();
+
+var scene = new Scene();
+var seat = new SeatState();
+
+// The shell: the pinned launchers resolved from real desktop files, the
+// apple system menu wired to the session's actions, and the taskbar's
+// focus-or-launch view of the scene. Log out is the graceful quit — the
+// same cancellation Super+Esc triggers.
+var shell = new Shell(new SystemActions(() => cancellation.Cancel()));
+shell.SocketName = displayName;
+shell.Pinned = PinnedApps.Resolve();
+shell.Windows = new SceneWindowRegistry(scene, seat, displayName);
+scene.Shell = shell;
 
 // The output is detected first: its physical size, mode and computed
 // scale are what clients hear over wl_output, so they must be fixed

@@ -69,8 +69,10 @@ configuration is where desktop environments go to die.
   `set_cursor` is deliberately ignored. All seat sends are serialised under
   the seat gate against object death, so no event can name an object after
   its `delete_id`.
-- **M7 — shell**: next. A window list / taskbar as an in-process surface
-  region, window switching, and the few remaining policies.
+- **M7 — shell**: done. The Windows 11 style shell chrome: a bottom
+  taskbar (apple button, pinned app launchers centred on the bar, task
+  buttons with a focus accent, clock), and the apple system menu (Log Out,
+  Restart, Shut Down).
 
 ## Layout
 
@@ -95,6 +97,8 @@ dotnet build
 dotnet test tests/Rosella.Protocol.Tests/Rosella.Protocol.Tests.csproj
 dotnet test tests/Rosella.Server.Tests/Rosella.Server.Tests.csproj
 dotnet test tests/Rosella.Drm.Tests/Rosella.Drm.Tests.csproj
+dotnet test tests/Rosella.Input.Tests/Rosella.Input.Tests.csproj
+dotnet test tests/Rosella.Control.Tests/Rosella.Control.Tests.csproj
 dotnet test tests/Rosella.Compositor.Tests/Rosella.Compositor.Tests.csproj
 ```
 
@@ -110,9 +114,11 @@ byte order; Rosella targets x86_64/ARM64).
 entry, so "Rosella" appears in the greeter's session chooser alongside GNOME.
 
 Selecting it drives the first connected output at its preferred mode with the
-Windows 11 style desktop: a bottom taskbar (Start button, task buttons,
-clock), a Start menu centred above it (Super tap), and a calm dark gradient
-background — no workspaces, by design. Recovery
+Windows 11 style desktop: a bottom taskbar (apple button, pinned app launchers
+centred on the bar, task buttons, clock), an apple system menu (Log Out,
+Restart, Shut Down), and a calm dark gradient background — no workspaces, by
+design. The Super key is unbound; Alt+F4 closes a window and Super+Esc quits.
+Recovery
 if anything goes wrong: `Ctrl+Alt+F3`, log in, `pkill -f Rosella.Compositor`,
 or simply pick GNOME at the next greeter — it is always offered.
 
