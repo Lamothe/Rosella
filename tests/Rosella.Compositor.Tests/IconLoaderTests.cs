@@ -63,6 +63,32 @@ public class IconLoaderTests
     }
 
     [Fact]
+    public void CorruptImage_DecodesToNull_AndLogsWhy()
+    {
+        Assert.True(IconLoader.Available, PixbufRequired);
+
+        // A decode failure is never silent: the fallback tile on screen
+        // must have a matching log line. Capture the console and assert
+        // the reason is written.
+        var path = Path.Combine(Path.GetTempPath(), $"rosella-corrupt-{Guid.NewGuid():N}.png");
+        File.WriteAllText(path, "not a png at all");
+        var original = Console.Out;
+        using var captured = new StringWriter();
+        try
+        {
+            Console.SetOut(captured);
+            Assert.Null(IconLoader.Load(path, 4));
+        }
+        finally
+        {
+            Console.SetOut(original);
+            File.Delete(path);
+        }
+
+        Assert.Contains("decode failed", captured.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void PngWithPaddedRows_DecodesExactPixelsIncludingTheLastRow()
     {
         Assert.True(IconLoader.Available, PixbufRequired);

@@ -72,11 +72,7 @@ internal static class IconLoader
         var pixbuf = Native.gdk_pixbuf_new_from_file_at_scale(path, size, size, 0, out var error);
         if (pixbuf == IntPtr.Zero)
         {
-            if (error != IntPtr.Zero)
-            {
-                Native.g_error_free(error);
-            }
-
+            LogDecodeFailure(path, error);
             return null;
         }
 
@@ -158,6 +154,24 @@ internal static class IconLoader
 
         _missingLogged = true;
         Console.WriteLine("icon: libgdk_pixbuf-2.0.so.0 unavailable; taskbar icons fall back to text tiles");
+    }
+
+    /// <summary>
+    /// A decode failure is never silent: the GError's message is logged
+    /// before it is freed, so a fallback tile on screen has a matching
+    /// line in the log saying exactly why. GError is {GQuark domain;
+    /// gint code; gchar* message} — the message pointer sits at offset 8.
+    /// </summary>
+    private static void LogDecodeFailure(string path, IntPtr error)
+    {
+        var message = string.Empty;
+        if (error != IntPtr.Zero)
+        {
+            message = Marshal.PtrToStringUTF8(Marshal.ReadIntPtr(error, 8)) ?? string.Empty;
+            Native.g_error_free(error);
+        }
+
+        Console.WriteLine($"icon: {path}: decode failed{(message.Length == 0 ? string.Empty : $": {message}")}");
     }
 
     /// <summary>The gdk-pixbuf slice of the C ABI (g_object/g_error ride its dependency chain).</summary>
