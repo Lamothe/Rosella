@@ -18,15 +18,14 @@ internal static class PinnedApps
         ("Resources", ["org.gnome.World.Resources.desktop", "resources.desktop"]),
     ];
 
-    /// <summary>The icon decode size: 2x the on-bar icon box, for crispness.</summary>
-    internal const int IconDecodeSize = (Shell.BarHeight - 12) * 2;
-
     /// <summary>
     /// Resolves the table against the live system: apps without a desktop
     /// file (or with an unusable one) are skipped with a log line, and the
-    /// bar shows only what resolved.
+    /// bar shows only what resolved. Icons decode at exactly their
+    /// on-screen pixel size (the caller knows the output scale), so the
+    /// taskbar blit is 1:1 and crisp.
     /// </summary>
-    internal static PinnedLauncher[] Resolve()
+    internal static PinnedLauncher[] Resolve(int iconDecodeSize)
     {
         var searchDirs = DesktopLocator.DefaultSearchDirs();
         var dataRoots = DesktopLocator.DefaultDataRoots();
@@ -61,7 +60,7 @@ internal static class PinnedApps
                 Console.WriteLine($"pinned: {fallbackName}: icon {entry.Icon} not found; using text tile");
             }
 
-            var icon = iconPath is null ? null : IconLoader.Load(iconPath, IconDecodeSize);
+            var icon = iconPath is null ? null : IconLoader.Load(iconPath, iconDecodeSize);
             launchers.Add(new PinnedLauncher(
                 name,
                 Path.GetFileName(path),

@@ -22,10 +22,17 @@ internal static class Bar
     private const int ClockZoneWidth = 180;
     internal const int Pad = 8;
 
-    /// <summary>Gap between pinned buttons and around their group.</summary>
-    internal const int PinGap = 4;
+    /// <summary>
+    /// Gap between pinned buttons and around their group. The icon sits
+    /// inset in its cell as well, so the real spacing between neighbouring
+    /// icon bitmaps is this gap plus both paddings.
+    /// </summary>
+    internal const int PinGap = 8;
 
     internal const int GroupPad = 8;
+
+    /// <summary>The icon's breathing room inside its cell.</summary>
+    internal const int IconPad = 6;
 
     private const uint BarBackground = 0xFF16171E;
     private const uint BarHairline = 0xFF2A2C36;
@@ -51,6 +58,12 @@ internal static class Bar
 
     /// <summary>The square side of a pinned icon box: the inner bar height.</summary>
     internal static int IconBoxSize => Shell.BarHeight - 12;
+
+    /// <summary>The square side of a pinned icon: its cell minus the padding.</summary>
+    internal static int IconSize => IconBoxSize - (IconPad * 2);
+
+    /// <summary>Where the icon bitmap sits in its cell: inset by the padding on all sides.</summary>
+    internal static Rect IconRect(Rect box) => new(box.X + IconPad, box.Y + IconPad, IconSize, IconSize);
 
     /// <summary>The pinned group's extent for a button count (side padding and gaps).</summary>
     internal static int GroupWidth(int count) =>
@@ -136,8 +149,19 @@ internal static class Bar
         {
             var button = layout.Pinned[i];
             var hovered = pointer is { } point && button.Rect.Contains(point.X, point.Y);
-            var tile = pressedPin == i ? TaskPressedBackground : hovered ? TaskFocusedBackground : TaskBackground;
-            Chrome.FillRect(pixels, clipW, clipH, stride, button.Rect, tile, scale);
+
+            // The cell's tile appears only under the pointer: at rest the
+            // icon floats on the bar, and the padding between icons is
+            // plainly visible (the Windows 11 / dock look).
+            if (pressedPin == i)
+            {
+                Chrome.FillRect(pixels, clipW, clipH, stride, button.Rect, TaskPressedBackground, scale);
+            }
+            else if (hovered)
+            {
+                Chrome.FillRect(pixels, clipW, clipH, stride, button.Rect, TaskFocusedBackground, scale);
+            }
+
             DrawIcon(pixels, clipW, clipH, stride, scale, button);
             if (button.Running)
             {
@@ -163,13 +187,14 @@ internal static class Bar
     }
 
     /// <summary>
-    /// A pinned button's face: the decoded icon scaled into the box via
-    /// the ARGB blit, else the fallback tile — the Name's first letter on
-    /// a panel-button background.
+    /// A pinned button's face: the decoded icon scaled into the cell's
+    /// inset icon square via the ARGB blit, else the fallback — the
+    /// Name's first letter drawn in the same inset. The padding around
+    /// the icon is the point: icons breathe instead of butting together.
     /// </summary>
     private static void DrawIcon(Span<byte> pixels, int clipW, int clipH, int stride, int scale, PinnedButton button)
     {
-        var scaled = button.Rect.Scaled(scale);
+        var scaled = IconRect(button.Rect).Scaled(scale);
         if (button.Launcher.Icon is { } icon)
         {
             // Nearest-neighbour into the box, source-over with premultiplied
@@ -179,8 +204,11 @@ internal static class Bar
         }
 
         var letter = button.Launcher.TileLetter.ToString();
-        var (textW, textH) = BitmapFont.Measure(letter, Shell.FontScale);
-        BitmapFont.DrawText(pixels, clipW, clipH, stride, letter, scaled.X + ((scaled.W - (textW * scale)) / 2), scaled.Y + ((scaled.H - (textH * scale)) / 2), TextColour, Shell.FontScale * scale);
+
+        // Like the rest of the bar's text, the fallback letter is plain        // glyph scale: the shell's FontScale 2 overflows the icon inset
+        // and strikes through the running indicator.
+        var (textW, textH) = BitmapFont.Measure(letter, 1);
+        BitmapFont.DrawText(pixels, clipW, clipH, stride, letter, scaled.X + ((scaled.W - (textW * scale)) / 2), scaled.Y + ((scaled.H - (textH * scale)) / 2), TextColour, scale);
     }
 
     /// <summary>

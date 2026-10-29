@@ -232,9 +232,9 @@ public class ShellChromeTests
         var box = layout.Pinned[0].Rect;
         Assert.Equal(0xFF7B86E8u, PixelAt(buffer, stride, box.X + (box.W / 2), box.Y + box.H - 2));
 
-        // The idle pin wears none: its bottom edge is plain tile.
+        // The idle pin wears none: no tile at all, the bar shows through.
         var idle = layout.Pinned[1].Rect;
-        Assert.Equal(0xFF22242Eu, PixelAt(buffer, stride, idle.X + (idle.W / 2), idle.Y + idle.H - 2));
+        Assert.Equal(0xFF16171Eu, PixelAt(buffer, stride, idle.X + (idle.W / 2), idle.Y + idle.H - 2));
     }
 
     [Fact]
@@ -266,7 +266,7 @@ public class ShellChromeTests
     }
 
     [Fact]
-    public void Draw_HoverAndPressChangeThePinTile()
+    public void Draw_PinTileAppearsOnlyOnHoverAndPress()
     {
         var width = 600;
         var height = 48;
@@ -284,7 +284,107 @@ public class ShellChromeTests
 
         buffer = new byte[stride * height];
         Bar.Draw(buffer, width, height, stride, 1, layout, "14:33  28/10/2026", null);
-        Assert.Equal(0xFF22242Eu, PixelAt(buffer, stride, box.X + 1, box.Y + 1)); // idle fill
+        Assert.Equal(0xFF16171Eu, PixelAt(buffer, stride, box.X + 1, box.Y + 1)); // idle: no tile, the bar shows
+    }
+
+    // --- Icon padding: the icons breathe instead of butting together ----
+
+    [Fact]
+    public void PinnedIcons_AreInsetInTheirCellsAndThePaddingIsReal()
+    {
+        // The padding was an explicit design requirement: pin the exact
+        // opinionated values so they cannot quietly shrink away again.
+        Assert.Equal(6, Bar.IconPad);
+        Assert.Equal(8, Bar.PinGap);
+        Assert.Equal(24, Bar.IconSize);
+
+        var box = new Rect(100, 200, Bar.IconBoxSize, Bar.IconBoxSize);
+        var icon = Bar.IconRect(box);
+
+        Assert.Equal(Bar.IconPad, icon.X - box.X);
+        Assert.Equal(Bar.IconPad, icon.Y - box.Y);
+        Assert.Equal(Bar.IconPad, (box.X + box.W) - (icon.X + icon.W));
+        Assert.Equal(Bar.IconPad, (box.Y + box.H) - (icon.Y + icon.H));
+    }
+
+    [Fact]
+    public void PinnedIcons_NeighbouringIconsAreSeparatedByTheGapPlusBothPaddings()
+    {
+        var pins = new[] { "Chrome", "Terminal", "Files", "Code", "Steam", "Resources" }.Select(Pin).ToArray();
+        var layout = Bar.ComputeLayout(1920, 1080, "14:33  28/10/2026", [], pins);
+
+        for (var i = 1; i < layout.Pinned.Length; i++)
+        {
+            var previous = Bar.IconRect(layout.Pinned[i - 1].Rect);
+            var icon = Bar.IconRect(layout.Pinned[i].Rect);
+            Assert.Equal(Bar.PinGap + (Bar.IconPad * 2), icon.X - (previous.X + previous.W));
+        }
+    }
+
+    [Fact]
+    public void Draw_IconPixelsStayInsideTheIconInset()
+    {
+        var width = 600;
+        var height = 48;
+        var stride = width * 4;
+
+        // A solid opaque-white icon: anything white must land in the
+        // inset square, never in the cell's padding.
+        var iconPixels = new uint[8 * 8];
+        Array.Fill(iconPixels, 0xFFFFFFFFu);
+        var pin = new PinnedLauncher("Test", "test.desktop", ["test"], ["test"], null, new IconImage(iconPixels, 8, 8));
+        var layout = Bar.ComputeLayout(width, height, "14:33  28/10/2026", [], [pin]);
+
+        var buffer = new byte[stride * height];
+        Bar.Draw(buffer, width, height, stride, 1, layout, "14:33  28/10/2026", null);
+
+        var box = layout.Pinned[0].Rect;
+        var icon = Bar.IconRect(box);
+        var insideIcon = 0;
+        for (var y = box.Y; y < box.Y + box.H; y++)
+        {
+            for (var x = box.X; x < box.X + box.W; x++)
+            {
+                if (PixelAt(buffer, stride, x, y) == 0xFFFFFFFFu)
+                {
+                    Assert.True(icon.Contains(x, y), $"icon pixel in the cell padding at {x},{y}");
+                    insideIcon++;
+                }
+            }
+        }
+
+        Assert.True(insideIcon > 0, "icon drew nothing");
+    }
+
+    [Fact]
+    public void Draw_FallbackLetterStaysInsideTheIconInset()
+    {
+        var width = 600;
+        var height = 48;
+        var layout = Bar.ComputeLayout(width, height, "14:33  28/10/2026", [], [Pin("Steam")]);
+
+        // Scale 2 is the worst case: the letter must stay in the inset
+        // and clear of the running indicator's row.
+        var stride = width * 2 * 4;
+        var buffer = new byte[stride * height * 2];
+        Bar.Draw(buffer, width, height, stride, 2, layout, "14:33  28/10/2026", null);
+
+        var box = layout.Pinned[0].Rect.Scaled(2);
+        var inset = Bar.IconRect(layout.Pinned[0].Rect).Scaled(2);
+        var seen = 0;
+        for (var y = box.Y; y < box.Y + box.H; y++)
+        {
+            for (var x = box.X; x < box.X + box.W; x++)
+            {
+                if (PixelAt(buffer, stride, x, y) == 0xFFE8E8ECu)
+                {
+                    Assert.True(inset.Contains(x, y), $"letter pixel outside the inset at {x},{y}");
+                    seen++;
+                }
+            }
+        }
+
+        Assert.True(seen > 0, "fallback letter drew nothing");
     }
 
     // --- Narrow bars: the group clamps between the apple and the clock --
@@ -333,11 +433,27 @@ public class ShellChromeTests
         var buffer = new byte[stride * height * scale];
         Bar.Draw(buffer, width, height, stride, scale, layout, "14:33  28/10/2026", null);
 
+        // Sample the icon's inset square, not the cell: the icon occupies
+        // the inset, and the padding around it stays bar.
+        var iconRect = Bar.IconRect(layout.Pinned[0].Rect).Scaled(scale);
+        Assert.Equal(0xFFFF0000u, PixelAt(buffer, stride, iconRect.X + 10, iconRect.Y + 10));
+        Assert.Equal(0xFF00FF00u, PixelAt(buffer, stride, iconRect.X + iconRect.W - 10, iconRect.Y + 10));
+        Assert.Equal(0xFF0000FFu, PixelAt(buffer, stride, iconRect.X + 10, iconRect.Y + iconRect.H - 10));
+        Assert.Equal(0xFFFFFFFFu, PixelAt(buffer, stride, iconRect.X + iconRect.W - 10, iconRect.Y + iconRect.H - 10));
+
+        // Icon pixels never bleed into the cell padding, even at scale 2.
         var box = layout.Pinned[0].Rect.Scaled(scale);
-        Assert.Equal(0xFFFF0000u, PixelAt(buffer, stride, box.X + 10, box.Y + 10));
-        Assert.Equal(0xFF00FF00u, PixelAt(buffer, stride, box.X + box.W - 10, box.Y + 10));
-        Assert.Equal(0xFF0000FFu, PixelAt(buffer, stride, box.X + 10, box.Y + box.H - 10));
-        Assert.Equal(0xFFFFFFFFu, PixelAt(buffer, stride, box.X + box.W - 10, box.Y + box.H - 10));
+        for (var y = box.Y; y < box.Y + box.H; y++)
+        {
+            for (var x = box.X; x < box.X + box.W; x++)
+            {
+                var pixel = PixelAt(buffer, stride, x, y);
+                if (pixel is 0xFFFF0000u or 0xFF00FF00u or 0xFF0000FFu or 0xFFFFFFFFu)
+                {
+                    Assert.True(iconRect.Contains(x, y), $"icon pixel in the cell padding at {x},{y}");
+                }
+            }
+        }
     }
 
     [Fact]
@@ -360,8 +476,8 @@ public class ShellChromeTests
         Assert.Equal(0xFF7B86E8u, PixelAt(buffer, stride, ((box.X + (box.W / 2)) * 2) + 1, (box.Y + box.H - 2) * 2));
         Assert.Equal(0xFF7B86E8u, PixelAt(buffer, stride, ((box.X + (box.W / 2)) * 2) + 1, ((box.Y + box.H - 2) * 2) + 1));
 
-        // The idle pin wears none: the same logical spot stays plain tile.
+        // The idle pin wears none: the same logical spot stays bar.
         var idle = layout.Pinned[1].Rect;
-        Assert.Equal(0xFF22242Eu, PixelAt(buffer, stride, ((idle.X + (idle.W / 2)) * 2) + 1, (idle.Y + idle.H - 2) * 2));
+        Assert.Equal(0xFF16171Eu, PixelAt(buffer, stride, ((idle.X + (idle.W / 2)) * 2) + 1, (idle.Y + idle.H - 2) * 2));
     }
 }

@@ -32,7 +32,6 @@ var seat = new SeatState();
 // same cancellation Super+Esc triggers.
 var shell = new Shell(new SystemActions(() => cancellation.Cancel()));
 shell.SocketName = displayName;
-shell.Pinned = PinnedApps.Resolve();
 shell.Windows = new SceneWindowRegistry(scene, seat, displayName);
 scene.Shell = shell;
 
@@ -48,6 +47,10 @@ if (detection is null)
 
 var output = detection.Value.Output;
 var scale = ScalePolicy.For(output.Mode.HDisplay, output.Mode.VDisplay, output.Connector.MmWidth, output.Connector.MmHeight);
+
+// The pinned launchers resolve only now: icons decode at their exact
+// on-screen size, which needs the output scale.
+shell.Pinned = PinnedApps.Resolve(Bar.IconSize * scale);
 
 // Everything in the scene is logical pixels: the physical scanout is
 // Scale times that. Windows, chrome and input all live in logical space.
