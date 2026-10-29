@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text;
 
 namespace Rosella.Compositor;
 
@@ -19,6 +20,9 @@ internal static class Bar
 {
     private const int StartButtonWidth = 56;
     private const int TaskWidth = 220;
+
+    /// <summary>The gap between a task button's edge and its label.</summary>
+    private const int LabelInset = 12;
     private const int ClockZoneWidth = 180;
     internal const int Pad = 8;
 
@@ -43,13 +47,36 @@ internal static class Bar
     private const uint TaskFocusedAccent = 0xFF7B86E8;
     private const uint TextColour = 0xFFE8E8EC;
 
-    /// <summary>The window label: the title, or the app id, trimmed.</summary>
+    /// <summary>The window label: the title, or the app id, trimmed to the button.</summary>
     internal static string LabelFor(string title, string appId)
     {
         var label = string.IsNullOrWhiteSpace(title)
             ? (string.IsNullOrWhiteSpace(appId) ? "Window" : appId.Trim())
             : title.Trim();
-        return label.Length <= 24 ? label : $"{label[..23]}…";
+
+        // Truncate by measured width, not by character count: the old 24
+        // characters was sized for the fixed 8×16 cell, and a proportional
+        // face can make 24 capitals wider than the whole button. The label
+        // has the button minus its two 12px insets to breathe in.
+        const int AvailableWidth = TaskWidth - (LabelInset * 2);
+        if (ShellText.Measure(label, ShellText.BarEm).Width <= AvailableWidth)
+        {
+            return label;
+        }
+
+        var builder = new StringBuilder(label.Length);
+        foreach (var character in label)
+        {
+            var candidate = builder.ToString() + character + "…";
+            if (ShellText.Measure(candidate, ShellText.BarEm).Width > AvailableWidth)
+            {
+                break;
+            }
+
+            builder.Append(character);
+        }
+
+        return builder.Length == 0 ? "…" : $"{builder}…";
     }
 
     /// <summary>The clock: time first, then the date, Australian style.</summary>
@@ -82,7 +109,7 @@ internal static class Bar
 
         var start = new Rect(Pad, innerY, StartButtonWidth, innerH);
 
-        var clockWidth = (BitmapFont.Measure(clock, 1).Width + (Pad * 2)) + 8;
+        var clockWidth = (ShellText.Measure(clock, ShellText.BarEm).Width + (Pad * 2)) + 8;
         var clockX = Math.Max(0, width - clockWidth - Pad);
         var clockRect = new Rect(clockX, innerY, clockWidth, innerH);
 
@@ -178,12 +205,12 @@ internal static class Bar
                 Chrome.FillRect(pixels, clipW, clipH, stride, new Rect(rect.X, rect.Y + rect.H - 2, rect.W, 2), TaskFocusedAccent, scale);
             }
 
-            var textY = rect.Y + ((rect.H - BitmapFont.GlyphHeight) / 2);
-            BitmapFont.DrawText(pixels, clipW, clipH, stride, task.Label, (rect.X + 12) * scale, textY * scale, TextColour, scale);
+            var textY = rect.Y + ((rect.H - ShellText.LineHeight(ShellText.BarEm)) / 2);
+            ShellText.DrawText(pixels, clipW, clipH, stride, task.Label, (rect.X + 12) * scale, textY * scale, TextColour, ShellText.BarEm, scale);
         }
 
-        var clockY = layout.Clock.Y + ((layout.Clock.H - BitmapFont.GlyphHeight) / 2);
-        BitmapFont.DrawText(pixels, clipW, clipH, stride, clock, (layout.Clock.X + Pad) * scale, clockY * scale, TextColour, scale);
+        var clockY = layout.Clock.Y + ((layout.Clock.H - ShellText.LineHeight(ShellText.BarEm)) / 2);
+        ShellText.DrawText(pixels, clipW, clipH, stride, clock, (layout.Clock.X + Pad) * scale, clockY * scale, TextColour, ShellText.BarEm, scale);
     }
 
     /// <summary>
@@ -205,10 +232,11 @@ internal static class Bar
 
         var letter = button.Launcher.TileLetter.ToString();
 
-        // Like the rest of the bar's text, the fallback letter is plain        // glyph scale: the shell's FontScale 2 overflows the icon inset
-        // and strikes through the running indicator.
-        var (textW, textH) = BitmapFont.Measure(letter, 1);
-        BitmapFont.DrawText(pixels, clipW, clipH, stride, letter, scaled.X + ((scaled.W - (textW * scale)) / 2), scaled.Y + ((scaled.H - (textH * scale)) / 2), TextColour, scale);
+        // Like the rest of the bar's text, the fallback letter is drawn at
+        // the bar's em: the shell's old doubled scale overflowed the icon
+        // inset and struck through the running indicator.
+        var (textW, textH) = ShellText.Measure(letter, ShellText.BarEm);
+        ShellText.DrawText(pixels, clipW, clipH, stride, letter, scaled.X + ((scaled.W - (textW * scale)) / 2), scaled.Y + ((scaled.H - (textH * scale)) / 2), TextColour, ShellText.BarEm, scale);
     }
 
     /// <summary>

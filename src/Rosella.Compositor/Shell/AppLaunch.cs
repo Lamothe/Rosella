@@ -29,6 +29,13 @@ internal static class AppLaunch
             startInfo.Environment["WAYLAND_DISPLAY"] = socket;
         }
 
+        // The session type is how every toolkit chooses between Wayland and
+        // X11, and Rosella has no X server. Launched from a text console the
+        // variable is unset or "tty", which sent Chromium-family apps looking
+        // for an X display that does not exist — they died at startup. Saying
+        // "wayland" is the truth and is all they need.
+        startInfo.Environment["XDG_SESSION_TYPE"] = "wayland";
+
         startInfo.Environment["GTK_THEME"] = "Adwaita:dark";
         startInfo.Environment["ADW_DEBUG_COLOR_SCHEME"] = "prefer-dark";
         return startInfo;

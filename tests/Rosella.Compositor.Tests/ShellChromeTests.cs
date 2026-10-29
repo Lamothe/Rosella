@@ -59,7 +59,20 @@ public class ShellChromeTests
     {
         Assert.Equal("Window", Bar.LabelFor("", ""));
         Assert.Equal("Hello", Bar.LabelFor("Hello", "app"));
-        Assert.Equal(24, Bar.LabelFor(new string('x', 40), "app").Length);
+
+        // Truncation is by measured width, not character count: the label
+        // must fit the button's inner width whatever the face's metrics.
+        var truncated = Bar.LabelFor(new string('x', 40), "app");
+        Assert.EndsWith("…", truncated);
+        Assert.True(truncated.Length < 40, $"got {truncated.Length} characters");
+        Assert.True(
+            ShellText.Measure(truncated, ShellText.BarEm).Width <= 220 - 24,
+            $"label measures {ShellText.Measure(truncated, ShellText.BarEm).Width}px, wider than the button");
+
+        // A title of capitals is far wider per character than lowercase, so
+        // it must be cut shorter — which is the whole point of measuring.
+        var capitals = Bar.LabelFor(new string('M', 40), "app");
+        Assert.True(capitals.Length <= truncated.Length, $"capitals {capitals.Length} vs lowercase {truncated.Length}");
     }
 
     [Fact]

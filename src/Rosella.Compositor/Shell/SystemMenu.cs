@@ -127,8 +127,8 @@ internal sealed class SystemMenu
             }
 
             var textColour = hovered ? RowSelectedText : TextColour;
-            var textY = row.Y + ((row.H - (BitmapFont.GlyphHeight * Shell.FontScale)) / 2);
-            BitmapFont.DrawText(pixels, clipW, clipH, stride, Items[i], (row.X + 12) * scale, textY * scale, textColour, Shell.FontScale * scale);
+            var textY = row.Y + ((row.H - ShellText.LineHeight(ShellText.MenuEm)) / 2);
+            ShellText.DrawText(pixels, clipW, clipH, stride, Items[i], (row.X + 12) * scale, textY * scale, textColour, ShellText.MenuEm, scale);
         }
     }
 

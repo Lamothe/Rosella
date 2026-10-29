@@ -62,6 +62,19 @@ public class FieldReportTests
         Assert.Equal("prefer-dark", startInfo.Environment["ADW_DEBUG_COLOR_SCHEME"]);
     }
 
+    // --- Session type: toolkits must pick Wayland, not a missing X11 ---
+
+    [Fact]
+    public void LaunchedApps_SeeAWaylandSession()
+    {
+        // Launched from a text console this is unset or "tty", which is what
+        // sent Chromium-family apps hunting for an X display that Rosella
+        // does not have — they died at startup before drawing anything.
+        var startInfo = AppLaunch.CreateStartInfo(["google-chrome-stable"], "wayland-1");
+
+        Assert.Equal("wayland", startInfo.Environment["XDG_SESSION_TYPE"]);
+    }
+
     // --- Windows open fullscreen ----------------------------------------
 
     [Fact]
