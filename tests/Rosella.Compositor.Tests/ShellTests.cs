@@ -8,8 +8,8 @@ namespace Rosella.Compositor.Tests;
 /// <summary>
 /// The Windows 11 style shell over a real socket: windows land above the
 /// taskbar, the taskbar's apple, pinned and task buttons are clickable,
-/// binding keys never leak to clients, and the focused window wears the
-/// accent border. The Super key by itself does nothing.
+/// binding keys never leak to clients, and windows wear no chrome of their
+/// own. The Super key by itself does nothing.
 /// </summary>
 public class ShellTests
 {
@@ -38,17 +38,18 @@ public class ShellTests
     }
 
     [Fact]
-    public void FocusedWindow_WearsTheAccentBorder()
+    public void FocusedWindow_WearsNoChrome()
     {
         using var harness = new Harness();
         harness.MapWindow(8, 11, 12, title: "Hello");
         var surface = harness.MappedSurface(8);
         harness.ClickAt(surface.Position.X + 2, surface.Position.Y + 2);
 
-        // The border hugs the visible rect: its left edge is at x = 0 for a
-        // maximised window, drawn over the content.
+        // Focused or not, the window's content is all there is: no border
+        // or frame is drawn over or around it. The sample point sits on the
+        // window's left edge, where the old accent border used to live.
         var render = harness.RenderFrame();
-        Assert.Equal(0xFF7B86E8, PixelAt(render, 1920 * 4, 0, surface.Position.Y + 2));
+        Assert.Equal(harness.ContentPixel, PixelAt(render, 1920 * 4, 0, surface.Position.Y + 2));
     }
 
     [Fact]

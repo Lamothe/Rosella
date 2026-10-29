@@ -205,15 +205,8 @@ public sealed class Scene
                 }
             }
 
-            // Windows 11 style: the focused window wears an accent border
-            // hugging its visible rect, so a click has a visible consequence.
-            if (Seat?.KeyboardFocus is { IsMapped: true } focus)
-            {
-                var visible = focus.Visible;
-                Chrome.FrameRect(pixels, width, height, stride,
-                    new Rect(visible.X, visible.Y, visible.W, visible.H),
-                    0xFF7B86E8, scale);
-            }
+            // No chrome around windows: the toolkit owns its decorations
+            // (and the taskbar's accent is the focus's visible consequence).
         }
 
         // Chrome lays out in logical pixels (matching the input thread's

@@ -18,12 +18,13 @@ internal sealed record PinnedButton(Rect Rect, PinnedLauncher Launcher, bool Run
 /// </summary>
 internal static class Bar
 {
-    private const int StartButtonWidth = 56;
+    /// <summary>Distance from the screen edge to the first drawn content.</summary>
+    internal const int EdgePad = 8;
+
     private const int TaskWidth = 220;
 
     /// <summary>The gap between a task button's edge and its label.</summary>
     private const int LabelInset = 12;
-    private const int ClockZoneWidth = 180;
     internal const int Pad = 8;
 
     /// <summary>
@@ -107,10 +108,13 @@ internal static class Bar
         var innerY = (height - Shell.BarHeight) + 6;
         var innerH = IconBoxSize;
 
-        var start = new Rect(Pad, innerY, StartButtonWidth, innerH);
+        // The apple's bitmap lands EdgePad from the screen edge: the button
+        // is the icon's own box, hugging the edge, so the corner stays
+        // quiet and the logo sits close to it.
+        var start = new Rect(0, innerY, IconBoxSize, innerH);
 
-        var clockWidth = (ShellText.Measure(clock, ShellText.BarEm).Width + (Pad * 2)) + 8;
-        var clockX = Math.Max(0, width - clockWidth - Pad);
+        var clockWidth = ShellText.Measure(clock, ShellText.BarEm).Width + Pad + EdgePad;
+        var clockX = Math.Max(0, width - clockWidth);
         var clockRect = new Rect(clockX, innerY, clockWidth, innerH);
 
         // The pinned group: horizontally centred on the bar, one icon box
@@ -121,7 +125,7 @@ internal static class Bar
         pinned ??= [];
         var box = IconBoxSize;
         var groupWidth = GroupWidth(pinned.Count);
-        var minGroupX = Pad + StartButtonWidth + Pad;
+        var minGroupX = start.X + start.W + Pad;
         var maxGroupX = Math.Max(minGroupX, clockX - Pad - groupWidth);
         var groupX = Math.Clamp((width - groupWidth) / 2, minGroupX, maxGroupX);
         var pins = new PinnedButton[pinned.Count];
@@ -134,7 +138,7 @@ internal static class Bar
 
         // Task buttons fill the space between the pinned group and the
         // clock — windows the pinned launchers do not already claim.
-        var slotStart = Pad + StartButtonWidth + Pad;
+        var slotStart = start.X + start.W + Pad;
         if (pinned.Count > 0)
         {
             slotStart = Math.Max(slotStart, groupX + groupWidth + Pad);
@@ -255,61 +259,126 @@ internal static class Bar
 
     /// <summary>
     /// The Start button icon: an apple silhouette with a stem, a leaf and a
-    /// bite (Mac style, per the desktop's opinionated aesthetic), drawn from
-    /// a hand-authored pixel-art grid so the shape is deliberate at any
-    /// scale rather than an accident of ellipses.
+    /// bite (Mac style, per the desktop's opinionated aesthetic), drawn
+    /// anti-aliased at the output scale from the analytic shape.
     /// </summary>
     internal static void DrawStartIcon(Span<byte> pixels, int clipW, int clipH, int stride, int scale, Rect start)
     {
         var x0 = start.X + ((start.W - AppleIcon.Width) / 2);
         var y0 = start.Y + ((start.H - AppleIcon.Height) / 2);
-        for (var y = 0; y < AppleIcon.Height; y++)
-        {
-            for (var x = 0; x < AppleIcon.Width; x++)
-            {
-                if (AppleIcon.IsSet(x, y))
-                {
-                    Chrome.FillRect(pixels, clipW, clipH, stride, new Rect(x0 + x, y0 + y, 1, 1), StartIconColour, scale);
-                }
-            }
-        }
+        AppleIcon.Blend(pixels, clipW, clipH, stride, x0, y0, scale, StartIconColour);
     }
 }
 
 /// <summary>
-/// The Start button's apple: a hand-authored 20x20 pixel-art silhouette —
-/// stem in the top notch, leaf up-right, bite out of the right flank.
+/// The Start button's apple: an analytic silhouette — a two-lobed body
+/// under a dome with a dimple at the top, a bite out of the right flank, a
+/// stem leaning right from the notch and a tilted leaf. Coverage is
+/// evaluated by supersampling, so the edges anti-alias cleanly at any
+/// output scale; the interior is solid all the way through.
 /// </summary>
 internal static class AppleIcon
 {
     internal const int Width = 20;
     internal const int Height = 20;
 
-    private static readonly string[] Rows =
-    [
-        "........##..........", // 0  stem
-        "........##.###......", // 1  stem + leaf
-        ".......###..###.....", // 2
-        "....#####....###....", // 3  body top + leaf
-        "...#############....", // 4
-        "..###############...", // 5  shoulder
-        ".##############.....", // 6  bite begins
-        ".############.......", // 7  bite deepest
-        ".############.......", // 8
-        ".#############......", // 9  bite ends
-        "..##############....", // 10
-        "..###############...", // 11
-        "..###############...", // 12
-        "..###############...", // 13
-        "..###############...", // 14
-        "...#############....", // 15
-        "...#############....", // 16
-        "....###########.....", // 17
-        ".....####..####.....", // 18 bottom dimple
-        "......##....##......", // 19
-    ];
+    /// <summary>Anti-aliasing subsamples per axis per output pixel.</summary>
+    private const int Subsamples = 4;
 
-    internal static bool IsSet(int x, int y) => Rows[y][x] == '#';
+    /// <summary>Whether the point lies inside the silhouette.</summary>
+    internal static bool Inside(double x, double y)
+    {
+        // The body: two lobes under a dome, less the dimple and the bite.
+        // The stem is unioned after the subtraction and reaches past the
+        // dimple's carve, so its foot stays fused to the body.
+        var body = (InCircle(x, y, 6.5, 12.7, 5.5)
+                || InCircle(x, y, 12.0, 12.7, 5.5)
+                || InEllipse(x, y, 9.25, 9.7, 6.6, 5.0, 0))
+            && !InCircle(x, y, 9.25, 4.9, 1.3)
+            && !InCircle(x, y, 17.2, 9.4, 3.2);
+
+        return body
+            || InEllipse(x, y, 10.3, 4.0, 0.95, 2.7, 18)
+            || InEllipse(x, y, 13.2, 3.0, 2.7, 1.2, -35);
+    }
+
+    /// <summary>
+    /// Blends the silhouette at (x0, y0) logical over the buffer, one
+    /// source-over step per output pixel with exact coverage from that
+    /// pixel's logical box — anti-aliased at any scale.
+    /// </summary>
+    internal static void Blend(Span<byte> pixels, int clipW, int clipH, int stride, int x0, int y0, int scale, uint colour)
+    {
+        var words = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, uint>(pixels);
+        var strideWords = stride / 4;
+        var alpha = (byte)((colour >> 24) & 0xFF);
+        var red = (byte)((colour >> 16) & 0xFF);
+        var green = (byte)((colour >> 8) & 0xFF);
+        var blue = (byte)(colour & 0xFF);
+
+        for (var py = Math.Max(0, y0 * scale); py < Math.Min(clipH, (y0 + Height) * scale); py++)
+        {
+            for (var px = Math.Max(0, x0 * scale); px < Math.Min(clipW, (x0 + Width) * scale); px++)
+            {
+                // The output pixel's extent in logical icon coordinates.
+                var left = ((px - (x0 * scale)) * 1.0) / scale;
+                var top = ((py - (y0 * scale)) * 1.0) / scale;
+                var coverage = 0;
+                for (var sy = 0; sy < Subsamples; sy++)
+                {
+                    for (var sx = 0; sx < Subsamples; sx++)
+                    {
+                        var u = left + ((sx + 0.5) / (Subsamples * scale));
+                        var v = top + ((sy + 0.5) / (Subsamples * scale));
+                        if (Inside(u, v))
+                        {
+                            coverage++;
+                        }
+                    }
+                }
+
+                if (coverage == 0)
+                {
+                    continue;
+                }
+
+                // coverage is a sample count (0..Subsamples²); turn it into
+                // the 0..255 alpha the blend maths wants.
+                var blendAlpha = (uint)(((coverage * alpha) + 8) / (Subsamples * Subsamples));
+                if (blendAlpha == 0)
+                {
+                    continue;
+                }
+
+                var index = (py * strideWords) + px;
+                var destination = words[index];
+                var inverse = 255 - blendAlpha;
+                var outBlue = (byte)((((blue * blendAlpha) + ((destination & 0xFF) * inverse)) + 127) / 255);
+                var outGreen = (byte)((((green * blendAlpha) + (((destination >> 8) & 0xFF) * inverse)) + 127) / 255);
+                var outRed = (byte)((((red * blendAlpha) + (((destination >> 16) & 0xFF) * inverse)) + 127) / 255);
+                words[index] = 0xFF000000 | ((uint)outRed << 16) | ((uint)outGreen << 8) | outBlue;
+            }
+        }
+    }
+
+    private static bool InCircle(double x, double y, double cx, double cy, double radius)
+    {
+        var dx = x - cx;
+        var dy = y - cy;
+        return ((dx * dx) + (dy * dy)) <= radius * radius;
+    }
+
+    private static bool InEllipse(double x, double y, double cx, double cy, double rx, double ry, double degrees)
+    {
+        var radians = degrees * (Math.PI / 180.0);
+        var cos = Math.Cos(radians);
+        var sin = Math.Sin(radians);
+        var dx = x - cx;
+        var dy = y - cy;
+        var u = (dx * cos) + (dy * sin);
+        var v = (-dx * sin) + (dy * cos);
+        return ((u * u) / (rx * rx)) + ((v * v) / (ry * ry)) <= 1.0;
+    }
 }
 
 /// <summary>The drawn taskbar: rectangles and their tasks, in one order.</summary>

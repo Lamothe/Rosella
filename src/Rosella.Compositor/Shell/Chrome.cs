@@ -31,15 +31,6 @@ internal static class Chrome
         }
     }
 
-    internal static void FrameRect(Span<byte> pixels, int width, int height, int stride, Rect rect, uint colour, int scale = 1)
-    {
-        // Each 1-logical-pixel stroke becomes a scale-pixel-thick band.
-        FillRect(pixels, width, height, stride, new Rect(rect.X, rect.Y, rect.W, 1), colour, scale);
-        FillRect(pixels, width, height, stride, new Rect(rect.X, (rect.Y + rect.H) - 1, rect.W, 1), colour, scale);
-        FillRect(pixels, width, height, stride, new Rect(rect.X, rect.Y, 1, rect.H), colour, scale);
-        FillRect(pixels, width, height, stride, new Rect((rect.X + rect.W) - 1, rect.Y, 1, rect.H), colour, scale);
-    }
-
     /// <summary>
     /// Filled rounded rectangle: the union of the two full-width/height
     /// bands and one disc per corner — exact, clipped, and crisp at any

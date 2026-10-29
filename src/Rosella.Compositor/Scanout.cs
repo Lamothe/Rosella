@@ -156,6 +156,7 @@ internal sealed class Scanout : IDisposable
 
         var front = 0;
         long frame = 1;
+        var blankState = new BlankState();
         while (!token.IsCancellationRequested)
         {
             // Sync the panel's power state with the policy. The policy flips
@@ -166,12 +167,25 @@ internal sealed class Scanout : IDisposable
             // instead of leaving the two out of step.
             _screenPower?.Tick();
             var wantBlank = _screenPower?.IsBlanked == true;
+
+            // Entering the blank: black goes up BEFORE the panel is
+            // undriven (flips run while scanout is still active), and on
+            // the policy's word, not the hardware's — a panel whose DPMS
+            // write fails must still go dark and stop compositing (the
+            // hardware retry continues at the top of each turn). Exactly
+            // one flip per blank: the latch resets on wake.
+            if (blankState.NeedsBlackFlip(wantBlank))
+            {
+                ServePendingDiagnostics();
+                FlipBlack(token, ref front, ref frame);
+            }
+
             if (wantBlank != _blanked)
             {
                 SetBlanked(wantBlank);
             }
 
-            var blanked = _blanked;
+            var blanked = wantBlank;
 
             // While the panel is unlit there is nothing to draw: wait for
             // input rather than the one-second clock bound.
@@ -183,10 +197,11 @@ internal sealed class Scanout : IDisposable
 
             if (blanked)
             {
-                // The panel is unlit but the front buffer still holds the
-                // last drawn frame, so a capture can be served from it. This
-                // must happen here: leaving a request pending would wedge the
-                // control socket's timeout and poison every later capture.
+                // The panel is unlit and the front buffer holds the black
+                // frame — a capture serves the screen exactly as it is.
+                // This must happen here: leaving a request pending would
+                // wedge the control socket's timeout and poison every later
+                // capture.
                 ServePendingDiagnostics();
                 continue;
             }
@@ -365,6 +380,49 @@ internal sealed class Scanout : IDisposable
     {
         var buffer = _buffers[bufferIndex];
         _scene.Render(buffer.Pixels, _output.Mode.HDisplay, _output.Mode.VDisplay, checked((int)buffer.Pitch), frame);
+    }
+
+    /// <summary>
+    /// Flips to a black frame: the floor under DPMS in the blank state. A
+    /// panel that cannot be powered down must not freeze the last bright
+    /// frame (burn-in), so the screen shows nothing while blanked, lit or
+    /// not. Runs on the render loop, before the panel is undriven so the
+    /// flip happens while scanout is still active; a rejected or stalling
+    /// flip degrades to DPMS-only instead of killing the session.
+    /// </summary>
+    private void FlipBlack(CancellationToken token, ref int front, ref long frame)
+    {
+        var back = 1 - front;
+        _buffers[back].Pixels.Clear();
+
+        try
+        {
+            _device.PageFlip(_output.CrtcId, _framebuffers[back], (ulong)frame);
+        }
+        catch (DrmException exception)
+        {
+            Console.Error.WriteLine($"rosella: blank flip failed: {exception.Message}; continuing on DPMS alone");
+            frame++;
+            return;
+        }
+
+        // Bounded: a driver that stalls scanout must not wedge the blank.
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token);
+        deadline.CancelAfter(TimeSpan.FromSeconds(2));
+        try
+        {
+            WaitForFlip((ulong)frame, deadline.Token);
+        }
+        catch (OperationCanceledException) when (!token.IsCancellationRequested)
+        {
+            // The flip was accepted; only its event never came. It will
+            // land (or the panel is already unlit) — move on either way.
+            Console.Error.WriteLine("rosella: blank flip event timed out; continuing on DPMS alone");
+        }
+
+        front = back;
+        _front = back;
+        frame++;
     }
 
     /// <summary>

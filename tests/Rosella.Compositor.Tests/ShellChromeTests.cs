@@ -17,7 +17,9 @@ public class ShellChromeTests
     {
         var layout = Bar.ComputeLayout(1920, 1080, "14:33  28/10/2026", []);
 
-        Assert.Equal(new Rect(8, 1080 - Shell.BarHeight + 6, 56, Shell.BarHeight - 12), layout.Start);
+        // The button hugs the left edge; its box centres the apple EdgePad
+        // from the screen edge.
+        Assert.Equal(new Rect(0, 1080 - Shell.BarHeight + 6, Shell.BarHeight - 12, Shell.BarHeight - 12), layout.Start);
     }
 
     [Fact]
@@ -26,8 +28,10 @@ public class ShellChromeTests
         var clock = "14:33  28/10/2026";
         var layout = Bar.ComputeLayout(1920, 1080, clock, []);
 
-        Assert.True(layout.Clock.X + layout.Clock.W <= 1920 - 8, "clock overlaps the right edge");
-        Assert.True(layout.Clock.W >= BitmapFont.Measure(clock, 1).Width, "clock zone narrower than its text");
+        // The zone is the text plus exactly Pad of text inset and EdgePad
+        // to the screen edge, and it hugs the right edge.
+        Assert.Equal(1920, layout.Clock.X + layout.Clock.W);
+        Assert.Equal(ShellText.Measure(clock, ShellText.BarEm).Width + Bar.Pad + Bar.EdgePad, layout.Clock.W);
     }
 
     [Fact]
@@ -113,19 +117,19 @@ public class ShellChromeTests
         var x0 = layout.Start.X + ((layout.Start.W - 20) / 2);
         var y0 = layout.Start.Y + ((layout.Start.H - 20) / 2);
 
-        // Body: solid through the middle and at the widest part.
+        // Body: solid through the middle and at the widest part below.
         Assert.Equal(0xFFE8E8ECu, PixelAt(buffer, stride, x0 + 9, y0 + 13));
         Assert.Equal(0xFFE8E8ECu, PixelAt(buffer, stride, x0 + 2, y0 + 13));
 
         // The bite: the upper-right flank is empty where the body reaches
         // further right below.
-        Assert.Equal(0xFF16171Eu, PixelAt(buffer, stride, x0 + 16, y0 + 8));
+        Assert.Equal(0xFF16171Eu, PixelAt(buffer, stride, x0 + 17, y0 + 9));
         Assert.Equal(0xFFE8E8ECu, PixelAt(buffer, stride, x0 + 16, y0 + 13));
 
-        // Stem fills the top notch; the leaf sticks out top-right; the
-        // bottom dimple splits the lower lobes.
-        Assert.Equal(0xFFE8E8ECu, PixelAt(buffer, stride, x0 + 8, y0 + 0));
-        Assert.Equal(0xFFE8E8ECu, PixelAt(buffer, stride, x0 + 13, y0 + 1));
+        // Stem rises through the top notch; the leaf sticks out top-right;
+        // the bottom dimple splits the lower lobes.
+        Assert.Equal(0xFFE8E8ECu, PixelAt(buffer, stride, x0 + 10, y0 + 3));
+        Assert.Equal(0xFFE8E8ECu, PixelAt(buffer, stride, x0 + 13, y0 + 2));
         Assert.Equal(0xFF16171Eu, PixelAt(buffer, stride, x0 + 9, y0 + 19));
 
         // Everything painted left of the clock zone lives inside the start
@@ -140,6 +144,40 @@ public class ShellChromeTests
                 }
             }
         }
+    }
+
+    [Fact]
+    public void EdgeContent_SitsEdgePadFromTheScreenEdges()
+    {
+        var w = 600;
+        var h = 48;
+        var stride = w * 4;
+        var buffer = new byte[stride * h];
+        var layout = Bar.ComputeLayout(w, h, "14:33  28/10/2026", []);
+        Bar.Draw(buffer, w, h, stride, 1, layout, "14:33  28/10/2026", null);
+
+        // Scan the bar below the hairline for the leftmost and rightmost
+        // ink: the apple's first painted column and the clock's last glyph.
+        var leftmost = int.MaxValue;
+        var rightmost = int.MinValue;
+        for (var y = 1; y < h; y++)
+        {
+            for (var x = 0; x < w; x++)
+            {
+                if (PixelAt(buffer, stride, x, y) != 0xFF16171Eu)
+                {
+                    leftmost = Math.Min(leftmost, x);
+                    rightmost = Math.Max(rightmost, x);
+                }
+            }
+        }
+
+        // The apple's ink starts within a pixel of EdgePad (its bitmap box
+        // starts exactly there; the silhouette's edge is anti-aliased), and
+        // the clock's last glyph ends within a couple of pixels of EdgePad
+        // from the right edge.
+        Assert.InRange(leftmost, Bar.EdgePad, Bar.EdgePad + 2);
+        Assert.InRange(rightmost, w - Bar.EdgePad - 4, w - Bar.EdgePad - 1);
     }
 
     // --- The pinned launcher group: centring, gaps, padding -------------
