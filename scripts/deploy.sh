@@ -33,4 +33,11 @@ if [ ! -x "$root/build/publish/Rosella.Compositor" ]; then
     exit 1
 fi
 
+# The dev launcher (scripts/rosella-dev.sh) is the VT entry point; put it on
+# PATH as `rosella` so the workflow is just "run rosella". No sudo: it lives
+# in the user's own ~/.local/bin.
+mkdir -p "$HOME/.local/bin"
+ln -sf "$root/scripts/rosella-dev.sh" "$HOME/.local/bin/rosella"
+
 echo "Published to $root/build/publish — restart the Rosella session to pick it up."
+echo "Run it from a VT with: rosella"

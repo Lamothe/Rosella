@@ -82,7 +82,7 @@ src/Rosella.Transport/         unix sockets, recvmsg/sendmsg, SCM_RIGHTS descrip
 src/Rosella.Server/            display server: sessions, object maps, dispatch, globals
 src/Rosella.Drm/               DRM/KMS interop: devices, connectors, modes, dumb buffers, flips
 src/Rosella.Compositor/        entry point: scanout loop, desktop background, --probe
-scripts/                       GDM login-session installer and session wrapper
+scripts/                       GDM session registration, session wrapper, and the `rosella` VT launcher
 tests/Rosella.Protocol.Tests/  unit tests, including golden wire bytes
 tests/Rosella.Server.Tests/    transport + end-to-end handshake tests
 tests/Rosella.Drm.Tests/       kernel ABI golden layouts, ioctl codes, event parsing
@@ -108,19 +108,45 @@ Note: `dotnet test` run against the `.slnx` at the repo root currently no-ops
 Golden-byte tests assume a little-endian host (the wire format is native
 byte order; Rosella targets x86_64/ARM64).
 
-## Running as a login session
+## Running Rosella
 
-`scripts/install-session.sh` publishes Rosella and installs a GDM session
-entry, so "Rosella" appears in the greeter's session chooser alongside GNOME.
+Two entry points, both running the same build.
 
-Selecting it drives the first connected output at its preferred mode with the
-Windows 11 style desktop: a bottom taskbar (apple button, pinned app launchers
+### As a login session (the normal way)
+
+`scripts/install-session.sh` publishes Rosella and registers it with GDM, so
+"Rosella" appears in the greeter's session chooser alongside GNOME. It needs
+sudo once; day-to-day updates do not (`scripts/deploy.sh`, then restart).
+
+To use it: log out of GNOME, click the session chooser (the gear icon at the
+greeter), pick **Rosella**, and log in.
+
+### From a VT, alongside GNOME (the dev way)
+
+GDM permits one session per user, so you cannot start Rosella from the
+greeter while GNOME is running. To try the desktop without disturbing your
+session, switch to a spare VT (`Ctrl+Alt+F3`), log in, and run:
+
+```sh
+rosella
+```
+
+That is `scripts/rosella-dev.sh`, installed to `~/.local/bin` by
+`scripts/deploy.sh`. It stops any previous instance first — two compositors
+on one seat steal each other's input devices and the keyboard dies — then
+runs the freshly published build, logging to `/tmp/rosella.log`.
+
+### What you get
+
+The first connected output is driven at its preferred mode with the Windows
+11 style desktop: a bottom taskbar (apple button, pinned app launchers
 centred on the bar, task buttons, clock), an apple system menu (Log Out,
 Restart, Shut Down), and a calm dark gradient background — no workspaces, by
 design. The Super key is unbound; Alt+F4 closes a window and Super+Esc quits.
-Recovery
-if anything goes wrong: `Ctrl+Alt+F3`, log in, `pkill -f Rosella.Compositor`,
-or simply pick GNOME at the next greeter — it is always offered.
+
+Recovery if anything goes wrong: `Ctrl+Alt+F3`, log in,
+`pkill -f Rosella.Compositor`, or simply pick GNOME at the next greeter — it
+is always offered.
 
 ## Probe
 
