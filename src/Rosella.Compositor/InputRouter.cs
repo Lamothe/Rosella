@@ -6,8 +6,11 @@ namespace Rosella.Compositor;
 /// The input policy, and deliberately the only policy there is: the cursor
 /// moves and hit-tests windows, a click focuses and raises, keys go to the
 /// keyboard focus, and the keybindings are fixed: Alt+F4 closes the focused
-/// window, Super+Esc quits. The Super key by itself is unbound. Anything
-/// else typed or clicked is ordinary input. Nothing is configurable.
+/// window, Super+Esc quits. The Super key by itself is unbound. On the
+/// touchpad, one finger points, a quick tap clicks (left, right or middle by
+/// finger count), two fingers scroll and a tap then a quick second touch
+/// drags; a physical click always beats a pending tap. Anything else typed
+/// or clicked is ordinary input. Nothing is configurable.
 /// </summary>
 internal sealed class InputRouter
 {
@@ -25,15 +28,19 @@ internal sealed class InputRouter
 
     /// <summary>Button codes pressed over the shell chrome and consumed there.</summary>
     private readonly HashSet<int> _chromePressConsumedButtons = new();
-    private SurfaceHandler? _buttonPressTarget;
+
+    /// <summary>
+    /// Where each button's press landed (the implicit grab, lite): its
+    /// release goes back there and nowhere else. Per-button, so a tap-drag
+    /// and a physical click cannot steal each other's releases.
+    /// </summary>
+    private readonly Dictionary<int, SurfaceHandler> _buttonPressTargets = new();
     private int _moveRemainderX;
     private int _moveRemainderY;
 
-    // Multitouch slot state (protocol B): slot -> last per-axis position
-    // with per-axis seeding (the first coordinates after finger-down are a
-    // placement, not a delta).
-    private int _mtSlot;
-    private readonly Dictionary<int, (int X, int Y, bool HasX, bool HasY)> _mtFingers = new();
+    // Touchpad gestures own the multitouch slot state (tap-to-click, scroll,
+    // tap-drag); the router supplies the pointer, axis and button plumbing.
+    private readonly TouchpadGestures _gestures;
     private bool _capsLocked;
     private bool _numLocked;
     private int _lastDepressed = -1;
@@ -47,6 +54,17 @@ internal sealed class InputRouter
         _shell = shell;
         _screenPower = screenPower;
         _switchVt = switchVt;
+        _gestures = new TouchpadGestures(
+            move: (dx, dy, time) => MoveCursor(
+                dx == 0 ? 0 : ScaleTouchpadX(dx),
+                dy == 0 ? 0 : ScaleTouchpadY(dy),
+                time),
+            scroll: SendTouchpadScroll,
+            button: (code, pressed, time) =>
+            {
+                HandleButton(code, pressed, time);
+                _scene.MarkDirty();
+            });
     }
 
     /// <summary>Where the arrow's hotspot sits.</summary>
@@ -93,12 +111,14 @@ internal sealed class InputRouter
     {
         lock (_gate)
         {
+            // Gestures first: a tap-drag's release must route through the
+            // still-set press target before the fields below are cleared.
+            _gestures.Reset();
             _seat.ReleaseAllHeld();
             _pressedKeys.Clear();
             _consumedKeys.Clear();
             _chromePressConsumedButtons.Clear();
-            _buttonPressTarget = null;
-            _mtFingers.Clear();
+            _buttonPressTargets.Clear();
             _lastDepressed = -1;
             _lastLocked = -1;
         }
@@ -149,7 +169,10 @@ internal sealed class InputRouter
                 case InputConstants.EventKey when e.Code is InputConstants.ButtonLeft
                     or InputConstants.ButtonRight
                     or InputConstants.ButtonMiddle:
-                    HandleButton(e);
+                    // The hardware button beats any pending tap: a physical
+                    // click during a touch must never double as one.
+                    _gestures.NotePhysicalButton(e.Code, e.Value != InputConstants.KeyReleased, e.TimeMs);
+                    HandleButton(e.Code, e.Value != InputConstants.KeyReleased, e.TimeMs);
                     _scene.MarkDirty();
                     break;
 
@@ -167,58 +190,29 @@ internal sealed class InputRouter
     }
 
     /// <summary>
-    /// Multitouch (protocol B) trackpad: ABS_MT_POSITION updates of the
-    /// active finger become relative pointer motion (deltas between
-    /// consecutive positions), matching how a touchpad moves a cursor.
+    /// Multitouch (protocol B) trackpad events feed the gesture engine: one
+    /// finger moves the pointer, a quick tap clicks (left/right/middle by
+    /// finger count), two or more fingers scroll, and a tap followed by a
+    /// quick second touch drags with the button held.
     /// </summary>
     private void HandleTouchpadAbs(InputEvent e)
     {
         switch (e.Code)
         {
             case InputConstants.AbsMtSlot:
-                _mtSlot = e.Value;
+                _gestures.Slot(e.Value);
                 return;
 
             case InputConstants.AbsMtTrackingId:
-                if (e.Value == InputConstants.TrackingIdUp)
-                {
-                    _mtFingers.Remove(_mtSlot);
-                }
-                else
-                {
-                    // Down: nothing seeded, so the first coordinates of both
-                    // axes place the finger without moving the cursor.
-                    _mtFingers[_mtSlot] = (0, 0, false, false);
-                }
-
+                _gestures.TrackingId(e.Value, e.TimeMs);
                 return;
 
-            case InputConstants.AbsMtPositionX or InputConstants.AbsMtPositionY:
-                if (!_mtFingers.TryGetValue(_mtSlot, out var last))
-                {
-                    // No tracking id seen for this slot: ignore stray coords.
-                    return;
-                }
+            case InputConstants.AbsMtPositionX:
+                _gestures.PositionX(e.Value, e.TimeMs);
+                return;
 
-                if (e.Code == InputConstants.AbsMtPositionX)
-                {
-                    if (last.HasX)
-                    {
-                        MoveCursor(ScaleTouchpadX(e.Value - last.X), 0, e.TimeMs);
-                    }
-
-                    _mtFingers[_mtSlot] = (e.Value, last.Y, true, last.HasY);
-                }
-                else
-                {
-                    if (last.HasY)
-                    {
-                        MoveCursor(0, ScaleTouchpadY(e.Value - last.Y), e.TimeMs);
-                    }
-
-                    _mtFingers[_mtSlot] = (last.X, e.Value, last.HasX, true);
-                }
-
+            case InputConstants.AbsMtPositionY:
+                _gestures.PositionY(e.Value, e.TimeMs);
                 return;
         }
     }
@@ -274,10 +268,8 @@ internal sealed class InputRouter
         }
     }
 
-    private void HandleButton(InputEvent e)
+    private void HandleButton(int code, bool pressed, uint time)
     {
-        var pressed = e.Value != InputConstants.KeyReleased;
-
         // A press eaten by the shell chrome swallows its own release: no
         // client may see a release for a press it never received, and no
         // press may lose the release it is owed. Consumed buttons are a set
@@ -290,7 +282,7 @@ internal sealed class InputRouter
                 openShell.PressedPin = -1;
             }
 
-            if (_chromePressConsumedButtons.Remove(e.Code))
+            if (_chromePressConsumedButtons.Remove(code))
             {
                 return;
             }
@@ -306,14 +298,14 @@ internal sealed class InputRouter
             if (shell.Menu.IsOpen && shell.Menu.PanelRect(outputWidth, outputHeight).Contains(_cursorX, _cursorY))
             {
                 shell.Menu.HandleClick(_cursorX, _cursorY, outputWidth, outputHeight);
-                _chromePressConsumedButtons.Add(e.Code);
+                _chromePressConsumedButtons.Add(code);
                 return;
             }
 
             if (_cursorY >= outputHeight - Shell.BarHeight)
             {
                 HandleTaskbarClick(shell, outputWidth, outputHeight, _cursorX, _cursorY);
-                _chromePressConsumedButtons.Add(e.Code);
+                _chromePressConsumedButtons.Add(code);
                 return;
             }
 
@@ -321,7 +313,7 @@ internal sealed class InputRouter
             {
                 // A click outside the panel dismisses it.
                 shell.Menu.Close();
-                _chromePressConsumedButtons.Add(e.Code);
+                _chromePressConsumedButtons.Add(code);
                 return;
             }
         }
@@ -329,24 +321,39 @@ internal sealed class InputRouter
         // The window under the cursor is authoritative for a press (click-to-
         // focus, raise on press). Its release is owed back to the surface
         // that received the press — an implicit grab, lite — wherever the
-        // cursor wandered to since.
-        var target = pressed ? _scene.HitTest(_cursorX, _cursorY) : _buttonPressTarget ?? _scene.HitTest(_cursorX, _cursorY);
-        _seat.SetPointerFocus(target, LocalX(target), LocalY(target));
-        if (pressed && target is not null)
+        // cursor wandered to since; a release whose press never reached a
+        // surface is dropped (no client may see a release without a press).
+        if (pressed)
         {
-            _buttonPressTarget = target;
-            _scene.Raise(target);
-            _seat.SetKeyboardFocus(target, _pressedKeys);
+            var target = _scene.HitTest(_cursorX, _cursorY);
+            _seat.SetPointerFocus(target, LocalX(target), LocalY(target));
+            if (target is not null)
+            {
+                _buttonPressTargets[code] = target;
+                _scene.Raise(target);
+                _seat.SetKeyboardFocus(target, _pressedKeys);
+            }
         }
-        else if (!pressed)
+        else if (_buttonPressTargets.Remove(code, out var pressedTarget))
         {
-            _buttonPressTarget = null;
+            _seat.SetPointerFocus(pressedTarget, LocalX(pressedTarget), LocalY(pressedTarget));
+            if (_seat.PointerFocus is { } pointerTarget)
+            {
+                _seat.SendButton(pointerTarget, code, pressed: false, time);
+                _seat.SendPointerFrame(pointerTarget);
+            }
+
+            return;
+        }
+        else
+        {
+            return; // release with no press behind it
         }
 
-        if (_seat.PointerFocus is { } pointerTarget)
+        if (_seat.PointerFocus is { } target2)
         {
-            _seat.SendButton(pointerTarget, e.Code, pressed, e.TimeMs);
-            _seat.SendPointerFrame(pointerTarget);
+            _seat.SendButton(target2, code, pressed, time);
+            _seat.SendPointerFrame(target2);
         }
     }
 
@@ -560,6 +567,29 @@ internal sealed class InputRouter
         {
             _seat.SendAxis(target, axis, value, time);
             _seat.SendPointerFrame(target);
+        }
+    }
+
+    /// <summary>
+    /// Two-finger scroll: mean finger travel becomes axis deltas at the same
+    /// rate the pointer moves. Signs follow the wheel mapping (fingers down
+    /// or right scroll down or right), and the pointer stays exactly put.
+    /// </summary>
+    private void SendTouchpadScroll(int dx, int dy, uint time)
+    {
+        // Scrolling needs a focus too, and the cursor may never have moved
+        // (a first gesture can be a scroll): hit-test here like motion does.
+        var target = _scene.HitTest(_cursorX, _cursorY);
+        _seat.SetPointerFocus(target, LocalX(target), LocalY(target));
+
+        if (dy != 0)
+        {
+            SendAxis(axis: 0, ScaleTouchpadY(dy), time);
+        }
+
+        if (dx != 0)
+        {
+            SendAxis(axis: 1, ScaleTouchpadX(dx), time);
         }
     }
 

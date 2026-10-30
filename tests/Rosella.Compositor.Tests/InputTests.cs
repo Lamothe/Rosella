@@ -576,9 +576,11 @@ public class InputTests
     }
 
     [Fact]
-    public void Touchpad_SlotsTrackSeparateFingers()
+    public void Touchpad_TwoFingersScrollInsteadOfMovingThePointer()
     {
         using var harness = new Harness();
+        harness.Router.PlaceCursor(100, 100);
+
         // Finger A on slot 0 at (500, 300); finger B on slot 1 at (10, 10).
         harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtSlot, 0));
         harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtTrackingId, 7));
@@ -589,14 +591,84 @@ public class InputTests
         harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtPositionX, 10));
         harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtPositionY, 10));
 
-        // Slot 0 moves +20 units (= 7 pixels); slot 1 stays. Then slot 1
-        // moves +20. The scale remainder is per-axis and shared across fingers.
+        // Both fingers travel: with the pair down this is a scroll, and the
+        // pointer stays exactly where it was (the engine's delta accounting
+        // is pinned in TouchpadGesturesTests).
         harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtSlot, 0));
         harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtPositionX, 520));
-        Assert.Equal((7, 0), harness.Router.Cursor);
         harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtSlot, 1));
         harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtPositionY, 30));
-        Assert.Equal((7, 7), harness.Router.Cursor);
+        Assert.Equal((100, 100), harness.Router.Cursor);
+    }
+
+    [Fact]
+    public void Touchpad_TapDrag_ReleasesOntoItsPressTargetOnReset()
+    {
+        using var harness = new Harness();
+        harness.BindXdg();
+        harness.MapWindow(8, 11, 12);
+        harness.Client.SendRequest(20, "wl_seat", "get_pointer", WireArgument.NewId(22));
+        harness.Client.RegisterObject(22, "wl_pointer");
+        harness.RoundTrip();
+        harness.Router.PlaceCursor(950, 530);
+
+        // A quick tap on the window (click 1), then a second touch that
+        // drags: the drag's press goes to the window under the pointer.
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtSlot, 0));
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtTrackingId, 7));
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtPositionX, 500));
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtPositionY, 300));
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtTrackingId, -1));
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtTrackingId, 7));
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtPositionX, 500));
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtPositionY, 300));
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtPositionX, 560));
+
+        // The tap's click (press+release) and the drag's press are on the
+        // wire; the drag's release comes from the reset below.
+        var firstPress = harness.Client.ReadUntil(22, "button");
+        Assert.Equal(1u, firstPress.Arguments[3].AsUInt32()); // pressed
+        harness.Client.ReadUntil(22, "button");
+        var dragPress = harness.Client.ReadUntil(22, "button");
+        Assert.Equal(1u, dragPress.Arguments[3].AsUInt32());
+
+        // A VT switch with the drag held must release onto the same surface,
+        // not wherever the cursor happens to be.
+        harness.Router.ResetInputState();
+        var dragRelease = harness.Client.ReadUntil(22, "button");
+        Assert.Equal(0u, dragRelease.Arguments[3].AsUInt32()); // released
+    }
+
+    [Fact]
+    public void Touchpad_TwoFingerScroll_SendsAxisAtPointerRate()
+    {
+        using var harness = new Harness();
+        harness.BindXdg();
+        harness.MapWindow(8, 11, 12);
+        harness.Client.SendRequest(20, "wl_seat", "get_pointer", WireArgument.NewId(22));
+        harness.Client.RegisterObject(22, "wl_pointer");
+        harness.RoundTrip();
+        harness.Router.PlaceCursor(950, 530);
+
+        // One finger of a pair travels 20 units of Y: the mean over the two
+        // contacts is 10 raw units, the 7/20 scale makes 3 logical pixels,
+        // and fingers down scroll down (positive), unlike the wheel's sign.
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtSlot, 0));
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtTrackingId, 7));
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtPositionX, 500));
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtPositionY, 300));
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtSlot, 1));
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtTrackingId, 8));
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtPositionX, 600));
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtPositionY, 300));
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtSlot, 0));
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtPositionY, 320));
+
+        harness.Client.ReadUntil(22, "enter");
+        var axis = harness.Client.ReadUntil(22, "axis");
+        Assert.Equal(0u, axis.Arguments[1].AsUInt32()); // vertical
+        Assert.Equal(3 << 8, axis.Arguments[2].AsFixed().RawValue);
+        Assert.Equal((950, 530), harness.Router.Cursor);
     }
 
     [Fact]

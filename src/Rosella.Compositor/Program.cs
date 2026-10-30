@@ -19,6 +19,16 @@ var runtimeDirectory = Environment.GetEnvironmentVariable("XDG_RUNTIME_DIR") ?? 
 var displayName = args.Length > 0 ? args[0] : Path.GetFileName(DisplayServer.FindFreeSocketPath(runtimeDirectory));
 var socketPath = Path.Combine(runtimeDirectory, displayName);
 
+// Single instance per seat, checked before any hardware is touched: a
+// sibling compositor's grab sweep would steal this session's devices the
+// moment it releases them, and the keyboard would die while the desktop
+// kept showing. Refuse to be either half of that pair.
+if (ControlServer.ListenerPresent(ControlClient.DefaultSocketPath))
+{
+    Console.Error.WriteLine("rosella: refusing to start — another compositor is already running");
+    return 1;
+}
+
 // The device set is fixed before clients bind, so wl_seat capabilities are
 // right from the first moment (no hot-plug in M6).
 using var cancellation = new CancellationTokenSource();
@@ -74,6 +84,16 @@ var outputInfo = new OutputInfo(
 // The session's VT: Ctrl+Alt+Fn switches (the kernel cannot — we own the
 // input devices), and the release/acquire signals hand the hardware over.
 using var sessionSwitch = new SessionSwitch();
+
+// A session without a VT is a session stealing another one's input: no
+// Ctrl+Alt+Fn, no release/acquire handover, and a grab sweep that fights
+// the visible session for devices. Refuse to run that way (this is what a
+// stray ssh launch looks like).
+if (sessionSwitch.VtState is null)
+{
+    Console.Error.WriteLine("rosella: refusing to start — no controlling VT (run from a console login, not ssh)");
+    return 1;
+}
 
 using var input = new InputThread(scene, seat, () => cancellation.Cancel(), shell, screenPower, sessionSwitch.SwitchTo);
 input.Discover();
@@ -145,6 +165,9 @@ if (!OperatingSystem.IsWindows())
 
 // The control socket: the outside hand (rosella-driver) — frame capture,
 // state reads and input injection over the session's runtime directory.
+// A live sibling holding it is fatal: two compositors on one seat steal each
+// other's devices and end as two half-alive sessions — the classic way the
+// keyboard "dies" while the desktop still shows.
 ControlServer? control = null;
 try
 {
@@ -152,6 +175,13 @@ try
         Rosella.Control.ControlClient.DefaultSocketPath,
         new ControlAdapter(scene, input.Router, scanout, screenPower, displayName, () => sessionSwitch.VtState));
     Console.WriteLine($"rosella: control socket at {control.SocketPath}");
+}
+catch (ControlSocketInUseException exception)
+{
+    Console.Error.WriteLine($"rosella: refusing to start — {exception.Message}");
+    scanout.CancelPendingCapture();
+    scanout.Dispose(); // restores the previous display state
+    return 1;
 }
 catch (Exception exception)
 {
@@ -173,6 +203,11 @@ catch (Exception exception)
     // Whatever went wrong, the previous display state must be restored and
     // the session must exit so the greeter can recover.
     Console.Error.WriteLine($"rosella: scanout failed: {exception.Message}");
+    scanout.CancelPendingCapture(); // a racing frame request must not outlive the loop
+    scanout.Dispose(); // restores the previous display state
+    control?.Dispose();
+    Console.Error.WriteLine("rosella: scanout stopped, previous display state restored");
+    return 1;
 }
 
 scanout.CancelPendingCapture(); // a racing frame request must not outlive the loop

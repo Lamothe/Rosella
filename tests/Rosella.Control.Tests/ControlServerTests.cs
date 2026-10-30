@@ -319,7 +319,9 @@ public sealed class ControlServerTests : IDisposable
         var (server, _, _) = Start();
         using (server)
         {
-            Assert.Throws<InvalidOperationException>(() => new ControlServer(_path, new FakeTarget()));
+            // The typed exception is the signal Program acts on (fatal at
+            // startup), so the exact type is the contract, not its base.
+            Assert.Throws<ControlSocketInUseException>(() => new ControlServer(_path, new FakeTarget()));
         }
     }
 

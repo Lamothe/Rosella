@@ -4,6 +4,19 @@ using System.Text;
 namespace Rosella.Control;
 
 /// <summary>
+/// A live sibling already owns the control socket: starting a second
+/// compositor alongside it would steal its devices out from under it (the
+/// grab sweep) and end as two half-alive sessions. Fatal, not a warning.
+/// </summary>
+public sealed class ControlSocketInUseException : InvalidOperationException
+{
+    public ControlSocketInUseException(string socketPath)
+        : base($"another compositor is already running (bound to {socketPath})")
+    {
+    }
+}
+
+/// <summary>
 /// A tiny line-oriented control socket, the compositor's hands and eyes for
 /// outside automation. One request per line, answers are
 /// "OK &lt;payload-bytes&gt;\n" + raw payload bytes, or "ERR &lt;message&gt;\n".
@@ -31,19 +44,43 @@ public sealed class ControlServer : IDisposable
 
         // A stale socket file with a live listener behind it means two
         // servers; refuse rather than silently hijack the first. The probe
-        // is bounded: a wedged squatter must not freeze startup.
-        if (File.Exists(socketPath))
+        // is bounded: a wedged squatter must not freeze startup. The stale
+        // file is reclaimed only once a bind attempt proves the path free.
+        if (File.Exists(socketPath) && ListenerPresent(socketPath))
         {
-            if (ListenerPresent(socketPath))
-            {
-                throw new InvalidOperationException($"someone is already bound to {socketPath}; refusing to hijack it");
-            }
-
-            File.Delete(socketPath);
+            throw new ControlSocketInUseException(socketPath);
         }
 
         _listener = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
-        _listener.Bind(new UnixDomainSocketEndPoint(socketPath));
+        try
+        {
+            _listener.Bind(new UnixDomainSocketEndPoint(socketPath));
+        }
+        catch (SocketException exception) when (exception.SocketErrorCode == SocketError.AddressAlreadyInUse)
+        {
+            // Both a live sibling and a dead listener's file refuse the
+            // bind; only the probe tells them apart. A live listener is the
+            // two-compositor state this exception exists to refuse.
+            if (ListenerPresent(socketPath))
+            {
+                _listener.Dispose();
+                throw new ControlSocketInUseException(socketPath);
+            }
+
+            File.Delete(socketPath);
+            try
+            {
+                _listener.Bind(new UnixDomainSocketEndPoint(socketPath));
+            }
+            catch (SocketException retry)
+            {
+                _listener.Dispose();
+                throw retry.SocketErrorCode == SocketError.AddressAlreadyInUse
+                    ? new ControlSocketInUseException(socketPath)
+                    : retry;
+            }
+        }
+
         _listener.Listen(4);
 
         // The socket can drive the seat (inject keystrokes): keep it as
@@ -367,7 +404,8 @@ public sealed class ControlServer : IDisposable
     /// True when a listener answers on the path (or is wedged holding it);
     /// false only when the connection is refused — i.e. nothing is there.
     /// </summary>
-    private static bool ListenerPresent(string path)
+    /// <summary>True when a live listener answers at this socket path.</summary>
+    public static bool ListenerPresent(string path)
     {
         using var probe = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
         var probeTask = probe.ConnectAsync(new UnixDomainSocketEndPoint(path));

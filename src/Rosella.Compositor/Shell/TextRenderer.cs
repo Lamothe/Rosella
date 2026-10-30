@@ -22,27 +22,31 @@ internal sealed record Glyph(int Width, int Height, int Left, int Top, long Adva
 /// every toolkit on the machine uses. This replaces the old hand-drawn
 /// 8×16 bitmap font, which was blocky and monospaced.
 ///
-/// One font, no settings: Cantarell where it exists (GNOME's own face),
-/// otherwise the first sans that loads. Glyphs are cached per character and
-/// size, so drawing the clock every second costs nothing after the first.
-/// A machine with no FreeType and no font keeps the old bitmap font rather
-/// than losing its text.
+/// One font, no settings: the most Segoe-like face on the machine (Open
+/// Sans leads), otherwise the first sans that loads. Glyphs are cached per
+/// character and size, so drawing the clock every second costs nothing
+/// after the first. A machine with no FreeType and no font keeps the old
+/// bitmap font rather than losing its text.
 /// </summary>
 internal sealed class TextRenderer : IDisposable
 {
     /// <summary>
     /// Faces to try, best first. All are ordinary desktop fonts; the first
-    /// that loads is the one Rosella uses, and there is no setting.
+    /// that loads is the one Rosella uses, and there is no setting. Open
+    /// Sans leads because its humanist, Segoe-like proportions suit the
+    /// Windows-style shell; Cantarell is only the fallback.
     /// </summary>
     private static readonly string[] PreferredFonts =
     [
+        "OpenSans-Regular.ttf",
+        "OpenSans-Regular.otf",
+        "Inter-Regular.otf",
+        "Inter.ttf",
+        "LiberationSans-Regular.ttf",
         "Cantarell-Regular.otf",
         "Cantarell-VF.otf",
         "Cantarell.ttf",
-        "Inter-Regular.otf",
-        "Inter.ttf",
         "DejaVuSans.ttf",
-        "LiberationSans-Regular.ttf",
     ];
 
     private readonly nint _library;
