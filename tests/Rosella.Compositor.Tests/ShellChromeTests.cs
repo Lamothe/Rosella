@@ -80,9 +80,17 @@ public class ShellChromeTests
     }
 
     [Fact]
-    public void ClockString_IsTimeThenAustralianDate()
+    public void FormatClock_IsGnomeStyle_MonthDayThenTime()
     {
-        Assert.Matches(@"^\d{2}:\d{2}  \d{2}/\d{2}/\d{4}$", Bar.ClockString());
+        // GNOME's top-bar face, per the desktop's taste: "Oct 30 9:16".
+        Assert.Equal("Oct 30 9:16", Bar.FormatClock(new DateTime(2026, 10, 30, 9, 16, 0)));
+        Assert.Equal("Jan 2 21:05", Bar.FormatClock(new DateTime(2026, 1, 2, 21, 5, 0)));
+    }
+
+    [Fact]
+    public void ClockString_MatchesThePinnedFace()
+    {
+        Assert.Equal(Bar.FormatClock(DateTime.Now), Bar.ClockString());
     }
 
     [Fact]
@@ -117,20 +125,12 @@ public class ShellChromeTests
         var x0 = layout.Start.X + ((layout.Start.W - 20) / 2);
         var y0 = layout.Start.Y + ((layout.Start.H - 20) / 2);
 
-        // Body: solid through the middle and at the widest part below.
-        Assert.Equal(0xFFE8E8ECu, PixelAt(buffer, stride, x0 + 9, y0 + 13));
-        Assert.Equal(0xFFE8E8ECu, PixelAt(buffer, stride, x0 + 2, y0 + 13));
-
-        // The bite: the upper-right flank is empty where the body reaches
-        // further right below.
-        Assert.Equal(0xFF16171Eu, PixelAt(buffer, stride, x0 + 17, y0 + 9));
-        Assert.Equal(0xFFE8E8ECu, PixelAt(buffer, stride, x0 + 16, y0 + 13));
-
-        // Stem rises through the top notch; the leaf sticks out top-right;
-        // the bottom dimple splits the lower lobes.
-        Assert.Equal(0xFFE8E8ECu, PixelAt(buffer, stride, x0 + 10, y0 + 3));
-        Assert.Equal(0xFFE8E8ECu, PixelAt(buffer, stride, x0 + 13, y0 + 2));
-        Assert.Equal(0xFF16171Eu, PixelAt(buffer, stride, x0 + 9, y0 + 19));
+        // The silhouette is drawn (AppleIconTests pin its shape); here it
+        // is the placement that matters: ink in the icon box, background
+        // at its corners, and a solid core where the body sits.
+        Assert.Equal(0xFFE8E8ECu, PixelAt(buffer, stride, x0 + 10, y0 + 13));
+        Assert.Equal(0xFF16171Eu, PixelAt(buffer, stride, x0, y0));
+        Assert.Equal(0xFF16171Eu, PixelAt(buffer, stride, x0 + 19, y0 + 19));
 
         // Everything painted left of the clock zone lives inside the start
         // button's rect (the clock/task labels share the icon's colour).

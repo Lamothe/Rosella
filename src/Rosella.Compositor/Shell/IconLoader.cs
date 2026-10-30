@@ -53,7 +53,8 @@ internal static class IconLoader
 
         try
         {
-            return LoadCore(path, size);
+            var pixbuf = Native.gdk_pixbuf_new_from_file_at_scale(path, size, size, 0, out var error);
+            return FromPixbuf(path, pixbuf, error);
         }
         catch (Exception exception) when (exception is DllNotFoundException or EntryPointNotFoundException)
         {
@@ -67,9 +68,38 @@ internal static class IconLoader
         }
     }
 
-    private static IconImage? LoadCore(string path, int size)
+    /// <summary>
+    /// Decodes the image at its natural size (the wallpaper path), or null
+    /// on any failure — same contract as <see cref="Load"/>.
+    /// </summary>
+    internal static IconImage? LoadNatural(string path)
     {
-        var pixbuf = Native.gdk_pixbuf_new_from_file_at_scale(path, size, size, 0, out var error);
+        if (!Available)
+        {
+            LogMissing();
+            return null;
+        }
+
+        try
+        {
+            var pixbuf = Native.gdk_pixbuf_new_from_file(path, out var error);
+            return FromPixbuf(path, pixbuf, error);
+        }
+        catch (Exception exception) when (exception is DllNotFoundException or EntryPointNotFoundException)
+        {
+            LogMissing();
+            return null;
+        }
+        catch (Exception exception)
+        {
+            Console.WriteLine($"icon: {path}: {exception.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>Takes ownership of a decoded pixbuf and converts it, or reports the failure.</summary>
+    private static IconImage? FromPixbuf(string path, IntPtr pixbuf, IntPtr error)
+    {
         if (pixbuf == IntPtr.Zero)
         {
             LogDecodeFailure(path, error);
@@ -185,6 +215,11 @@ internal static class IconLoader
             int width,
             int height,
             int preserveAspectRatio,
+            out IntPtr error);
+
+        [DllImport(Library, EntryPoint = "gdk_pixbuf_new_from_file")]
+        internal static extern IntPtr gdk_pixbuf_new_from_file(
+            [MarshalAs(UnmanagedType.LPUTF8Str)] string filename,
             out IntPtr error);
 
         [DllImport(Library)]

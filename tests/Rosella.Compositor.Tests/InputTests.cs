@@ -188,6 +188,136 @@ public class InputTests
         Assert.True(harness.Quit);
     }
 
+    [Theory]
+    [InlineData(InputConstants.KeyF1, 1)]
+    [InlineData(InputConstants.KeyF2, 2)]
+    [InlineData(InputConstants.KeyF10, 10)]
+    [InlineData(InputConstants.KeyF11, 11)]
+    [InlineData(InputConstants.KeyF12, 12)]
+    public void CtrlAltFn_SwitchesToThatVt(ushort key, int vt)
+    {
+        using var harness = new Harness();
+
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventKey, InputConstants.KeyLeftCtrl, InputConstants.KeyPressed));
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventKey, InputConstants.KeyLeftAlt, InputConstants.KeyPressed));
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventKey, key, InputConstants.KeyPressed));
+
+        Assert.Equal([vt], harness.VtSwitches);
+    }
+
+    [Fact]
+    public void CtrlAltFn_IsConsumed_NotSentToClients()
+    {
+        using var harness = new Harness();
+        harness.BindXdg();
+        harness.MapWindow(8, 11, 12);
+        harness.Client.SendRequest(20, "wl_seat", "get_keyboard", WireArgument.NewId(21));
+        harness.Client.RegisterObject(21, "wl_keyboard");
+        harness.RoundTrip();
+        harness.ClickAt(950, 530);
+        harness.Client.ReadUntil(21, "enter");
+
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventKey, InputConstants.KeyLeftCtrl, InputConstants.KeyPressed));
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventKey, InputConstants.KeyLeftAlt, InputConstants.KeyPressed));
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventKey, InputConstants.KeyF2, InputConstants.KeyPressed));
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventKey, InputConstants.KeyF2, InputConstants.KeyReleased));
+
+        Assert.Equal([2], harness.VtSwitches);
+
+        // Nothing of the chord reached the client: collect every key it
+        // sees until the ordinary key pressed after it — no F2 anywhere.
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventKey, InputConstants.KeyA, InputConstants.KeyPressed));
+        var seen = new List<uint>();
+        while (true)
+        {
+            var message = harness.Client.ReadUntil(21, "key");
+            var code = message.Arguments[2].AsUInt32();
+            if (code == InputConstants.KeyA)
+            {
+                break;
+            }
+
+            seen.Add(code);
+        }
+
+        Assert.DoesNotContain((uint)InputConstants.KeyF2, seen);
+        Assert.Contains((uint)InputConstants.KeyLeftCtrl, seen);
+    }
+
+    [Fact]
+    public void AltF4_Alone_DoesNotSwitchVt()
+    {
+        using var harness = new Harness();
+
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventKey, InputConstants.KeyLeftAlt, InputConstants.KeyPressed));
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventKey, InputConstants.KeyF4, InputConstants.KeyPressed));
+
+        Assert.Empty(harness.VtSwitches);
+    }
+
+    [Fact]
+    public void Suspended_RouterDropsEvents()
+    {
+        using var harness = new Harness();
+        harness.BindXdg();
+        harness.MapWindow(8, 11, 12);
+        harness.ClickAt(950, 530);
+
+        harness.Router.Suspended = true;
+        harness.Router.PlaceCursor(10, 10);
+        Assert.Equal((950, 530), harness.Router.Cursor);
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventRelative, InputConstants.RelativeX, 50));
+        Assert.Equal((950, 530), harness.Router.Cursor);
+
+        harness.Router.Suspended = false;
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventRelative, InputConstants.RelativeX, 50));
+        Assert.NotEqual((950, 530), harness.Router.Cursor);
+    }
+
+    [Fact]
+    public void VtSwitch_ClearsHeldKeys_SoTheChordCannotStick()
+    {
+        using var harness = new Harness();
+        harness.BindXdg();
+        harness.MapWindow(8, 11, 12);
+        harness.Client.SendRequest(20, "wl_seat", "get_keyboard", WireArgument.NewId(21));
+        harness.Client.RegisterObject(21, "wl_keyboard");
+        harness.RoundTrip();
+        harness.ClickAt(950, 530);
+        harness.Client.ReadUntil(21, "enter");
+
+        // The chord that triggers a VT switch is down when the devices are
+        // handed over; its releases are lost in the other session.
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventKey, InputConstants.KeyLeftCtrl, InputConstants.KeyPressed));
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventKey, InputConstants.KeyLeftAlt, InputConstants.KeyPressed));
+        harness.Router.ResetInputState();
+
+        // Back from the switch: F4 alone must NOT read as Alt+F4, and the
+        // client must see clean releases for everything that was held.
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventKey, InputConstants.KeyF4, InputConstants.KeyPressed));
+        Assert.Empty(harness.VtSwitches);
+
+        var released = new List<uint>();
+        harness.Client.SendRequest(20, "wl_seat", "get_keyboard", WireArgument.NewId(22));
+        harness.Client.RegisterObject(22, "wl_keyboard");
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventKey, InputConstants.KeyF4, InputConstants.KeyReleased));
+        while (true)
+        {
+            var message = harness.Client.ReadUntil(21, "key");
+            if (message.Arguments[3].AsUInt32() == 0)
+            {
+                released.Add(message.Arguments[2].AsUInt32());
+            }
+            else if (message.Arguments[2].AsUInt32() == InputConstants.KeyF4)
+            {
+                break;
+            }
+        }
+
+        Assert.Contains((uint)InputConstants.KeyLeftCtrl, released);
+        Assert.Contains((uint)InputConstants.KeyLeftAlt, released);
+    }
+
     [Fact]
     public void Motion_SendsEnterMotionFrameAndLeave()
     {
@@ -504,7 +634,7 @@ public class InputTests
         {
             Scene = new Scene();
             Seat = new SeatState { HasKeyboardDevice = true, HasPointerDevice = true };
-            Router = new InputRouter(Scene, Seat, () => Quit = true, shell);
+            Router = new InputRouter(Scene, Seat, () => Quit = true, shell, switchVt: vt => VtSwitches.Add(vt));
             var socketPath = Path.Combine(Path.GetTempPath(), $"rosella-test-{Guid.NewGuid():N}");
             _server = new DisplayServer(socketPath, handlerFactory: new CompositorHandlerFactory(Scene, Seat));
             _server.Start();
@@ -526,6 +656,8 @@ public class InputTests
         public byte[] Content { get; }
 
         public bool Quit { get; private set; }
+
+        public List<int> VtSwitches { get; } = [];
 
         public void BindXdg()
         {

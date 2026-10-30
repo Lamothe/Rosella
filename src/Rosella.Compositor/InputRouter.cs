@@ -14,6 +14,7 @@ internal sealed class InputRouter
     private readonly Scene _scene;
     private readonly SeatState _seat;
     private readonly Action _quit;
+    private readonly Action<int>? _switchVt;
     private readonly Shell? _shell;
     private readonly ScreenPower? _screenPower;
     private readonly object _gate = new();
@@ -38,13 +39,14 @@ internal sealed class InputRouter
     private int _lastDepressed = -1;
     private int _lastLocked = -1;
 
-    internal InputRouter(Scene scene, SeatState seat, Action quit, Shell? shell = null, ScreenPower? screenPower = null)
+    internal InputRouter(Scene scene, SeatState seat, Action quit, Shell? shell = null, ScreenPower? screenPower = null, Action<int>? switchVt = null)
     {
         _scene = scene;
         _seat = seat;
         _quit = quit;
         _shell = shell;
         _screenPower = screenPower;
+        _switchVt = switchVt;
     }
 
     /// <summary>Where the arrow's hotspot sits.</summary>
@@ -62,6 +64,11 @@ internal sealed class InputRouter
     /// <summary>Places the cursor outright (startup centring).</summary>
     internal void PlaceCursor(int x, int y)
     {
+        if (Suspended)
+        {
+            return;
+        }
+
         lock (_gate)
         {
             _cursorX = x;
@@ -70,9 +77,41 @@ internal sealed class InputRouter
         }
     }
 
+    /// <summary>
+    /// While another VT owns the display, injected events are dropped: the
+    /// session is invisible and must not move windows nobody can see.
+    /// </summary>
+    internal volatile bool Suspended;
+
+    /// <summary>
+    /// The VT-switch reset: everything pressed or consumed right now is
+    /// gone — the matching releases arrive while the devices belong to
+    /// another session and are dropped. Without this, the chord that
+    /// triggered the switch (Ctrl+Alt) would read as still held on return.
+    /// </summary>
+    internal void ResetInputState()
+    {
+        lock (_gate)
+        {
+            _seat.ReleaseAllHeld();
+            _pressedKeys.Clear();
+            _consumedKeys.Clear();
+            _chromePressConsumedButtons.Clear();
+            _buttonPressTarget = null;
+            _mtFingers.Clear();
+            _lastDepressed = -1;
+            _lastLocked = -1;
+        }
+    }
+
     /// <summary>Processes one evdev event (thread-safe; called by device readers).</summary>
     internal void ProcessEvent(InputEvent e)
     {
+        if (Suspended)
+        {
+            return;
+        }
+
         // Any real input keeps the screen alive, and wakes it if it had
         // blanked. Deliberately outside _gate: the power object has its own
         // lock and the render loop must be woken even if this event goes no
@@ -380,6 +419,15 @@ internal sealed class InputRouter
     /// <summary>The fixed keybindings. True = the key is consumed outright.</summary>
     private bool TryHandleBinding(int code)
     {
+        // Ctrl+Alt+Fn switches VT — the kernel's own handling never fires
+        // because this session owns the input devices exclusively, so the
+        // display server performs the switch itself.
+        if (CtrlDown && AltDown && VtForKey(code) is { } vt && _switchVt is { } switchVt)
+        {
+            switchVt(vt);
+            return true;
+        }
+
         if (code == InputConstants.KeyF4 && AltDown)
         {
             _seat.KeyboardFocus?.XdgRole?.Close();
@@ -394,6 +442,15 @@ internal sealed class InputRouter
 
         return false;
     }
+
+    /// <summary>The VT number a function key selects (F1..F12 → VT 1..12).</summary>
+    internal static int? VtForKey(int code) => code switch
+    {
+        >= InputConstants.KeyF1 and <= InputConstants.KeyF10 => code - InputConstants.KeyF1 + 1,
+        InputConstants.KeyF11 => 11,
+        InputConstants.KeyF12 => 12,
+        _ => null,
+    };
 
     private void HandleTaskbarClick(Shell shell, int outputWidth, int outputHeight, int x, int y)
     {
@@ -446,6 +503,8 @@ internal sealed class InputRouter
     }
 
     private bool AltDown => _pressedKeys.Contains(InputConstants.KeyLeftAlt) || _pressedKeys.Contains(InputConstants.KeyRightAlt);
+
+    private bool CtrlDown => _pressedKeys.Contains(InputConstants.KeyLeftCtrl) || _pressedKeys.Contains(InputConstants.KeyRightCtrl);
 
     private bool SuperDown => _pressedKeys.Contains(InputConstants.KeyLeftMeta) || _pressedKeys.Contains(InputConstants.KeyRightMeta);
 

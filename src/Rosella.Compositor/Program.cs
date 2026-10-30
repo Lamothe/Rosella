@@ -71,7 +71,11 @@ var outputInfo = new OutputInfo(
     output.Mode.Name,
     $"{output.Connector.TypeName}-{output.Connector.TypeId}");
 
-using var input = new InputThread(scene, seat, () => cancellation.Cancel(), shell, screenPower);
+// The session's VT: Ctrl+Alt+Fn switches (the kernel cannot — we own the
+// input devices), and the release/acquire signals hand the hardware over.
+using var sessionSwitch = new SessionSwitch();
+
+using var input = new InputThread(scene, seat, () => cancellation.Cancel(), shell, screenPower, sessionSwitch.SwitchTo);
 input.Discover();
 
 using var server = new DisplayServer(
@@ -106,6 +110,19 @@ Console.WriteLine($"rosella: driving {output.Connector} at {output.Mode} via CRT
 input.Start();
 
 var scanout = new Scanout(device, output, scene, screenPower);
+sessionSwitch.Attach(scanout, input);
+
+// The desktop picture: Bing's daily wallpaper (Australia), cached and
+// fetched off the render path. The gradient stands in until it lands.
+var wallpaper = new WallpaperService(
+    Path.Combine(
+        Environment.GetEnvironmentVariable("XDG_CACHE_HOME")
+            ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".cache"),
+        "rosella"),
+    output.Mode.HDisplay,
+    output.Mode.VDisplay,
+    scene.MarkDirty);
+wallpaper.Start();
 
 // Diagnostics: SIGWINCH (kill -WINCH <pid>) dumps what is on screen at
 // that instant (PPM), so visual reports can be checked against ground
@@ -133,7 +150,7 @@ try
 {
     control = new ControlServer(
         Rosella.Control.ControlClient.DefaultSocketPath,
-        new ControlAdapter(scene, input.Router, scanout, screenPower));
+        new ControlAdapter(scene, input.Router, scanout, screenPower, displayName, () => sessionSwitch.VtState));
     Console.WriteLine($"rosella: control socket at {control.SocketPath}");
 }
 catch (Exception exception)

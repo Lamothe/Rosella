@@ -11,6 +11,15 @@ internal static partial class Libc
     internal static partial int ioctl(int fd, nuint request, nint argument);
 
     [LibraryImport(Library, SetLastError = true)]
+    internal static partial int open([MarshalAs(UnmanagedType.LPUTF8Str)] string path, int flags);
+
+    [LibraryImport(Library, SetLastError = true)]
+    internal static partial int close(int fd);
+
+    [LibraryImport(Library)]
+    internal static partial nint ttyname(int fd);
+
+    [LibraryImport(Library, SetLastError = true)]
     internal static partial nint mmap(nint address, nuint length, int protection, int flags, int fd, nint offset);
 
     [LibraryImport(Library, SetLastError = true)]

@@ -30,7 +30,20 @@ public static class InputConstants
     public const ushort KeyRightShift = 54;
     public const ushort KeyLeftAlt = 56;
     public const ushort KeyCapsLock = 58;
+
+    // F1..F10 are 59..68; F11/F12 live separately (input-event-codes.h).
+    public const ushort KeyF1 = 59;
+    public const ushort KeyF2 = 60;
+    public const ushort KeyF3 = 61;
     public const ushort KeyF4 = 62;
+    public const ushort KeyF5 = 63;
+    public const ushort KeyF6 = 64;
+    public const ushort KeyF7 = 65;
+    public const ushort KeyF8 = 66;
+    public const ushort KeyF9 = 67;
+    public const ushort KeyF10 = 68;
+    public const ushort KeyF11 = 87;
+    public const ushort KeyF12 = 88;
     public const ushort KeyNumLock = 69;
     public const ushort KeyRightCtrl = 97;
     public const ushort KeyRightAlt = 100;

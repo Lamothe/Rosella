@@ -80,9 +80,12 @@ internal static class Bar
         return builder.Length == 0 ? "…" : $"{builder}…";
     }
 
-    /// <summary>The clock: time first, then the date, Australian style.</summary>
-    internal static string ClockString() =>
-        DateTime.Now.ToString("HH:mm  dd/MM/yyyy", CultureInfo.InvariantCulture);
+    /// <summary>The clock, GNOME style: month, day, then the time.</summary>
+    internal static string ClockString() => FormatClock(DateTime.Now);
+
+    /// <summary>The clock's face, split out so tests can pin it.</summary>
+    internal static string FormatClock(DateTime moment) =>
+        moment.ToString("MMM d H:mm", CultureInfo.InvariantCulture);
 
     /// <summary>The square side of a pinned icon box: the inner bar height.</summary>
     internal static int IconBoxSize => Shell.BarHeight - 12;
@@ -260,124 +263,13 @@ internal static class Bar
     /// <summary>
     /// The Start button icon: an apple silhouette with a stem, a leaf and a
     /// bite (Mac style, per the desktop's opinionated aesthetic), drawn
-    /// anti-aliased at the output scale from the analytic shape.
+    /// anti-aliased at the output scale from the flattened SVG path.
     /// </summary>
     internal static void DrawStartIcon(Span<byte> pixels, int clipW, int clipH, int stride, int scale, Rect start)
     {
         var x0 = start.X + ((start.W - AppleIcon.Width) / 2);
         var y0 = start.Y + ((start.H - AppleIcon.Height) / 2);
         AppleIcon.Blend(pixels, clipW, clipH, stride, x0, y0, scale, StartIconColour);
-    }
-}
-
-/// <summary>
-/// The Start button's apple: an analytic silhouette — a two-lobed body
-/// under a dome with a dimple at the top, a bite out of the right flank, a
-/// stem leaning right from the notch and a tilted leaf. Coverage is
-/// evaluated by supersampling, so the edges anti-alias cleanly at any
-/// output scale; the interior is solid all the way through.
-/// </summary>
-internal static class AppleIcon
-{
-    internal const int Width = 20;
-    internal const int Height = 20;
-
-    /// <summary>Anti-aliasing subsamples per axis per output pixel.</summary>
-    private const int Subsamples = 4;
-
-    /// <summary>Whether the point lies inside the silhouette.</summary>
-    internal static bool Inside(double x, double y)
-    {
-        // The body: two lobes under a dome, less the dimple and the bite.
-        // The stem is unioned after the subtraction and reaches past the
-        // dimple's carve, so its foot stays fused to the body.
-        var body = (InCircle(x, y, 6.5, 12.7, 5.5)
-                || InCircle(x, y, 12.0, 12.7, 5.5)
-                || InEllipse(x, y, 9.25, 9.7, 6.6, 5.0, 0))
-            && !InCircle(x, y, 9.25, 4.9, 1.3)
-            && !InCircle(x, y, 17.2, 9.4, 3.2);
-
-        return body
-            || InEllipse(x, y, 10.3, 4.0, 0.95, 2.7, 18)
-            || InEllipse(x, y, 13.2, 3.0, 2.7, 1.2, -35);
-    }
-
-    /// <summary>
-    /// Blends the silhouette at (x0, y0) logical over the buffer, one
-    /// source-over step per output pixel with exact coverage from that
-    /// pixel's logical box — anti-aliased at any scale.
-    /// </summary>
-    internal static void Blend(Span<byte> pixels, int clipW, int clipH, int stride, int x0, int y0, int scale, uint colour)
-    {
-        var words = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, uint>(pixels);
-        var strideWords = stride / 4;
-        var alpha = (byte)((colour >> 24) & 0xFF);
-        var red = (byte)((colour >> 16) & 0xFF);
-        var green = (byte)((colour >> 8) & 0xFF);
-        var blue = (byte)(colour & 0xFF);
-
-        for (var py = Math.Max(0, y0 * scale); py < Math.Min(clipH, (y0 + Height) * scale); py++)
-        {
-            for (var px = Math.Max(0, x0 * scale); px < Math.Min(clipW, (x0 + Width) * scale); px++)
-            {
-                // The output pixel's extent in logical icon coordinates.
-                var left = ((px - (x0 * scale)) * 1.0) / scale;
-                var top = ((py - (y0 * scale)) * 1.0) / scale;
-                var coverage = 0;
-                for (var sy = 0; sy < Subsamples; sy++)
-                {
-                    for (var sx = 0; sx < Subsamples; sx++)
-                    {
-                        var u = left + ((sx + 0.5) / (Subsamples * scale));
-                        var v = top + ((sy + 0.5) / (Subsamples * scale));
-                        if (Inside(u, v))
-                        {
-                            coverage++;
-                        }
-                    }
-                }
-
-                if (coverage == 0)
-                {
-                    continue;
-                }
-
-                // coverage is a sample count (0..Subsamples²); turn it into
-                // the 0..255 alpha the blend maths wants.
-                var blendAlpha = (uint)(((coverage * alpha) + 8) / (Subsamples * Subsamples));
-                if (blendAlpha == 0)
-                {
-                    continue;
-                }
-
-                var index = (py * strideWords) + px;
-                var destination = words[index];
-                var inverse = 255 - blendAlpha;
-                var outBlue = (byte)((((blue * blendAlpha) + ((destination & 0xFF) * inverse)) + 127) / 255);
-                var outGreen = (byte)((((green * blendAlpha) + (((destination >> 8) & 0xFF) * inverse)) + 127) / 255);
-                var outRed = (byte)((((red * blendAlpha) + (((destination >> 16) & 0xFF) * inverse)) + 127) / 255);
-                words[index] = 0xFF000000 | ((uint)outRed << 16) | ((uint)outGreen << 8) | outBlue;
-            }
-        }
-    }
-
-    private static bool InCircle(double x, double y, double cx, double cy, double radius)
-    {
-        var dx = x - cx;
-        var dy = y - cy;
-        return ((dx * dx) + (dy * dy)) <= radius * radius;
-    }
-
-    private static bool InEllipse(double x, double y, double cx, double cy, double rx, double ry, double degrees)
-    {
-        var radians = degrees * (Math.PI / 180.0);
-        var cos = Math.Cos(radians);
-        var sin = Math.Sin(radians);
-        var dx = x - cx;
-        var dy = y - cy;
-        var u = (dx * cos) + (dy * sin);
-        var v = (-dx * sin) + (dy * cos);
-        return ((u * u) / (rx * rx)) + ((v * v) / (ry * ry)) <= 1.0;
     }
 }
 

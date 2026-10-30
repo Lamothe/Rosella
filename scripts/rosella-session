@@ -1,9 +1,23 @@
 #!/usr/bin/env bash
 # Rosella login session: run by GDM when "Rosella" is chosen at the greeter.
+#
+# The user's own build wins when present — updating the session is then
+# just `dotnet publish` plus a restart, with no sudo and no dialog. The
+# system copy in /usr/local/lib is the fallback for a machine where the
+# source tree is gone.
 set -euo pipefail
 
 export XDG_CURRENT_DESKTOP=Rosella
 export XDG_SESSION_TYPE=wayland
+
+user_build="$HOME/Projects/Rosella/build/publish/Rosella.Compositor"
+if [ -x "$user_build" ] && [ -f "$(dirname "$user_build")/libcoreclr.so" ]; then
+    # Self-contained check (libcoreclr.so beside the binary): a bare
+    # framework-dependent publish would die on start with no SDK installed.
+    binary="$user_build"
+else
+    binary="/usr/local/lib/rosella/Rosella.Compositor"
+fi
 
 # evdev nodes are root:input 660. If this login predates the seat user's
 # input-group grant (getty logins cache credentials from first login), the
@@ -11,6 +25,6 @@ export XDG_SESSION_TYPE=wayland
 # membership from the group database and adds it, no password needed for
 # an existing member. No args are passed to the session; GDM passes none.
 if id -nG | tr ' ' '\n' | grep -qx input; then
-    exec /usr/local/lib/rosella/Rosella.Compositor "$@"
+    exec "$binary" "$@"
 fi
-exec sg input -c '/usr/local/lib/rosella/Rosella.Compositor'
+exec sg input -c "$binary"

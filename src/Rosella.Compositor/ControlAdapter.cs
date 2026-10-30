@@ -16,13 +16,23 @@ internal sealed class ControlAdapter : IControlTarget
     private readonly InputRouter _router;
     private readonly Scanout _scanout;
     private readonly ScreenPower _screenPower;
+    private readonly string _display;
+    private readonly Func<(int Number, bool Active)?> _vtState;
 
-    internal ControlAdapter(Scene scene, InputRouter router, Scanout scanout, ScreenPower screenPower)
+    internal ControlAdapter(
+        Scene scene,
+        InputRouter router,
+        Scanout scanout,
+        ScreenPower screenPower,
+        string display = "",
+        Func<(int Number, bool Active)?>? vtState = null)
     {
         _scene = scene;
         _router = router;
         _scanout = scanout;
         _screenPower = screenPower;
+        _display = display;
+        _vtState = vtState ?? (() => null);
     }
 
     public byte[] CaptureFrame()
@@ -57,8 +67,22 @@ internal sealed class ControlAdapter : IControlTarget
             $"output {_scene.OutputSize.Width}x{_scene.OutputSize.Height} logical",
             $"screen {(_screenPower.IsBlanked ? "blanked" : "awake")}",
             $"cursor {cursor.X},{cursor.Y}",
-            "surfaces:",
         };
+
+        // Where this session shows and whether it is the one on screen:
+        // the askpass helper routes prompts to the session the person is
+        // actually looking at.
+        if (SessionRoute.DisplayLine(_display) is { } displayLine)
+        {
+            lines.Add(displayLine);
+        }
+
+        if (SessionRoute.VtLine(_vtState()) is { } vtLine)
+        {
+            lines.Add(vtLine);
+        }
+
+        lines.Add("surfaces:");
         lines.AddRange(_scene.DescribeSurfaces().Select(line => "  " + line));
         return string.Join('\n', lines) + "\n";
     }

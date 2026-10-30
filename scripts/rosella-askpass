@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# The sudo password prompt, aimed at the session the person is actually
+# looking at. SUDO_ASKPASS runs this instead of a terminal prompt; zenity
+# draws the dialog on whichever Wayland display is on screen — the Rosella
+# session when its VT is active, the surrounding GNOME session otherwise.
+# This is the fix for prompts appearing on a display nobody is watching.
+set -euo pipefail
+
+runtime="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+driver=""
+for candidate in \
+    "$runtime/../bin/rosella-driver" \
+    "$HOME/Projects/Rosella/build/driver/rosella-driver" \
+    /usr/local/bin/rosella-driver; do
+    if [ -x "$candidate" ]; then
+        driver="$candidate"
+        break
+    fi
+done
+
+# Ask every live Rosella session where it shows and whether it is on
+# screen; a prompt belongs on the active one, and a hidden session must
+# never claim it. Fall through to the ambient display when none is active.
+display="${WAYLAND_DISPLAY:-}"
+if [ -n "$driver" ]; then
+    for socket in "$runtime"/rosella-control*.sock; do
+        [ -S "$socket" ] || continue
+        state="$("$driver" --socket "$socket" state 2>/dev/null)" || continue
+        vt_line="$(printf '%s\n' "$state" | sed -n 's/^vt //p')"
+        [ -n "$vt_line" ] || continue
+        case "$vt_line" in
+            *" active")
+                active="$(printf '%s\n' "$state" | sed -n 's/^display //p')"
+                # A session without a display name must not blank out the
+                # ambient fallback; only an actual name may replace it.
+                if [ -n "$active" ]; then
+                    display="$active"
+                    export XDG_RUNTIME_DIR="$runtime"
+                fi
+                ;;
+        esac
+    done
+fi
+
+export WAYLAND_DISPLAY="$display"
+exec zenity --password --title "Authentication required" 2>/dev/null

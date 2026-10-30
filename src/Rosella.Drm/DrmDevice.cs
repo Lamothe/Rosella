@@ -211,6 +211,18 @@ public sealed unsafe class DrmDevice : IDisposable
         }
     }
 
+    /// <summary>
+    /// Takes DRM master for this device (VT switch back: we own the display
+    /// again). Idempotent; a failure just means someone else still holds it.
+    /// </summary>
+    public void SetMaster() => Ioctl(DrmConstants.IoctlSetMaster, 0);
+
+    /// <summary>
+    /// Releases DRM master (VT switch away: the other console or compositor
+    /// needs the display). Idempotent.
+    /// </summary>
+    public void DropMaster() => Ioctl(DrmConstants.IoctlDropMaster, 0);
+
     public DrmDumbBuffer CreateDumb(uint width, uint height, uint bpp)
     {
         var native = new DrmModeCreateDumb { Width = width, Height = height, Bpp = bpp };
@@ -480,6 +492,15 @@ public sealed unsafe class DrmDevice : IDisposable
             {
                 throw new DrmException($"ioctl 0x{request:X8}", Marshal.GetLastPInvokeError());
             }
+        }
+    }
+
+    /// <summary>A payload-free ioctl (DRM_IO): argument is just 0.</summary>
+    private void Ioctl(uint request, int argument)
+    {
+        if (Libc.ioctl(_fd, request, (nint)argument) < 0)
+        {
+            throw new DrmException($"ioctl 0x{request:X8}", Marshal.GetLastPInvokeError());
         }
     }
 }

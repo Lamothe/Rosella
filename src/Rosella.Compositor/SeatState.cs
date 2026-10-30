@@ -392,6 +392,41 @@ internal sealed class SeatState
     }
 
     /// <summary>
+    /// Releases every held key at the keyboard focus and zeroes the
+    /// modifier mask — the VT-switch reset. The releases that would have
+    /// balanced these presses happen while the devices belong to another
+    /// session and are gone; without this, clients and the router would
+    /// both believe keys are still down after the switch back.
+    /// </summary>
+    internal void ReleaseAllHeld()
+    {
+        lock (_gate)
+        {
+            if (_keyboardFocus is { Gone: false } focus)
+            {
+                foreach (var code in _heldKeys)
+                {
+                    foreach (var (session, keyboard) in Of(_keyboards, focus))
+                    {
+                        TrySend(
+                            session,
+                            keyboard,
+                            "key",
+                            WireArgument.UInt32(session.NextSerial()),
+                            WireArgument.UInt32(0),
+                            WireArgument.UInt32((uint)code),
+                            WireArgument.UInt32(0));
+                    }
+                }
+            }
+
+            _heldKeys.Clear();
+            _depressed = 0;
+            _locked = 0;
+        }
+    }
+
+    /// <summary>
     /// Sends wl_keyboard.modifiers to the focus surface's keyboards. The
     /// mask is tracked even unfocused (so a click while Shift is held sends
     /// the right state after enter).

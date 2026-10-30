@@ -6,7 +6,8 @@ namespace Rosella.Compositor.Tests;
 /// The desktop background: one calm dark gradient. The colour-bar test
 /// pattern and its moving stripe are gone for good.
 /// </summary>
-public class BackgroundTests
+[Collection("Background")]
+public class BackgroundTests : IDisposable
 {
     [Fact]
     public void Render_PaintsTheCalmGradient()
@@ -49,4 +50,6 @@ public class BackgroundTests
             }
         }
     }
+
+    public void Dispose() => Background.ClearWallpaper();
 }

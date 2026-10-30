@@ -26,6 +26,12 @@ internal sealed class Scanout : IDisposable
     /// <summary>Whether the panel is currently unlit (DPMS off).</summary>
     private volatile bool _blanked;
 
+    /// <summary>The release/acquire handshake with the VT switch signals.</summary>
+    private readonly SwitchGate _switchGate = new();
+
+    /// <summary>Set when the loop must re-modeset (a failed acquire retry).</summary>
+    private volatile bool _remodeset;
+
     public Scanout(DrmDevice device, DrmOutput output, Scene scene, ScreenPower? screenPower = null)
     {
         _device = device;
@@ -159,6 +165,34 @@ internal sealed class Scanout : IDisposable
         var blankState = new BlankState();
         while (!token.IsCancellationRequested)
         {
+            // Another VT owns the display: stop flipping entirely and let
+            // Release() hand the hardware over on its own thread. TryPark
+            // latches only while the release is still in force — an acquire
+            // that landed first leaves no stale latch for the next release.
+            if (_switchGate.IsReleased && _switchGate.TryPark())
+            {
+                if (!_scene.WaitForDirty(TimeSpan.FromSeconds(30), token))
+                {
+                    break;
+                }
+
+                continue;
+            }
+
+            // A failed acquire needs the modeset retried; the device work
+            // belongs here, on the loop that owns the device.
+            if (_remodeset)
+            {
+                try
+                {
+                    _device.SetCrtc(_output.CrtcId, _framebuffers[_front], [_output.Connector.Id], _output.Mode);
+                    _remodeset = false;
+                }
+                catch (DrmException exception)
+                {
+                    Console.Error.WriteLine($"rosella: re-modeset after VT switch failed: {exception.Message}; retrying");
+                }
+            }
             // Sync the panel's power state with the policy. The policy flips
             // to blanked on its own when idle, and back on the input thread's
             // MarkActivity; the hardware change happens only here, on the one
@@ -325,6 +359,73 @@ internal sealed class Scanout : IDisposable
         {
             Console.Error.WriteLine($"rosella: {line}");
         }
+    }
+
+    /// <summary>
+    /// VT switch away: stop flipping, restore the previous display state
+    /// and drop DRM master so the other console or compositor can modeset.
+    /// Blocks until the loop has parked, so the device is ours alone here.
+    /// </summary>
+    public void Release()
+    {
+        _scene.MarkDirty();
+        if (!_switchGate.BeginRelease(TimeSpan.FromSeconds(2)))
+        {
+            // A wedged loop still must not hold the hardware hostage.
+            Console.Error.WriteLine("rosella: render loop did not park for VT release; taking the device anyway");
+        }
+
+        try
+        {
+            if (_savedState is { ModeValid: true, Mode: not null })
+            {
+                _device.SetCrtc(_savedState.Id, _savedState.FramebufferId, [_output.Connector.Id], _savedState.Mode.Value);
+            }
+        }
+        catch (DrmException)
+        {
+            // The console will re-modeset regardless.
+        }
+
+        try
+        {
+            _device.DropMaster();
+        }
+        catch (DrmException)
+        {
+            // Never had it, or it is already gone.
+        }
+    }
+
+    /// <summary>
+    /// VT switch back: take DRM master, re-modeset our buffers and let the
+    /// loop flip again. Every step is guarded — this runs on a signal
+    /// thread, and an exception here would take the whole session with it.
+    /// A failed modeset is retried by the render loop instead.
+    /// </summary>
+    public void Acquire()
+    {
+        try
+        {
+            _device.SetMaster();
+        }
+        catch (DrmException)
+        {
+            // The old master may take a moment to let go.
+        }
+
+        try
+        {
+            _device.SetCrtc(_output.CrtcId, _framebuffers[_front], [_output.Connector.Id], _output.Mode);
+        }
+        catch (DrmException exception)
+        {
+            Console.Error.WriteLine($"rosella: re-modeset on VT acquire failed: {exception.Message}; the render loop will retry");
+            _remodeset = true;
+        }
+
+        _switchGate.EndRelease();
+        _scene.MarkDirty();
     }
 
     public void Dispose()

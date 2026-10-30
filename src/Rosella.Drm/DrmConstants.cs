@@ -80,6 +80,10 @@ public static class DrmConstants
     internal static readonly uint IoctlModeGetProperty = ReadWrite('d', 0xAA, Size<DrmModeGetProperty>());
     internal static readonly uint IoctlModeSetProperty = ReadWrite('d', 0xAB, Size<DrmModeConnectorSetProperty>());
     internal static readonly uint IoctlModeObjGetProperties = ReadWrite('d', 0xB9, Size<DrmModeObjGetProperties>());
+
+    // DRM_IO (no payload): master handover across VT switches.
+    internal static readonly uint IoctlSetMaster = Ioctl(0, 'd', 0x1E, 0);
+    internal static readonly uint IoctlDropMaster = Ioctl(0, 'd', 0x1F, 0);
 }
 
 /// <summary>Thrown when the kernel rejects a DRM operation.</summary>

@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# Publishes Rosella and installs it as a GDM login session. Requires sudo.
+# Publishes Rosella and installs it as a GDM login session. Requires sudo —
+# once. Day-to-day updates need no sudo at all: scripts/deploy.sh publishes
+# the build the session launcher prefers, then the session is restarted.
 # Remove the session again with: sudo rm /usr/share/wayland-sessions/rosella.desktop \
-#   /usr/local/bin/rosella-session /usr/local/lib/rosella -r
+#   /usr/local/bin/rosella-session /usr/local/bin/rosella-askpass /usr/local/lib/rosella -r
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -31,6 +33,7 @@ fi
 sudo install -d /usr/local/lib/rosella
 sudo cp -r "$root/build/publish/." /usr/local/lib/rosella/
 sudo install -m 755 "$root/scripts/rosella-session" /usr/local/bin/rosella-session
+sudo install -m 755 "$root/scripts/rosella-askpass" /usr/local/bin/rosella-askpass
 sudo install -m 644 "$root/scripts/rosella.desktop" /usr/share/wayland-sessions/rosella.desktop
 
 # M6 input: evdev nodes are root:input 660, so the seat user needs the group.

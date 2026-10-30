@@ -10,7 +10,7 @@ namespace Rosella.Input;
 /// number would be read as input); the reader closes the device when it
 /// exits, or Dispose does when no reader ever started.
 /// </summary>
-public sealed class EvdevDevice : IDisposable
+public sealed class EvdevDevice : IInputDevice
 {
     private readonly int _fd;
     private readonly int _wakeFd;
@@ -179,14 +179,33 @@ public sealed class EvdevDevice : IDisposable
 
     private unsafe void SetGrab(bool grabbed)
     {
-        var value = stackalloc int[1];
-        *value = grabbed ? 1 : 0;
-        if (Libc.ioctl(_fd, InputConstants.IoctlGrab, (nint)value) < 0)
+        if (_closed || _disposed)
         {
-            throw new IOException($"EVIOCGRAB failed on '{Name}' with errno {Marshal.GetLastPInvokeError()}");
+            // The fd is gone or going: never ioctl a number the OS may have
+            // recycled for someone else's file.
+            return;
         }
 
-        _grabbed = grabbed;
+        var value = stackalloc int[1];
+        *value = grabbed ? 1 : 0;
+        while (true)
+        {
+            if (Libc.ioctl(_fd, InputConstants.IoctlGrab, (nint)value) >= 0)
+            {
+                _grabbed = grabbed;
+                return;
+            }
+
+            var errno = Marshal.GetLastPInvokeError();
+            if (errno == 4 /* EINTR */)
+            {
+                continue;
+            }
+
+            // HResult carries the errno so callers can tell EBUSY (another
+            // compositor owns the node: retry later) from a dead device.
+            throw new IOException($"EVIOCGRAB failed on '{Name}' with errno {errno}", errno);
+        }
     }
 
     private static unsafe InputId GetId(int fd)
