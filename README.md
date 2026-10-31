@@ -117,6 +117,10 @@ Two entry points, both running the same build.
 `scripts/install-session.sh` publishes Rosella and registers it with GDM, so
 "Rosella" appears in the greeter's session chooser alongside GNOME. It needs
 sudo once; day-to-day updates do not (`scripts/deploy.sh`, then restart).
+Run `deploy.sh` from `~/Projects/Rosella`, the checkout both launchers use.
+If the installed login launcher or session entry differs from the repository,
+`deploy.sh` warns: refresh the registration with `scripts/install-session.sh`
+(which requires sudo). Otherwise GDM may continue to start an older build.
 
 To use it: log out of GNOME, click the session chooser (the gear icon at the
 greeter), pick **Rosella**, and log in.

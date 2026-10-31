@@ -7,6 +7,14 @@ set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# Both login and VT launchers use this location, regardless of where the
+# deploy script was invoked. Do not report an update from another checkout.
+expected_root="$HOME/Projects/Rosella"
+if [ ! -d "$expected_root" ] || [ ! "$root" -ef "$expected_root" ]; then
+    echo "rosella: both launchers use $expected_root/build/publish; run deploy.sh from that checkout" >&2
+    exit 1
+fi
+
 # The SDK may be installed user-local (e.g. ~/.dotnet).
 dotnet="${DOTNET:-$(command -v dotnet || true)}"
 if [ -z "$dotnet" ] && [ -x "$HOME/.dotnet/dotnet" ]; then
@@ -38,6 +46,20 @@ fi
 # in the user's own ~/.local/bin.
 mkdir -p "$HOME/.local/bin"
 ln -sf "$root/scripts/rosella-dev.sh" "$HOME/.local/bin/rosella"
+
+# GDM uses a separately installed wrapper. A newer user build alone cannot
+# fix an old wrapper that still launches the system copy. Warn after a
+# successful publish without blocking the VT-only workflow.
+installed_session=/usr/local/bin/rosella-session
+installed_desktop=/usr/share/wayland-sessions/rosella.desktop
+if [ -e "$installed_session" ] || [ -e "$installed_desktop" ]; then
+    if [ ! -x "$installed_session" ] || [ ! -r "$installed_desktop" ] \
+        || ! cmp -s "$root/scripts/rosella-session" "$installed_session" \
+        || ! cmp -s "$root/scripts/rosella.desktop" "$installed_desktop"; then
+        echo "WARNING: the installed Rosella login launcher or session entry differs from this repository." >&2
+        echo "The GDM login may use an old build; refresh the registration with scripts/install-session.sh." >&2
+    fi
+fi
 
 echo "Published to $root/build/publish — restart the Rosella session to pick it up."
 echo "Run it from a VT with: rosella"

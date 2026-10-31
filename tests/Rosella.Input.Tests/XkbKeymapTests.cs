@@ -15,6 +15,13 @@ public class XkbKeymapTests
         Assert.Contains("xkb_types", keymap);
         Assert.Contains("xkb_compatibility", keymap);
         Assert.Contains("xkb_symbols", keymap);
+        // The one opinionated option: Caps Lock is dead. The compiled keymap
+        // bakes it in: <CAPS> is a one-level key with no Lock symbol and no
+        // Lock anywhere in the symbols section.
+        var caps = keymap[keymap.IndexOf("key <CAPS>", StringComparison.Ordinal)..];
+        caps = caps[..caps.IndexOf("};", StringComparison.Ordinal)];
+        Assert.Contains("ONE_LEVEL", caps);
+        Assert.DoesNotContain("Lock", caps);
     }
 
     [Fact]

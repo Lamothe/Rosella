@@ -41,7 +41,6 @@ internal sealed class InputRouter
     // Touchpad gestures own the multitouch slot state (tap-to-click, scroll,
     // tap-drag); the router supplies the pointer, axis and button plumbing.
     private readonly TouchpadGestures _gestures;
-    private bool _capsLocked;
     private bool _numLocked;
     private int _lastDepressed = -1;
     private int _lastLocked = -1;
@@ -404,11 +403,6 @@ internal sealed class InputRouter
             _pressedKeys.Remove(e.Code);
         }
 
-        if (pressed && e.Code == InputConstants.KeyCapsLock)
-        {
-            _capsLocked = !_capsLocked;
-        }
-
         if (pressed && e.Code == InputConstants.KeyNumLock)
         {
             _numLocked = !_numLocked;
@@ -540,12 +534,9 @@ internal sealed class InputRouter
             depressed |= 1 << 6;
         }
 
+        // No caps-lock bit: the keymap maps the key to nothing (caps:none),
+        // so no client ever computes Lock from it. Num Lock stays.
         var locked = 0;
-        if (_capsLocked)
-        {
-            locked |= 1 << 1;
-        }
-
         if (_numLocked)
         {
             locked |= 1 << 4;

@@ -15,6 +15,9 @@ public static partial class XkbKeymap
     /// <summary>The XKB_V1 text format wl_keyboard.keymap requires.</summary>
     private const int FormatTextV1 = 1;
 
+    /// <summary>The one keymap option: Caps Lock does nothing.</summary>
+    private const string XkbOptions = "caps:none";
+
     /// <summary>Generates the US keymap string clients receive.</summary>
     public static string GenerateUsKeymap()
     {
@@ -27,6 +30,7 @@ public static partial class XkbKeymap
         try
         {
             var layout = Marshal.StringToCoTaskMemUTF8("us");
+            var options = Marshal.StringToCoTaskMemUTF8(XkbOptions);
             try
             {
                 unsafe
@@ -36,7 +40,7 @@ public static partial class XkbKeymap
                     names[1] = 0; // model
                     names[2] = layout;
                     names[3] = 0; // variant
-                    names[4] = 0; // options
+                    names[4] = options; // caps:none — the Caps Lock key is dead
 
                     var keymap = xkb_keymap_new_from_names(context, (nint)names, 0);
                     if (keymap == 0)
@@ -71,6 +75,7 @@ public static partial class XkbKeymap
             finally
             {
                 Marshal.FreeCoTaskMem(layout);
+                Marshal.FreeCoTaskMem(options);
             }
         }
         finally
