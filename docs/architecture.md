@@ -10,17 +10,19 @@ something — and the DE logic is fully testable there).
 | Layer | Component | Who talks to it |
 |---|---|---|
 | Kernel | DRM/KMS (modesetting, page flips, scanout) | Rosella, via ioctl bindings |
-| Kernel | evdev (input devices) | libinput |
-| Userspace | Mesa: GBM (buffers), EGL/GL or Vulkan (rendering) | Rosella, via P/Invoke |
-| Userspace | libinput (gesture/keyboard/mouse semantics) | Rosella, via P/Invoke |
+| Kernel | evdev (input devices: discovery, reads, grabs) | Rosella, via ioctl/read bindings |
+| Userspace | Mesa: GBM/EGL/GL or Vulkan (rendering) | Rosella.GpuProbe only; compositor is CPU |
 | Protocol | Wayland wire format (client ⇄ compositor IPC) | **Rosella implements both sides** |
-| Shell | taskbar, pinned launchers, system menu, windows | Rosella (managed, in-process) |
+| Shell | taskbar, switcher, windows, greeter | Rosella (managed, in-process) |
 
 A key mental-model point: Wayland is *not* a driver API. It is the IPC between
 apps (clients) and the compositor. The compositor itself talks to drivers:
-DRM/KMS for putting pixels on the screen, Mesa for rendering, libinput for
-input. Mutter and friends "just" implement the server side of that IPC and
-render the result — which is exactly what Rosella does too, in C#.
+DRM/KMS for putting pixels on the screen, and evdev for input — read
+directly, with libinput's gesture and key semantics written in Rosella.
+Rendering is CPU into DRM dumb buffers for now; `tools/Rosella.GpuProbe`
+measures what Mesa (GBM/EGL/Vulkan) would buy. Mutter and friends "just"
+implement the server side of that IPC and render the result — which is
+exactly what Rosella does too, in C#.
 
 ## Wire-format facts the codec is built on
 
@@ -50,8 +52,9 @@ Verified against libwayland's marshalling code and the protocol docs:
 
 1. **Own compositor, not a Mutter plugin.** More control, more understanding,
    no fighting someone else's policy. The managed-code seam is real: wire
-   protocol and window policy are pure C#; only DRM/KMS, Mesa and libinput are
-   native ABI interop (P/Invoke declarations, not a C codebase).
+   protocol and window policy are pure C#; only DRM/KMS, evdev, libc and the
+   text/icon libraries (xkbcommon, FreeType, gdk-pixbuf) are native ABI
+   interop (P/Invoke declarations, not a C codebase).
 2. **Hand-rolled wire codec** (M1) rather than libwayland or NWayland. The
    format is small and it *is* the curriculum.
 3. **Opinionated**: almost no configurable settings. Hardcoded defaults;
@@ -71,7 +74,7 @@ Verified against libwayland's marshalling code and the protocol docs:
    with `GTK_THEME=Adwaita:dark` / `ADW_DEBUG_COLOR_SCHEME=prefer-dark`;
    ARGB buffers blend source-over with premultiplied alpha (client-side
    decoration shadows render as translucent veils, not black squares); the
-   pointer image is the focused client's `set_cursor` surface at
+   pointer image is the pointer-focused client's `set_cursor` surface at
    pointer−hotspot (hidden on NULL), else the built-in arrow — always scoped
    to the owning client's pointer focus.
 
@@ -85,15 +88,15 @@ Verified against libwayland's marshalling code and the protocol docs:
   `since`-version gating in both directions, stub interfaces that survive real
   clients. Exit test passed: `wayland-info` (real libwayland) lists all six
   globals and parses every event (shm formats, seat, output geometry/mode).
-- **M3 — output**: ✅ DRM/KMS modesetting + scanout, run natively on mercury
-  as a GDM login session (a VM remains an optional fallback). Rosella.Drm
+- **M3 — output**: ✅ DRM/KMS modesetting + scanout, run natively as a login
+  session (a VM remains an optional fallback). Rosella.Drm
   pins every struct layout and ioctl code against the kernel UAPI with golden
   tests; `--probe` validated the whole interop surface against real drivers
   (amdgpu + nvidia-drm — both report `CAP_DUMB_BUFFER` and allocate dumb
   buffers fine, settling the NVIDIA risk). Scanout drives the first connected
   output (on mercury: the SONY TV at 3840x2160@60) with a software-rendered
-  the desktop via a page-flip loop; the previous display state is restored on
-  exit. Pending: visual confirmation in the GDM session.
+  desktop via a page-flip loop; the previous display state is restored on
+  exit. Confirmed on screen since (silver, 27/10/2026).
 - **M4 — client buffers**: ✅ real `wl_shm` (client descriptors are dup'd,
   size-checked with lseek and mapped read-only), `wl_surface` state machine
   with copy-at-commit content (buffer released immediately after the copy),
@@ -113,47 +116,56 @@ Verified against libwayland's marshalling code and the protocol docs:
   unmapped immediately. Reviewed once; 15 findings fixed with regression
   tests. Confirmed on screen (silver, 27/10/2026): the smoke client maps a
   real window via the full dance, with live frame callbacks.
-- **M6 — input**: ✅ done (confirmed on hardware: keyboard, mouse, multitouch
-  trackpad; click-to-focus, Alt+F4 close, Super+Esc quit). evdev read directly
-  (no libinput): /dev/input discovery, capability bitmaps, exclusive grabs
-  (EBUSY skips the device), poll() + wake-eventfd reads whose shutdown never
-  closes an fd under a blocked reader. One keymap: US QWERTY generated with
-  xkbcommon, a fresh memfd per wl_keyboard (SCM_RIGHTS shares the file
-  description offset otherwise). Real wl_seat/wl_keyboard/wl_pointer:
+- **M6 — input**: ✅ done (keyboard, mouse and multitouch trackpad confirmed
+  on hardware); click-to-focus, Alt+F4 close, Alt+Tab switch, Super+Esc quit.
+  evdev read directly (no libinput): /dev/input discovery, capability
+  bitmaps, exclusive grabs (a node owned elsewhere joins ungrabbed and the
+  grab is retried on the hot-plug poll), poll() + wake-eventfd reads whose
+  shutdown never closes an fd under a blocked reader. One keymap: US QWERTY
+  generated with xkbcommon, a fresh memfd per wl_keyboard (SCM_RIGHTS shares
+  the file description offset otherwise). Real wl_seat/wl_keyboard/wl_pointer:
   name-then-capabilities at bind, missing_capability (0) for absent
   capabilities incl. all touch, keymap + repeat_info before registration,
   enter carries the held keys and is always followed by modifiers, frame
   gated at v5, release/teardown unregister. The policy: click-to-focus +
   raise, keys to the focus, xdg activation configure rounds, Alt+F4 =
-  close, Super+Esc = quit; one cursor sprite, set_cursor ignored. Trackpad
-  gestures: one finger moves, tap-to-click by finger count, tap-then-drag,
-  multi-finger scroll, all in millimetres (the pad reports 94/92 units per
-  mm) rather than raw device units, and disable-while-typing: a contact that
-  begins within 500 ms of a key event is inert until every finger lifts, and
-  typing that starts mid-gesture freezes that gesture. Physical clicks are
-  never suppressed. All seat
-  sends run under the seat gate (serialised against object death: nothing
-  can name an object after delete_id) and per-target try/catch so one dead
-  client never poisons the fan-out. Reviewed once — 15 findings fixed
+  close, Alt+Tab = switch windows (Shift reverses, Esc cancels),
+  Super+Esc = quit, Ctrl+Alt+Fn = switch VT; the pointer image is the
+  pointer-focused client's `set_cursor` surface (hidden on NULL), else one
+  built-in arrow. Trackpad gestures: one finger moves, tap-to-click by
+  finger count, tap-then-drag, multi-finger scroll, all in millimetres (the
+  pad reports 94/92 units per mm) rather than raw device units, and
+  disable-while-typing: a contact that begins within 500 ms of a key event
+  is inert until every finger lifts, and typing that starts mid-gesture
+  freezes that gesture. Physical clicks are never suppressed. All seat sends
+  run under the seat gate (serialised against object death: nothing can name
+  an object after delete_id) and per-target try/catch so one dead client
+  never poisons the fan-out. Reviewed once — 15 findings fixed
   (3 crash-grade: unhandled SocketException on input threads, send-vs-
   destroy id resurrection, unlocked xdg configure state), 10 new regression
   tests. Known accepted limits are in Open risks.
 - **M7 — the shell**: ✅ done, then redesigned to Windows 11 style on the
   user's request: a bottom taskbar (a reserved launcher slot, task buttons
-  with a focus accent, clock in AU format), the pinned app launchers centred on the bar
-  (six fixed entries resolved from XDG desktop files — GLib-style Exec
-  parsing, icons decoded through gdk-pixbuf into premultiplied ARGB, click
-  focuses the app's newest window or launches it with the right
-  WAYLAND_DISPLAY), and a settings panel (Log Out, Restart, Shut Down —
-  ISystemActions so tests can fake them) opened from the clock. No workspaces — one desktop, by
-  design. The
-  background is a calm dark gradient (the milestone-3 colour bars and
-  moving stripe are gone: the user found them annoying). Windows sit in
-  the work area above the taskbar, clamped to stay there, and wear an
-  accent border when focused. One embedded 8x16 bitmap font (Linux kernel
-  font_8x16, scaled 2x); drawing and hit-testing share one cached taskbar
-  layout per frame. Notifications did not make the cut and may never: an
-  opinionated desktop can do without them.
+  with a focus accent, clock in GNOME style, `MMM d H:mm`), the five pinned
+  app launchers centred on the bar (fixed entries resolved from XDG desktop
+  files — GLib-style Exec parsing, icons decoded through gdk-pixbuf into
+  premultiplied ARGB, click focuses the app's newest window or launches it
+  with the right WAYLAND_DISPLAY), a settings panel (a PipeWire volume
+  slider, then Log Out, Restart and Shut Down as GNOME-style circular icon
+  buttons — ISystemActions so tests can fake them) opened from the clock,
+  and an Alt+Tab switcher (windows in most-recently-used order, snapshotted
+  when it opens; Esc cancels and releasing Alt commits the selection). No
+  workspaces — one desktop, by design. The desktop picture is Bing's daily
+  wallpaper for Australia, cover-fitted, with a calm dark gradient standing
+  in until it loads (the milestone-3 colour bars and moving stripe are gone:
+  the user found them annoying). Windows sit in the work area above the
+  taskbar, clamped to stay there; they carry no compositor decoration, and
+  the focused window's taskbar button shows an accent underline. Shell text
+  is a real font rasterised through FreeType — proportional and
+  anti-aliased, Open Sans first — with the embedded 8x16 bitmap font as the
+  fallback when no font loads; drawing and hit-testing share one cached
+  taskbar layout per frame. Notifications did not make the cut and may
+  never: an opinionated desktop can do without them.
 - **M8 — session polish**: window states (maximise/fullscreen), lock
   screen, idle handling, session startup, whatever the DE needs to feel
   finished.

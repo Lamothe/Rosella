@@ -12,8 +12,9 @@ It speaks the Wayland wire protocol itself in managed code, and talks to the
 machine through the usual Linux graphics/input ABI seams:
 
 - **DRM/KMS** (kernel) — modesetting, page flips, scanout
-- **Mesa** (GBM/EGL, GL or Vulkan) — GPU buffers and rendering
-- **libinput/evdev** — input devices
+- **Mesa** (GBM/EGL, GL or Vulkan) — GPU buffers and rendering, measured by
+  `tools/Rosella.GpuProbe`; the compositor itself still renders on the CPU
+- **evdev** (kernel) — input devices, read directly (no libinput)
 
 See `docs/architecture.md` for the layer map, the wire-format facts the codec
 is built on, and the milestone plan.
@@ -33,8 +34,9 @@ configuration is where desktop environments go to die.
   Unix socket transport with SCM_RIGHTS, `wl_display` handshake, registry with
   globals, per-client object id spaces, `since`-version gating, stub interfaces
   that survive real clients (`wayland-info` exit test passed).
-- **M3 — output** (`Rosella.Drm`): done, pending visual confirmation in the
-  GDM session. DRM/KMS interop pinned against the kernel UAPI by golden tests,
+- **M3 — output** (`Rosella.Drm`): done — confirmed on screen since
+  27/10/2026 (silver). DRM/KMS interop pinned against the kernel UAPI by
+  golden tests,
   dumb buffers + mmap, framebuffers, legacy modeset, page-flip loop and the
   desktop on the first connected output. `--probe`
   introspects cards/connectors/modes and validates dumb buffers against the
@@ -56,17 +58,21 @@ configuration is where desktop environments go to die.
   frozen positioner snapshot relative to the parent window, and correct
   unmap/teardown semantics (role destroy unmaps; destroy order is enforced).
   The smoke client now opens a genuine xdg-shell window.
-- **M6 — input**: done (pending on-screen check). evdev devices are read
-  directly (no libinput): discovery, capability probing, exclusive grabs and
-  poll()-based reads that shut down cleanly. The keyboard keymap is the one
+- **M6 — input**: done (confirmed on hardware: keyboard, mouse, multitouch
+  trackpad). evdev devices are read directly (no libinput): discovery,
+  capability probing, exclusive grabs and poll()-based reads that shut down
+  cleanly. The keyboard keymap is the one
   US QWERTY map, generated with xkbcommon. `wl_seat`/`wl_keyboard`/
   `wl_pointer` implement the real protocol (keymap fd per keyboard, enter
   with the held keys, mandatory modifiers after enter, repeat_info, frame
   gated at v5). The input policy is the only policy: click-to-focus with
   raise, keys to the keyboard focus, xdg_toplevel activation configure
-  rounds, and two hardcoded keybindings (Alt+F4 = close window,
-  Super+Esc = quit). One built-in cursor sprite, drawn topmost;
-  `set_cursor` is deliberately ignored. The trackpad policy is fixed too:
+  rounds, and the fixed keybindings — Alt+F4 closes the focused window,
+  Alt+Tab switches windows (Shift reverses, Esc cancels), Super+Esc quits,
+  Ctrl+Alt+Fn switches VT. The pointer image is the pointer-focused
+  client's `set_cursor` surface at pointer−hotspot (hidden on NULL), else
+  the built-in arrow sprite, drawn topmost — so text beams, hands and
+  resize cursors are the app's. The trackpad policy is fixed too:
   one finger moves, a tap clicks (right with two, middle with three), a
   second touch drags, two or more fingers scroll — at 6 logical pixels and
   3 axis units per millimetre of finger travel, calibrated from the pad's
@@ -77,8 +83,10 @@ configuration is where desktop environments go to die.
   its `delete_id`.
 - **M7 — shell**: done. The Windows 11 style shell chrome: a bottom
   taskbar (a reserved launcher slot, pinned app launchers centred on the
-  bar, task buttons with a focus accent, clock), and a settings panel (Log
-  Out, Restart, Shut Down) that opens from the clock.
+  bar, task buttons with a focus accent, clock), a settings panel (volume
+  slider, Log Out, Restart, Shut Down) that opens from the clock, and an
+  Alt+Tab window switcher. The desktop picture is Bing's daily wallpaper
+  for Australia, with the dark gradient standing in until it loads.
 
 ## Layout
 
@@ -88,7 +96,7 @@ src/Rosella.Transport/         unix sockets, recvmsg/sendmsg, SCM_RIGHTS descrip
 src/Rosella.Server/            display server: sessions, object maps, dispatch, globals
 src/Rosella.Drm/               DRM/KMS interop: devices, connectors, modes, dumb buffers, flips
 src/Rosella.Compositor/        entry point: scanout loop, desktop background, --probe
-scripts/                       GDM session registration, session wrapper, and the `rosella` VT launcher
+scripts/                       login session registration, session wrapper, and the `rosella` VT launcher
 tests/Rosella.Protocol.Tests/  unit tests, including golden wire bytes
 tests/Rosella.Server.Tests/    transport + end-to-end handshake tests
 tests/Rosella.Drm.Tests/       kernel ABI golden layouts, ioctl codes, event parsing
@@ -120,21 +128,25 @@ Two entry points, both running the same build.
 
 ### As a login session (the normal way)
 
-`scripts/install-session.sh` publishes Rosella and registers it with GDM, so
-"Rosella" appears in the greeter's session chooser alongside GNOME. It needs
-sudo once; day-to-day updates do not (`scripts/deploy.sh`, then restart).
-Run `deploy.sh` from `~/Projects/Rosella`, the checkout both launchers use.
-If the installed login launcher or session entry differs from the repository,
-`deploy.sh` warns: refresh the registration with `scripts/install-session.sh`
-(which requires sudo). Otherwise GDM may continue to start an older build.
+`scripts/install-session.sh` publishes Rosella and registers it as a Wayland
+session (`/usr/share/wayland-sessions/rosella.desktop` plus a wrapper in
+`/usr/local/bin`), so "Rosella" appears in the login screen's session list
+alongside GNOME. It needs sudo once; day-to-day updates do not
+(`scripts/deploy.sh`, then restart). Run `deploy.sh` from
+`~/Projects/Rosella`, the checkout both launchers use. If the installed
+login launcher or session entry differs from the repository, `deploy.sh`
+warns: refresh the registration with `scripts/install-session.sh` (which
+requires sudo). Otherwise the login screen may continue to start an older
+build.
 
-To use it: log out of GNOME, click the session chooser (the gear icon at the
-greeter), pick **Rosella**, and log in.
+On Silver the display manager is greetd running Rosella's own greeter, with
+a PIN or password (`docs/login-and-pin.md`); it reads the same session list.
+On a machine still on GDM, pick **Rosella** from the gear menu instead.
 
-### From a VT, alongside GNOME (the dev way)
+### From a VT, alongside a running session (the dev way)
 
-GDM permits one session per user, so you cannot start Rosella from the
-greeter while GNOME is running. To try the desktop without disturbing your
+The seat is single-occupancy: two compositors steal each other's input
+devices and the keyboard dies. To try the desktop without disturbing your
 session, switch to a spare VT (`Ctrl+Alt+F3`), log in, and run:
 
 ```sh
@@ -150,13 +162,15 @@ runs the freshly published build, logging to `/tmp/rosella.log`.
 
 The first connected output is driven at its preferred mode with the Windows
 11 style desktop: a bottom taskbar (a reserved launcher slot, pinned app
-launchers centred on the bar, task buttons, clock), a settings panel (Log
-Out, Restart, Shut Down) opened from the clock, and a calm dark gradient background — no workspaces, by
-design. The Super key is unbound; Alt+F4 closes a window and Super+Esc quits.
+launchers centred on the bar, task buttons, clock), a settings panel (volume
+slider; Log Out, Restart, Shut Down) opened from the clock, and Bing's daily
+wallpaper for Australia over a calm dark gradient — no workspaces, by design.
+Super on its own is unbound; Alt+F4 closes a window, Alt+Tab switches windows
+and Super+Esc quits.
 
 Recovery if anything goes wrong: `Ctrl+Alt+F3`, log in,
-`pkill -f Rosella.Compositor`, or simply pick GNOME at the next greeter — it
-is always offered.
+`pkill -f Rosella.Compositor`, or simply pick GNOME at the next login
+screen — it is always offered.
 
 ## Probe
 

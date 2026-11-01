@@ -6,11 +6,12 @@ namespace Rosella.Compositor;
 /// The input policy, and deliberately the only policy there is: the cursor
 /// moves and hit-tests windows, a click focuses and raises, keys go to the
 /// keyboard focus, and the keybindings are fixed: Alt+F4 closes the focused
-/// window, Super+Esc quits. The Super key by itself is unbound. On the
-/// touchpad, one finger points, a quick tap clicks (left, right or middle by
-/// finger count), two fingers scroll and a tap then a quick second touch
-/// drags; a physical click always beats a pending tap. Anything else typed
-/// or clicked is ordinary input. Nothing is configurable.
+/// window, Alt+Tab switches windows, Super+Esc quits. The Super key by itself
+/// is unbound. On the
+/// touchpad, one finger moves the pointer, a quick tap clicks (left, right or
+/// middle by finger count), two or more fingers scroll and a tap then a quick
+/// second touch drags; a physical click always beats a pending tap. Anything
+/// else typed or clicked is ordinary input. Nothing is configurable.
 /// </summary>
 internal sealed class InputRouter
 {
