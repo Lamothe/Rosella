@@ -49,10 +49,20 @@ internal sealed class GreeterState
     private GreeterField _focus = GreeterField.Username;
     private int _sessionIndex;
 
-    internal GreeterState(IReadOnlyList<GreeterSession> sessions)
+    internal GreeterState(IReadOnlyList<GreeterSession> sessions, string? defaultUsername = null)
     {
         _sessions = sessions;
         _sessionIndex = GreeterSessions.PreferredIndex(sessions);
+
+        // A known account opens on the secret field, so the PIN is the first
+        // thing typed. The username stays editable: Tab reaches it, Esc on it
+        // empties it.
+        if (defaultUsername is not null && GreeterUser.IsValidName(defaultUsername))
+        {
+            _username = defaultUsername;
+            _focus = GreeterField.Secret;
+        }
+
         if (sessions.Count == 0)
         {
             _message = $"No sessions found in {GreeterSessions.DefaultDirectory}.";

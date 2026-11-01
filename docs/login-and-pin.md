@@ -73,7 +73,7 @@ Rejected, with reasons:
 
 ```
 greetd (system service, owns VT 1)
-  └── greeter: /usr/local/bin/rosella --greeter      (user: greeter; video,input)
+  └── greeter: /usr/local/bin/rosella-greeter       (user: greeter; video,input,render)
         ↕ GREETD_SOCK, length-prefixed JSON
         └── on success: start_session
               └── /usr/local/bin/rosella-session      (user: michael)
@@ -92,13 +92,19 @@ because the greeter is Rosella.
 vt = 1
 
 [default_session]
-command = "/usr/local/bin/rosella --greeter"
+command = "/usr/local/bin/rosella-greeter"
 user = "greeter"
 ```
 
-`greeter` must exist and be in `video` and `input` (DRM node and evdev), and
-must not be in `michael`'s groups: `useradd --system --no-create-home -G
-video,input greeter`.
+`rosella-greeter` is a two-line wrapper: it exports a private
+`XDG_RUNTIME_DIR=/run/rosella-greeter` and execs
+`/usr/local/lib/rosella/Rosella.Compositor --greeter`. greetd starts the
+greeter with almost no environment, and without that variable anything the
+greeter runs would be given the wrong runtime directory.
+
+`greeter` must exist and be in `video`, `input` and `render` (DRM node, DMA
+heap and evdev), and must not be in `michael`'s groups: `useradd --system
+--no-create-home -G video,input,render greeter`.
 
 ### The IPC detail that bites
 
@@ -117,6 +123,33 @@ little-endian length followed by that many bytes of UTF-8 JSON
 `auth_message_type` is `secret`, `visible`, `info` or `error`; a failure comes
 back as `{"type":"error","error_type":"auth_error",...}`, which is retryable,
 not fatal. The greeter never sees a password hash — PAM does the work.
+
+### The username is filled in
+
+`username` in the `create_session` frame is whatever the form holds, and on a
+one-person machine asking for it every time is pure friction. `GreeterUser`
+decides it before the first frame:
+
+1. `user = name` in `/etc/rosella/greeter.conf`, if that file exists. A `user`
+   key is an instruction: if the value is unusable the form asks rather than
+   quietly signing in as someone the file did not name.
+2. otherwise the machine's only human account — uid 1000–59999 with a real
+   login shell. Two or more candidates means the form asks, because choosing
+   between two people is a guess.
+3. otherwise nothing, and the form behaves as it always has.
+
+When a username is prefilled the **secret field has focus**, so the PIN is the
+first thing typed; `Tab` reaches the username and `Esc` there empties it for a
+different account, so nothing is unreachable. `greeter` is never a candidate —
+it is a system account with `/sbin/nologin`.
+
+On Silver no config is needed: `michael` (1000, `/bin/bash`) is the only match.
+The greeter logs which branch it took at start:
+
+```
+rosella: greeter: signing in as michael
+rosella: greeter: asking for the username
+```
 
 ## PIN authentication
 
@@ -303,7 +336,6 @@ torn down when the VT was handed to the real session.
 |---|---|
 | `/usr/local/libexec/rosella-pin` | installed; `--self-test` 44/44 |
 | `/etc/rosella/pin` | yescrypt `$y$`, mode `0600 root:root` |
-| `/etc/pam.d/gdm-password` | the auth block above |
 | `/etc/security/faillock.conf` | `deny = 5`, `unlock_time = 300`, `fail_interval = 900` |
 | `/etc/pam.d/gdm-password` | the auth block above; kept so switching back to GDM keeps the PIN |
 | greetd | 0.10.3 installed, `enabled`; GDM `disabled`; `/etc/greetd/config.toml` runs `/usr/local/bin/rosella-greeter` on VT 1 as user `greeter` |

@@ -49,7 +49,8 @@ internal static class GreeterApp
         };
 
         var sessions = GreeterSessions.Load(GreeterSessions.DefaultDirectory);
-        var state = new GreeterState(sessions);
+        var defaultUser = GreeterUser.Default();
+        var state = new GreeterState(sessions, defaultUser);
         var screen = new GreeterScreen(state);
         state.Dirty = scene.MarkDirty;
         scene.Overlay = screen;
@@ -111,6 +112,9 @@ internal static class GreeterApp
 
         Console.WriteLine($"rosella: greeter on {output.Connector} at {output.Mode}, scale {scale} ({scene.OutputSize.Width}x{scene.OutputSize.Height} logical)");
         Console.WriteLine($"rosella: greeter: {sessions.Count} session(s) from {GreeterSessions.DefaultDirectory}");
+        Console.WriteLine(defaultUser is null
+            ? "rosella: greeter: asking for the username"
+            : $"rosella: greeter: signing in as {defaultUser}");
         controller.Start();
 
         try

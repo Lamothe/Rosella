@@ -136,14 +136,12 @@ internal sealed class GreeterConversation
                     ? error.Description
                     : error.ErrorType == "auth_error" ? RejectedCredential : "greetd could not complete the sign-in.");
 
-                // Deployment note: under greetd this runs as the unprivileged
-                // 'greeter' user, while /etc/rosella/pin is 0600 root:root.
-                // pam_exec therefore runs rosella-pin as 'greeter', it exits 2
-                // without reading the file, and the PAM stack falls through to
-                // pam_unix. A correct PIN is rejected until the file is
-                // deployed 0640 root:greeter; the password remains the
-                // supported degraded path, and this message must not pretend
-                // to know which of the two was typed.
+                // Deployment note: greetd's session worker keeps root through
+                // pam_authenticate, so pam_exec reads /etc/rosella/pin (0600
+                // root:root) exactly as gdm-session-worker did and the PIN is
+                // accepted at this screen too. A rejected PIN and a rejected
+                // password are indistinguishable here, so this message must
+                // not pretend to know which of the two was typed.
                 return new GreeterStep(
                     error.ErrorType == "auth_error" ? GreeterStepKind.Retry : GreeterStepKind.Fatal,
                     Failure);

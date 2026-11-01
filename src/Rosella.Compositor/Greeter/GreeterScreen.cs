@@ -111,7 +111,9 @@ internal sealed class GreeterScreen : ISceneOverlay
 
         var hint = snapshot.Busy
             ? snapshot.AwaitingInput ? "Enter answer · Esc cancel" : "Waiting for greetd…"
-            : "Enter sign in · Esc clear · Tab field";
+            : snapshot.Focus == GreeterField.Secret && snapshot.Username.Length > 0
+                ? "Enter sign in · Esc clear · Tab change user"
+                : "Enter sign in · Esc clear · Tab field";
         DrawText(pixels, width, height, stride, layout.HintLine, hint, MutedColour, HintEm, scale, centred: true);
     }
 
