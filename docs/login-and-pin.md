@@ -1,8 +1,9 @@
 # Login, PIN and the greeter
 
-Date: 1 November 2026. Partly applied: the PIN verifier and the rate-limited
-PAM stack are live on Silver's GDM greeter (see "Applied on Silver" at the end).
-The greetd greeter and the lock screen are still a plan.
+Date: 1 November 2026. Applied: greetd 0.10.3 replaced GDM as the display
+manager, and Rosella's own greeter draws the login screen at the compositor's
+scale, logging in with the PIN or the password (see "Applied on Silver" at the
+end). The M8 lock screen is still a plan.
 
 Goal: boot straight into Rosella, log in with a PIN instead of a password, and
 have the screen lock accept the same PIN. Replace GDM, because it is the part
@@ -298,16 +299,21 @@ Live now, on GDM:
 | `/etc/rosella/pin` | yescrypt `$y$`, mode `0600 root:root` |
 | `/etc/pam.d/gdm-password` | the auth block above |
 | `/etc/security/faillock.conf` | `deny = 5`, `unlock_time = 300`, `fail_interval = 900` |
-| greetd | **not installed**; `/etc/pam.d/greetd` does not exist |
+| greetd | 0.10.3 installed, `enabled`; GDM `disabled`; `/etc/greetd/config.toml` runs `/usr/local/bin/rosella-greeter` on VT 1 as user `greeter` |
+| `/etc/pam.d/greetd` | the same auth block as `gdm-password`, above |
+| `greeter` user | `--system --no-create-home --shell /sbin/nologin`, groups `video,input,render` |
+| `/etc/tmpfiles.d/rosella-greeter.conf` | private `/run/rosella-greeter`, `0700 greeter:greeter` |
 
-Why the PIN works at GDM but will need a permission change under greetd:
-`gdm-session-worker` runs as **root** (checked with `ps`), so `pam_exec` runs the
-verifier as root and reads the 0600 file. Under greetd the greeter is the
-unprivileged `greeter` user, so the verifier cannot read the file, exits 2, and
-PAM falls through to the password. Deploying the greeter therefore needs the
-file at `0640 root:greeter` (or an equivalent group grant) — that is the same
-offline-brute-force exposure the keyring already has, so it changes nothing in
-kind.
+The PIN needs **no** permission change on `/etc/rosella/pin`, contrary to what an
+earlier revision of this document claimed. greetd does not run PAM as the
+greeter: it re-execs itself as a session worker, and that worker keeps
+**root** for `pam_start`, `pam_authenticate` and `pam_open_session`, dropping to
+the target uid only in a further fork immediately before `execve`. So
+`pam_exec` inherits root and reads the 0600 file exactly as
+`gdm-session-worker` did. Confirmed on the installed binary (`session-worker`
+strings present) and by running the real `greetd` service through the probe as
+root: a correct PIN returned `pam_authenticate: 0 Success` and
+`pam_acct_mgmt: 0 Success`. The file is still `0600 root:root`.
 
 Verified against the real `gdm-password` service with a throwaway PAM probe
 (`libpam` has no headers on Silver, so the probe declares its own; the probe and
@@ -319,6 +325,13 @@ the test services were removed afterwards):
 - `faillock --reset` → correct PIN succeeds and the tally is cleared
 - wrong secret with the final file → rejected, exactly one tally entry
 
+The same probe was then run against `greetd` and a `--path`-redirected copy of
+its service file, with the same results (correct PIN → success on both auth and
+account; five wrong → lockout; correct PIN while locked → denied with the tally
+unchanged; reset → success). Rejections surface as `6 Permission denied` there
+rather than `7`, because the failure is recorded by the last module in the
+stack; the greeter treats any non-zero result the same way.
+
 A temporary test PIN and a `--path`-redirected copy of the service were used so
 the real PIN was never needed and never changed; `/etc/rosella/pin` is
 byte-identical before and after (sha256 matches the backup).
@@ -326,6 +339,22 @@ byte-identical before and after (sha256 matches the backup).
 Backups for rollback: `/root/gdm-password.backup`, `/root/rosella-pin.backup`,
 `/root/faillock.conf.backup`. Restoring the first and third and running
 `faillock --user michael --reset` returns the machine to its previous state.
+
+To go back to GDM entirely:
+
+```
+sudo systemctl disable greetd && sudo systemctl enable gdm
+```
+
+Re-enable in that order — `systemctl enable` a display manager while another one
+owns `/etc/systemd/system/display-manager.service` fails on the existing
+symlink, and `disable` deletes it.
+
+**Do not `systemctl start greetd` while a Rosella session is running.** The
+greeter would start on VT 1 and grab the seat's evdev devices from the live
+session, which is the same half-stolen-seat failure `Program.cs` guards against
+within one session. greetd takes over at the next boot; that is the intended
+switch.
 
 Two consequences to keep in mind. The login keyring's password is still the
 account password, so logging in with the PIN leaves the keyring locked and

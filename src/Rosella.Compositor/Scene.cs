@@ -2,6 +2,21 @@
 namespace Rosella.Compositor;
 
 /// <summary>
+/// A full-frame overlay drawn instead of the desktop scene: the greeter's
+/// login screen. It has no clients underneath and paints every pixel itself
+/// (background included), so the scene never composites the desktop or the
+/// pointer while one is set.
+/// </summary>
+internal interface ISceneOverlay
+{
+    /// <summary>
+    /// Paints the whole output. The buffer is physical pixels; the overlay
+    /// scales its own logical layout by <paramref name="scale"/>.
+    /// </summary>
+    void Draw(Span<byte> pixels, int width, int height, int stride, int scale);
+}
+
+/// <summary>
 /// The compositor's scene: windows in mapping order over the desktop
 /// background, shared between client threads and the scanout loop.
 /// </summary>
@@ -149,6 +164,13 @@ public sealed class Scene
 
     /// <summary>Where windows live: the output minus the taskbar band.</summary>
     internal Rect WorkArea => new(0, 0, OutputSize.Width, OutputSize.Height - (Shell is null ? 0 : Shell.BarHeight));
+
+    /// <summary>
+    /// The greeter's login screen, when this scene belongs to a greeter. A
+    /// full-screen overlay owns every pixel, so a partial damage region still
+    /// produces a complete frame (see <see cref="RenderRegion"/>).
+    /// </summary>
+    internal ISceneOverlay? Overlay { get; set; }
 
     /// <summary>The desktop shell, when one is wired in (taskbar and settings panel).</summary>
     internal Shell? Shell
@@ -319,6 +341,18 @@ public sealed class Scene
         if (region.IsEmpty)
         {
             return default;
+        }
+
+        // The greeter's overlay paints the entire frame — background, card
+        // and fields — so a partial damage region still yields a complete
+        // picture and nothing below it (desktop, windows, cursor) belongs on
+        // screen. The cost is a full repaint per keystroke, which is the
+        // right trade for a login screen and keeps it independent of the
+        // damage tracker's seeding.
+        if (Overlay is { } overlay)
+        {
+            overlay.Draw(pixels, width, height, stride, scale);
+            return new RenderCost((long)width * height, 0, 0);
         }
 
         // Opaque windows hide the desktop: only the rest of the region needs

@@ -20,6 +20,7 @@ internal sealed class InputRouter
     private readonly Action<int>? _switchVt;
     private readonly Shell? _shell;
     private readonly ScreenPower? _screenPower;
+    private readonly Action<ushort, int>? _greeterKey;
     private readonly object _gate = new();
     private readonly HashSet<int> _pressedKeys = new();
     private readonly HashSet<int> _consumedKeys = new();
@@ -46,7 +47,7 @@ internal sealed class InputRouter
     private int _lastDepressed = -1;
     private int _lastLocked = -1;
 
-    internal InputRouter(Scene scene, SeatState seat, Action quit, Shell? shell = null, ScreenPower? screenPower = null, Action<int>? switchVt = null)
+    internal InputRouter(Scene scene, SeatState seat, Action quit, Shell? shell = null, ScreenPower? screenPower = null, Action<int>? switchVt = null, Action<ushort, int>? greeterKey = null)
     {
         _scene = scene;
         _seat = seat;
@@ -54,6 +55,7 @@ internal sealed class InputRouter
         _shell = shell;
         _screenPower = screenPower;
         _switchVt = switchVt;
+        _greeterKey = greeterKey;
         _gestures = new TouchpadGestures(
             move: (dx, dy, time) => MoveCursor(
                 dx == 0 ? 0 : ScaleTouchpadX(dx),
@@ -146,6 +148,16 @@ internal sealed class InputRouter
 
         lock (_gate)
         {
+            // A greeter has no clients and no pointer policy: its keyboard
+            // belongs to the login form. Everything else (motion, buttons,
+            // touchpad) is deliberately swallowed, so the pointer cannot
+            // drag a cursor across the card.
+            if (_greeterKey is { } greeterKey)
+            {
+                RouteGreeterKey(greeterKey, e);
+                return;
+            }
+
             switch (e.Type)
             {
                 case InputConstants.EventRelative when e.Code == InputConstants.RelativeX:
@@ -512,6 +524,53 @@ internal sealed class InputRouter
         {
             _seat.SendButton(target2, code, pressed, time);
             _seat.SendPointerFrame(target2);
+        }
+    }
+
+    /// <summary>
+    /// The greeter's keyboard path: keys (and autorepeat) go to the login
+    /// form, and Ctrl+Alt+Fn still switches VTs when this process owns one.
+    /// Under greetd the switch callback is absent — greetd owns the VT — so
+    /// the chord falls through to the form and is harmless there.
+    /// </summary>
+    private void RouteGreeterKey(Action<ushort, int> greeterKey, InputEvent e)
+    {
+        // BTN_* codes are pointer buttons, not characters.
+        if (e.Type != InputConstants.EventKey || e.Code >= 0x100)
+        {
+            return;
+        }
+
+        var pressed = e.Value != InputConstants.KeyReleased;
+        if (pressed)
+        {
+            _pressedKeys.Add(e.Code);
+        }
+        else
+        {
+            _pressedKeys.Remove(e.Code);
+        }
+
+        // The release of a consumed chord key is swallowed with its press.
+        if (!pressed && _consumedKeys.Remove(e.Code))
+        {
+            return;
+        }
+
+        if (e.Value == InputConstants.KeyPressed
+            && CtrlDown
+            && AltDown
+            && VtForKey(e.Code) is { } vt
+            && _switchVt is { } switchVt)
+        {
+            _consumedKeys.Add(e.Code);
+            switchVt(vt);
+            return;
+        }
+
+        if (!_consumedKeys.Contains(e.Code))
+        {
+            greeterKey(e.Code, e.Value);
         }
     }
 

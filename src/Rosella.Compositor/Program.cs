@@ -13,6 +13,14 @@ if (args.Contains("--probe", StringComparer.Ordinal))
     return 0;
 }
 
+// greetd greeter mode: Rosella draws the login screen itself, authenticates
+// through greetd's socket and hands the VT to the chosen session. No display
+// server and no control socket are started; greetd owns the seat.
+if (args.Contains("--greeter", StringComparer.Ordinal))
+{
+    return Rosella.Compositor.Greeter.GreeterApp.Run();
+}
+
 // The display server picks the first free socket (wayland-0 may already be
 // taken by another session's compositor in the same runtime directory).
 var runtimeDirectory = Environment.GetEnvironmentVariable("XDG_RUNTIME_DIR") ?? Path.GetTempPath();

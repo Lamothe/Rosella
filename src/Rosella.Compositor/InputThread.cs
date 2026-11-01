@@ -44,11 +44,11 @@ internal sealed class InputThread : IDisposable
     private int _keyboardCount;
     private int _pointerCount;
 
-    internal InputThread(Scene scene, SeatState seat, Action quit, Shell? shell = null, ScreenPower? screenPower = null, Action<int>? switchVt = null, IDeviceSource? source = null)
+    internal InputThread(Scene scene, SeatState seat, Action quit, Shell? shell = null, ScreenPower? screenPower = null, Action<int>? switchVt = null, IDeviceSource? source = null, Action<ushort, int>? greeterKey = null)
     {
         _seat = seat;
         _source = source ?? new EvdevDeviceSource();
-        _router = new InputRouter(scene, seat, quit, shell, screenPower, switchVt);
+        _router = new InputRouter(scene, seat, quit, shell, screenPower, switchVt, greeterKey);
     }
 
     internal InputRouter Router => _router;

@@ -8,7 +8,7 @@ namespace Rosella.Compositor;
 /// file wrote them (the keys we read carry no key-file escapes in
 /// practice); the Exec value gets its own GLib-style argv parsing.
 /// </summary>
-internal sealed record DesktopEntry(string Id, string Name, string Exec, string Icon, string StartupWMClass, bool NoDisplay, bool Hidden)
+internal sealed record DesktopEntry(string Id, string Name, string Exec, string Icon, string StartupWMClass, bool NoDisplay, bool Hidden, string DesktopNames)
 {
     /// <summary>Entries the spec says never to show: NoDisplay or Hidden.</summary>
     internal bool IsHidden => NoDisplay || Hidden;
@@ -39,12 +39,14 @@ internal sealed record DesktopEntry(string Id, string Name, string Exec, string 
         var exec = string.Empty;
         var icon = string.Empty;
         var startupWmClass = string.Empty;
+        var desktopNames = string.Empty;
         var noDisplay = false;
         var hidden = false;
         var seenName = false;
         var seenExec = false;
         var seenIcon = false;
         var seenClass = false;
+        var seenDesktopNames = false;
         var seenNoDisplay = false;
         var seenHidden = false;
         var inGroup = false;
@@ -98,6 +100,11 @@ internal sealed record DesktopEntry(string Id, string Name, string Exec, string 
                     seenClass = true;
                     break;
 
+                case "DesktopNames" when !seenDesktopNames:
+                    desktopNames = value;
+                    seenDesktopNames = true;
+                    break;
+
                 case "NoDisplay" when !seenNoDisplay:
                     noDisplay = IsTrue(value);
                     seenNoDisplay = true;
@@ -110,7 +117,7 @@ internal sealed record DesktopEntry(string Id, string Name, string Exec, string 
             }
         }
 
-        return new DesktopEntry(id, name, exec, icon, startupWmClass, noDisplay, hidden);
+        return new DesktopEntry(id, name, exec, icon, startupWmClass, noDisplay, hidden, desktopNames);
     }
 
     /// <summary>
