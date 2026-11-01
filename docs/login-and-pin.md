@@ -1,7 +1,8 @@
 # Login, PIN and the greeter
 
-Date: 1 November 2026. A plan, not a change: nothing in this document has been
-applied to Silver.
+Date: 1 November 2026. Partly applied: the PIN verifier and the rate-limited
+PAM stack are live on Silver's GDM greeter (see "Applied on Silver" at the end).
+The greetd greeter and the lock screen are still a plan.
 
 Goal: boot straight into Rosella, log in with a PIN instead of a password, and
 have the screen lock accept the same PIN. Replace GDM, because it is the part
@@ -121,38 +122,52 @@ not fatal. The greeter never sees a password hash — PAM does the work.
 One text field that accepts **either** the PIN or the real password, so a
 forgotten PIN is never a lockout.
 
-`/etc/pam.d/greetd`:
+`/etc/pam.d/gdm-password` today, and `/etc/pam.d/greetd` when greetd lands —
+the same auth block, byte for byte:
 
 ```
-auth      required   pam_faillock.so preauth
-auth      sufficient pam_exec.so quiet expose_authtok /usr/local/libexec/rosella-pin
-auth      sufficient pam_unix.so nullok try_first_pass
-auth      optional   pam_faildelay.so delay=2000000
-auth      [default=die] pam_faillock.so authfail
-auth      required   pam_deny.so
-
-account   required   pam_faillock.so
-account   include    password-auth
-
-session   optional   pam_keyinit.so force revoke
-session   include    postlogin
-session   optional   pam_gnome_keyring.so auto_start
+auth     requisite     pam_faillock.so preauth
+auth     required      pam_env.so
+auth     required      pam_faildelay.so delay=2000000
+auth     [success=2 default=ignore] pam_exec.so quiet expose_authtok /usr/local/libexec/rosella-pin
+auth     [success=1 default=ignore] pam_unix.so nullok try_first_pass
+auth     [default=die] pam_faillock.so authfail
+auth     optional      pam_faillock.so authsucc
+auth     [success=done ignore=ignore default=bad] pam_selinux_permit.so
+auth     optional      pam_gnome_keyring.so
+auth     include       postlogin
 ```
 
-Why this shape:
+Why this exact shape — two of these are not stylistic:
 
+- **`authfail` must never be reached with a success status.** It returns
+  `PAM_PERM_DENIED` when it is, which rejects a correct password. The first
+  draft used `sufficient` lines and `substack password-auth`, so a successful
+  password ran into `pam_faillock authfail`: measured on Silver, a correct
+  secret produced `pam_authenticate: 6 Permission denied`. The jumps fix it —
+  PIN success skips the password leg, password success skips the failure line,
+  and both land on `authsucc` so the tally is cleared.
+- **`preauth` is `requisite`, not Fedora's `required`.** With `required` a
+  failed preauth does not stop the stack, so a correct PIN typed while locked
+  would still reach `authsucc` and clear the lock. Measured with `requisite`: a
+  correct PIN while locked stays denied and the tally is unchanged.
 - `pam_exec ... expose_authtok` hands the typed secret to the verifier on
   **stdin**; it never appears in `argv` or in `ps`.
-- `sufficient` + `pam_unix try_first_pass` means the same field accepts the
-  password, and a missing or broken verifier degrades to password login
-  instead of locking the machine.
-- `pam_faillock` is **not** configured anywhere on Silver today
-  (`/etc/authselect/*` and `/etc/security/faillock.conf` are bare), so this
-  stack is the only place a counter is added. Set `deny = 5`,
-  `unlock_time = 300` in `/etc/security/faillock.conf`.
-- Fedora has no `pam_pwdfile` package, so a verifier is required either way.
-  Putting the PIN into `password-auth` instead would expose it to `sshd` and
-  `sudo`; this stack is scoped to greetd alone.
+- `pam_unix try_first_pass` means the same field accepts the password too, and
+  a missing or broken verifier degrades to password login instead of locking
+  the machine.
+- `pam_env`, `pam_faildelay` and `pam_selinux_permit` are kept from GDM's own
+  service file; the password leg is spelled out rather than `substack
+  password-auth` so the control flags can jump over the failure line.
+
+Rate limiting is not optional for a 4-digit PIN, so `pam_faillock` is
+configured in `/etc/security/faillock.conf` (`deny = 5`, `unlock_time = 300`,
+`fail_interval = 900`). Nothing else on Silver used `pam_faillock` before, so
+the settings reach only this stack.
+
+Fedora has no `pam_pwdfile` package, so a verifier is required either way.
+Putting the PIN into `password-auth` instead would expose it to `sshd` and
+`sudo`; this stack is scoped to the greeter alone.
 
 `/usr/local/libexec/rosella-pin` is built from the repo: `tools/Rosella.Pin`,
 a console app with P/Invoke only and no NuGet references. It is written and
@@ -272,6 +287,51 @@ Failure modes to expect, all recoverable from another VT: greeter cannot open
 `/dev/dri/card0` (missing `video`), cannot open evdev (missing `input`), or
 `start_session` fails because `rosella-session` was not found under the
 greeter's `PATH`.
+
+## Applied on Silver (1 November 2026)
+
+Live now, on GDM:
+
+| Piece | State |
+|---|---|
+| `/usr/local/libexec/rosella-pin` | installed; `--self-test` 44/44 |
+| `/etc/rosella/pin` | yescrypt `$y$`, mode `0600 root:root` |
+| `/etc/pam.d/gdm-password` | the auth block above |
+| `/etc/security/faillock.conf` | `deny = 5`, `unlock_time = 300`, `fail_interval = 900` |
+| greetd | **not installed**; `/etc/pam.d/greetd` does not exist |
+
+Why the PIN works at GDM but will need a permission change under greetd:
+`gdm-session-worker` runs as **root** (checked with `ps`), so `pam_exec` runs the
+verifier as root and reads the 0600 file. Under greetd the greeter is the
+unprivileged `greeter` user, so the verifier cannot read the file, exits 2, and
+PAM falls through to the password. Deploying the greeter therefore needs the
+file at `0640 root:greeter` (or an equivalent group grant) — that is the same
+offline-brute-force exposure the keyring already has, so it changes nothing in
+kind.
+
+Verified against the real `gdm-password` service with a throwaway PAM probe
+(`libpam` has no headers on Silver, so the probe declares its own; the probe and
+the test services were removed afterwards):
+
+- correct PIN → `pam_authenticate: 0 Success`, `pam_acct_mgmt: 0 Success`
+- five wrong PINs → five tally entries, account locked
+- correct PIN while locked → `7 Authentication failure`, tally unchanged
+- `faillock --reset` → correct PIN succeeds and the tally is cleared
+- wrong secret with the final file → rejected, exactly one tally entry
+
+A temporary test PIN and a `--path`-redirected copy of the service were used so
+the real PIN was never needed and never changed; `/etc/rosella/pin` is
+byte-identical before and after (sha256 matches the backup).
+
+Backups for rollback: `/root/gdm-password.backup`, `/root/rosella-pin.backup`,
+`/root/faillock.conf.backup`. Restoring the first and third and running
+`faillock --user michael --reset` returns the machine to its previous state.
+
+Two consequences to keep in mind. The login keyring's password is still the
+account password, so logging in with the PIN leaves the keyring locked and
+prompts once (see the keyring section). And the 4-digit case remains the weak
+one: the lockout is what makes it defensible, so do not lower `deny` or
+`unlock_time`.
 
 ## Cost
 
