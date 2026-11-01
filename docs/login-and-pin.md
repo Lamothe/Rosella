@@ -291,7 +291,13 @@ greeter's `PATH`.
 
 ## Applied on Silver (1 November 2026)
 
-Live now, on GDM:
+**Live and verified end to end.** Silver rebooted at 23:57 on 1 November, greetd
+started the Rosella greeter on VT 1 as the `greeter` user, and a login succeeded
+12 seconds later. No tracebacks, no SELinux denials (`ausearch -m avc -ts boot`
+is empty), and the session it produced is a normal one on `tty1` with
+`XDG_CURRENT_DESKTOP=Rosella:GNOME`, `XDG_SESSION_TYPE=wayland`. The greeter user
+session lived from 23:57:29 to 23:57:51 — created when greetd started it,
+torn down when the VT was handed to the real session.
 
 | Piece | State |
 |---|---|
@@ -299,6 +305,7 @@ Live now, on GDM:
 | `/etc/rosella/pin` | yescrypt `$y$`, mode `0600 root:root` |
 | `/etc/pam.d/gdm-password` | the auth block above |
 | `/etc/security/faillock.conf` | `deny = 5`, `unlock_time = 300`, `fail_interval = 900` |
+| `/etc/pam.d/gdm-password` | the auth block above; kept so switching back to GDM keeps the PIN |
 | greetd | 0.10.3 installed, `enabled`; GDM `disabled`; `/etc/greetd/config.toml` runs `/usr/local/bin/rosella-greeter` on VT 1 as user `greeter` |
 | `/etc/pam.d/greetd` | the same auth block as `gdm-password`, above |
 | `greeter` user | `--system --no-create-home --shell /sbin/nologin`, groups `video,input,render` |
@@ -353,8 +360,16 @@ symlink, and `disable` deletes it.
 **Do not `systemctl start greetd` while a Rosella session is running.** The
 greeter would start on VT 1 and grab the seat's evdev devices from the live
 session, which is the same half-stolen-seat failure `Program.cs` guards against
-within one session. greetd takes over at the next boot; that is the intended
-switch.
+within one session. The switch is done by rebooting, which is what was done.
+
+**Recovery if the greeter misbehaves at boot.** The greeter grabs every evdev
+device, so Ctrl+Alt+Fn never reaches the kernel console handler and there is no
+local way back to a text console — only SSH (`silver.lan`, the `michael`
+session's own logins are unaffected) followed by
+`sudo systemctl disable greetd && sudo systemctl enable gdm`. This is the one
+sharp edge of the current greeter and the reason the seat-manager follow-up in
+`GreeterApp.cs` matters beyond convenience; a hung greeter otherwise means a
+hard power cycle.
 
 Two consequences to keep in mind. The login keyring's password is still the
 account password, so logging in with the PIN leaves the keyring locked and
