@@ -25,11 +25,14 @@ public class TouchpadGesturesTests
 
         public List<(int Code, bool Pressed)> Buttons { get; } = new();
 
+        public Func<uint, bool> Typing { get; set; } = _ => false;
+
         public TouchpadGestures Build() =>
             new(
                 (dx, dy, _) => Moves.Add((dx, dy)),
                 (dx, dy, _) => Scrolls.Add((dx, dy)),
-                (code, pressed, _) => Buttons.Add((code, pressed)));
+                (code, pressed, _) => Buttons.Add((code, pressed)),
+                _ => Typing(_));
     }
 
     private static void Down(TouchpadGestures g, int slot, uint timeMs)
@@ -484,5 +487,85 @@ public class TouchpadGesturesTests
         Assert.Equal(
             [(Right, true), (Right, false)],
             sink.Buttons);
+    }
+
+    // --- Disable while typing -------------------------------------------
+
+    [Fact]
+    public void Typing_TouchThatLandsWhileTypingIsCompletelyInert()
+    {
+        var sink = new Sink { Typing = _ => true };
+        var g = sink.Build();
+
+        // A palm lands, drags across the pad, then lifts: no motion, no
+        // scroll, and above all no click.
+        Down(g, 0, 100);
+        Place(g, 0, 500, 300, 100);
+        Move(g, 0, 900, 300, 150);
+        Up(g, 0, 200);
+
+        Assert.Empty(sink.Moves);
+        Assert.Empty(sink.Scrolls);
+        Assert.Empty(sink.Buttons);
+    }
+
+    [Fact]
+    public void Typing_TwoFingerGrazeWhileTypingDoesNotScroll()
+    {
+        var sink = new Sink { Typing = _ => true };
+        var g = sink.Build();
+        Down(g, 0, 100);
+        Down(g, 1, 100);
+        Place(g, 0, 500, 300, 100);
+        Place(g, 1, 500, 400, 100);
+        Move(g, 0, 500, 500, 150);
+        Move(g, 1, 500, 600, 150);
+        Up(g, 0, 200);
+        Up(g, 1, 200);
+
+        Assert.Empty(sink.Scrolls);
+        Assert.Empty(sink.Moves);
+        Assert.Empty(sink.Buttons);
+    }
+
+    [Fact]
+    public void Typing_BeginsMidGestureFreezesItUntilFingersLift()
+    {
+        var sink = new Sink();
+        var typing = false;
+        sink.Typing = _ => typing;
+        var g = sink.Build();
+
+        Down(g, 0, 100);
+        Place(g, 0, 500, 300, 100);
+        Move(g, 0, 560, 300, 120);
+        Assert.Equal([(60, 0)], sink.Moves);
+
+        // A hand crosses the pad on the way to the keys.
+        typing = true;
+        Move(g, 0, 700, 300, 140);
+        Up(g, 0, 1000); // a long, unclicked contact: never a tap
+        Assert.Equal([(60, 0)], sink.Moves);
+        Assert.Empty(sink.Buttons);
+
+        // Once the keys are quiet again a fresh touch works normally.
+        typing = false;
+        Down(g, 0, 1600);
+        Place(g, 0, 500, 300, 1600);
+        Move(g, 0, 560, 300, 1620);
+        Assert.Equal([(60, 0), (60, 0)], sink.Moves);
+    }
+
+    [Fact]
+    public void Typing_PhysicalButtonStillClicks()
+    {
+        var sink = new Sink { Typing = _ => true };
+        var g = sink.Build();
+
+        // A deliberate hardware click is never suppressed by typing.
+        g.NotePhysicalButton(Left, pressed: true, 100);
+        g.NotePhysicalButton(Left, pressed: false, 140);
+
+        Assert.Empty(sink.Buttons); // the router sends these, not the engine
     }
 }

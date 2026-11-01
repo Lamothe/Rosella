@@ -14,7 +14,6 @@ internal static class PinnedApps
         ("Terminal", ["org.gnome.Ptyxis.desktop", "org.gnome.Console.desktop", "gnome-terminal.desktop", "org.gnome.Terminal.desktop"]),
         ("Files", ["org.gnome.Nautilus.desktop", "nautilus.desktop"]),
         ("Visual Studio Code", ["com.visualstudio.code.desktop", "com.microsoft.VSCode.desktop", "code.desktop", "code-oss.desktop"]),
-        ("Steam", ["com.valvesoftware.Steam.desktop", "steam.desktop"]),
         ("Resources", ["net.nokyan.Resources.desktop", "org.gnome.World.Resources.desktop", "resources.desktop"]),
     ];
 

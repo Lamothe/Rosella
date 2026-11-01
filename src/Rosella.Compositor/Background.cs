@@ -32,28 +32,43 @@ internal static class Background
         return 0xFF000000u | ((uint)r << 16) | ((uint)g << 8) | b;
     }
 
-    internal static void Render(Span<byte> pixels, int width, int height, int stride)
+    internal static void Render(Span<byte> pixels, int width, int height, int stride) =>
+        RenderRegion(pixels, width, height, stride, DamageRect.For(width, height));
+
+    /// <summary>
+    /// Paints one region of the desktop (full-buffer coordinates; the
+    /// gradient is a function of the row, so the region keeps its place in
+    /// the fade instead of restarting at the region's top). Returns the
+    /// pixels written, which is what damage tracking exists to shrink.
+    /// </summary>
+    internal static int RenderRegion(Span<byte> pixels, int width, int height, int stride, in DamageRect region)
     {
+        var area = region.Intersect(DamageRect.For(width, height));
+        if (area.IsEmpty)
+        {
+            return 0;
+        }
+
+        var rows = MemoryMarshal.Cast<byte, uint>(pixels);
+        var strideWords = stride / 4;
         if (_wallpaper is { } wallpaper && wallpaper.Width == width && wallpaper.Height == height)
         {
             // Scaled to the output already: one premultiplied row per row.
-            var rows = MemoryMarshal.Cast<byte, uint>(pixels);
-            var strideWords = stride / 4;
-            for (var y = 0; y < height; y++)
+            for (var y = area.Y; y < area.Y + area.H; y++)
             {
-                wallpaper.Pixels.AsSpan(y * width, width).CopyTo(rows.Slice(y * strideWords, width));
+                wallpaper.Pixels.AsSpan((y * width) + area.X, area.W).CopyTo(rows.Slice((y * strideWords) + area.X, area.W));
             }
 
-            return;
+            return area.W * area.H;
         }
 
-        var rowPixels = MemoryMarshal.Cast<byte, uint>(pixels);
-        var strideWords2 = stride / 4;
-        for (var y = 0; y < height; y++)
+        for (var y = area.Y; y < area.Y + area.H; y++)
         {
             // The gradient is one solid colour per row: a span fill is the
             // whole job (JIT memset), not width scalar writes.
-            rowPixels.Slice(y * strideWords2, width).Fill(ColourAt(y, height));
+            rows.Slice((y * strideWords) + area.X, area.W).Fill(ColourAt(y, height));
         }
+
+        return area.W * area.H;
     }
 }

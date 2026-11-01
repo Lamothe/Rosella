@@ -41,7 +41,7 @@ var seat = new SeatState();
 var screenPower = new ScreenPower();
 
 // The shell: the pinned launchers resolved from real desktop files, the
-// apple system menu wired to the session's actions, and the taskbar's
+// clock's settings panel wired to the session's actions, and the taskbar's
 // focus-or-launch view of the scene. Log out is the graceful quit — the
 // same cancellation Super+Esc triggers.
 var shell = new Shell(new SystemActions(() => cancellation.Cancel()));

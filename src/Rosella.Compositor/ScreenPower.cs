@@ -55,6 +55,29 @@ internal sealed class ScreenPower
     }
 
     /// <summary>
+    /// How long until the idle policy would blank the panel (zero once it is
+    /// due). The render loop sleeps no longer than this, so going dark is
+    /// never late — the loop's other idle bound is the clock face, which can
+    /// be most of a minute away.
+    /// </summary>
+    internal TimeSpan UntilIdle
+    {
+        get
+        {
+            lock (_gate)
+            {
+                if (_blanked)
+                {
+                    return TimeSpan.Zero;
+                }
+
+                var remaining = _idleMilliseconds - (_tickCount() - _lastActivity);
+                return remaining <= 0 ? TimeSpan.Zero : TimeSpan.FromMilliseconds(remaining);
+            }
+        }
+    }
+
+    /// <summary>
     /// Records that a person touched something. Returns <see
     /// cref="ScreenPowerAction.Unblank"/> when this woke the screen, so the
     /// caller knows to redraw immediately.

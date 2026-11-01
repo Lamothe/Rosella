@@ -2,7 +2,7 @@ using System.Diagnostics;
 
 namespace Rosella.Compositor;
 
-/// <summary>What the apple menu's three items do. Tests fake it.</summary>
+/// <summary>What the shell's three session actions do. Tests fake it.</summary>
 internal interface ISystemActions
 {
     /// <summary>Ends the session the graceful way (the Super+Esc quit path).</summary>

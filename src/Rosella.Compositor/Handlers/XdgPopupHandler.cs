@@ -16,6 +16,9 @@ internal sealed class XdgPopupHandler : IRequestHandler, IXdgRoleObject
     private readonly XdgSurfaceHandler _surface;
     private readonly XdgSurfaceHandler? _parent;
     private XdgPlacement _placement;
+    private bool _grabbed;
+    private uint _grabSerial;
+
     private ClientSession? _session;
     private ServerObject? _self;
 
@@ -32,18 +35,37 @@ internal sealed class XdgPopupHandler : IRequestHandler, IXdgRoleObject
         _self = self;
     }
 
+    internal XdgPopupHandler? Parent => _parent?.PopupRole;
+
+    internal SurfaceHandler? ParentSurface => _parent?.Surface;
+
+    internal SurfaceHandler? RootParentSurface => _parent?.PopupRole?.RootParentSurface ?? _parent?.Surface;
+
+    internal bool ParentIsPopup => _parent?.PopupRole is not null;
+
+    internal SurfaceHandler Surface => _surface.Surface;
+
+    internal bool IsGrabbed => _grabbed;
+
+    internal uint GrabSerial => _grabSerial;
+
     public void HandleRequest(ClientSession session, ServerObject target, DecodedMessage request)
     {
         var description = HandlerSupport.Require(target, request);
         switch (description.Name)
         {
             case "destroy":
+                if (_grabbed && _surface.Scene.TopmostPopupGrab != this)
+                {
+                    throw new ProtocolErrorException(_surface.WmBase.Id, XdgErrors.NotTheTopmostPopup, "only the topmost grabbed popup may be destroyed");
+                }
+
                 _surface.OnRoleDestroyed();
                 session.DestroyObject(target);
                 break;
 
             case "grab":
-                // Pointer grabs need input routing (M6); legal to ignore.
+                Grab(request.Arguments[1].AsUInt32());
                 break;
 
             case "reposition":
@@ -86,9 +108,90 @@ internal sealed class XdgPopupHandler : IRequestHandler, IXdgRoleObject
         return (_placement.Width, _placement.Height, corner);
     }
 
-    /// <summary>Tells the client the popup was dismissed (M6+ input).</summary>
+    private void Grab(uint serial)
+    {
+        if (_surface.Surface.IsMapped)
+        {
+            throw new ProtocolErrorException(_self!.Id, InvalidGrab, "xdg_popup.grab requested after the popup was mapped");
+        }
+
+        if (_session is null || _surface.Scene.Seat?.IsValidInputSerial(_session, serial) != true)
+        {
+            _surface.DismissPopup();
+            return;
+        }
+
+        if (RootParentSurface?.XdgRole is not { IsMapped: true })
+        {
+            _surface.DismissPopup();
+            return;
+        }
+
+        var popupStack = _surface.Scene.PopupGrabs;
+        if (ParentIsPopup && (Parent is not { } parent || !parent.IsGrabbed || !popupStack.Contains(parent)))
+        {
+            if (_surface.IsMapped)
+            {
+                _surface.DismissPopup();
+                return;
+            }
+
+            throw new ProtocolErrorException(_surface.WmBase.Id, XdgErrors.InvalidPopupParent, "a popup parent must have an active grab");
+        }
+
+        if (_surface.Scene.TryGrabPopup(this))
+        {
+            _grabbed = true;
+            _grabSerial = serial;
+            if (_surface.IsMapped)
+            {
+                _surface.Scene.Seat?.SetKeyboardFocus(Surface, []);
+            }
+        }
+        else
+        {
+            _surface.DismissPopup();
+        }
+    }
+
+    /// <summary>Tells the client the popup was dismissed and releases its grab.</summary>
     internal void Done()
     {
+        if (_grabbed)
+        {
+            _surface.Scene.ReleasePopupGrab(this);
+            _grabbed = false;
+            _surface.Scene.Seat?.SetKeyboardFocus(_surface.Scene.TopmostPopupGrab?.Surface ?? _surface.RootToplevelSurface, []);
+        }
+
         _session!.SendEvent(_self!, "popup_done");
     }
+
+    internal void DismissFromCompositor()
+    {
+        if (_grabbed)
+        {
+            _surface.DismissPopup();
+        }
+    }
+
+    internal void RoleDestroyed()
+    {
+        if (_grabbed)
+        {
+            _surface.Scene.ReleasePopupGrab(this);
+            _grabbed = false;
+            _surface.Scene.Seat?.SetKeyboardFocus(_surface.Scene.TopmostPopupGrab?.Surface ?? _surface.RootToplevelSurface, []);
+        }
+    }
+
+    internal void ParentDismissed()
+    {
+        if (_grabbed)
+        {
+            _surface.DismissPopup();
+        }
+    }
+
+    private const uint InvalidGrab = 0;
 }

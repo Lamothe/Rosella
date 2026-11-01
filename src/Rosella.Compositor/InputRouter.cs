@@ -28,6 +28,7 @@ internal sealed class InputRouter
 
     /// <summary>Button codes pressed over the shell chrome and consumed there.</summary>
     private readonly HashSet<int> _chromePressConsumedButtons = new();
+    private readonly HashSet<int> _settingsPressConsumedButtons = new();
 
     /// <summary>
     /// Where each button's press landed (the implicit grab, lite): its
@@ -63,7 +64,8 @@ internal sealed class InputRouter
             {
                 HandleButton(code, pressed, time);
                 _scene.MarkDirty();
-            });
+            },
+            isTyping: IsTyping);
     }
 
     /// <summary>Where the arrow's hotspot sits.</summary>
@@ -117,6 +119,7 @@ internal sealed class InputRouter
             _pressedKeys.Clear();
             _consumedKeys.Clear();
             _chromePressConsumedButtons.Clear();
+            _settingsPressConsumedButtons.Clear();
             _buttonPressTargets.Clear();
             _lastDepressed = -1;
             _lastLocked = -1;
@@ -154,11 +157,11 @@ internal sealed class InputRouter
                     break;
 
                 case InputConstants.EventRelative when e.Code == InputConstants.RelativeWheel:
-                    SendAxis(axis: 0, value: -e.Value * 40, e.TimeMs);
+                    SendAxis(axis: 0, value: -e.Value * WheelAxisPerNotch, e.TimeMs);
                     break;
 
                 case InputConstants.EventRelative when e.Code == InputConstants.RelativeHWheel:
-                    SendAxis(axis: 1, value: e.Value * 40, e.TimeMs);
+                    SendAxis(axis: 1, value: e.Value * WheelAxisPerNotch, e.TimeMs);
                     break;
 
                 case InputConstants.EventAbsolute:
@@ -181,6 +184,8 @@ internal sealed class InputRouter
                     break;
 
                 case InputConstants.EventKey:
+                    _lastKeyMs = e.TimeMs;
+                    _keySeen = true;
                     HandleKey(e);
                     _scene.MarkDirty();
                     break;
@@ -217,28 +222,71 @@ internal sealed class InputRouter
     }
 
     /// <summary>
-    /// Trackpad sensitivity: touchpad units are roughly three times coarser
-    /// than screen pixels should be. Scaled by 7/20 with the fraction
-    /// carried, so slow drags still move the cursor steadily.
+    /// Disable-while-typing window: the trackpad stays inert this long after
+    /// the last keyboard event, so a hand reaching for the keys (or a palm
+    /// resting on the pad) cannot move the cursor, scroll or click.
     /// </summary>
-    private const int TouchpadNumerator = 7;
-    private const int TouchpadDenominator = 20;
+    internal const uint TypingSuppressMs = 500;
+
+    private uint _lastKeyMs;
+    private bool _keySeen;
+
+    /// <summary>True while a key was pressed within the typing window.</summary>
+    private bool IsTyping(uint timeMs) => _keySeen && unchecked(timeMs - _lastKeyMs) < TypingSuppressMs;
+
+    /// <summary>
+    /// Trackpad sensitivity. The bcm5974 reports its resolution as 94 (X)
+    /// and 92 (Y) device units per millimetre; one figure keeps the policy
+    /// readable. Pointer motion is expressed in logical pixels per
+    /// millimetre of finger travel, so the feel is the same on any output,
+    /// and scrolling in axis units per millimetre (a wheel notch is 10).
+    /// </summary>
+    private const int TouchpadUnitsPerMm = 93;
+
+    /// <summary>Pointer: logical pixels per millimetre of finger travel (≈1:1).</summary>
+    private const int PointerPixelsPerMm = 6;
+
+    /// <summary>Scroll: axis units per millimetre, about a notch per 3 mm.</summary>
+    private const int ScrollAxisPerMm = 3;
+
+    /// <summary>
+    /// A wheel detent is one notch, and wl_pointer.axis counts 10 per notch
+    /// (the unit the trackpad scroll policy uses too). Sending more per
+    /// detent makes the wheel feel like several notches per click.
+    /// </summary>
+    private const int WheelAxisPerNotch = 10;
 
     private int _touchpadRemainderX;
     private int _touchpadRemainderY;
+    private int _scrollRemainderX;
+    private int _scrollRemainderY;
 
-    private int ScaleTouchpadX(int raw)
+    private int ScaleTouchpadX(int raw) => ScalePointer(raw, ref _touchpadRemainderX);
+
+    private int ScaleTouchpadY(int raw) => ScalePointer(raw, ref _touchpadRemainderY);
+
+    /// <summary>
+    /// Finger travel to pointer pixels. MoveCursor divides by the output
+    /// scale to keep the cursor's path across the screen constant; the
+    /// multiply here cancels that, so the policy stays in logical pixels.
+    /// The remainder carries, so slow drags still move.
+    /// </summary>
+    private int ScalePointer(int raw, ref int remainder)
     {
-        var total = (raw * TouchpadNumerator) + _touchpadRemainderX;
-        _touchpadRemainderX = total % TouchpadDenominator;
-        return total / TouchpadDenominator;
+        var total = (raw * PointerPixelsPerMm * Math.Max(1, _scene.Scale)) + remainder;
+        remainder = total % TouchpadUnitsPerMm;
+        return total / TouchpadUnitsPerMm;
     }
 
-    private int ScaleTouchpadY(int raw)
+    private int ScaleScrollX(int raw) => ScaleScroll(raw, ref _scrollRemainderX);
+
+    private int ScaleScrollY(int raw) => ScaleScroll(raw, ref _scrollRemainderY);
+
+    private int ScaleScroll(int raw, ref int remainder)
     {
-        var total = (raw * TouchpadNumerator) + _touchpadRemainderY;
-        _touchpadRemainderY = total % TouchpadDenominator;
-        return total / TouchpadDenominator;
+        var total = (raw * ScrollAxisPerMm) + remainder;
+        remainder = total % TouchpadUnitsPerMm;
+        return total / TouchpadUnitsPerMm;
     }
 
     private void MoveCursor(int dx, int dy, uint time)
@@ -258,6 +306,14 @@ internal sealed class InputRouter
         _cursorY = Math.Clamp(_cursorY + moveY, 0, Math.Max(0, outputHeight - 1));
         _scene.Cursor = (_cursorX, _cursorY);
 
+        if (_shell is { Settings.IsOpen: true } settingsShell)
+        {
+            var settingsLayout = settingsShell.LastBarLayout
+                ?? Bar.ComputeLayout(outputWidth, outputHeight, Bar.ClockString(), _scene.TaskWindows(), settingsShell.Pinned);
+            settingsShell.Settings.PointerMoved(_cursorX, settingsLayout.Clock, outputWidth, outputHeight);
+            _scene.MarkDirty();
+        }
+
         var target = _scene.HitTest(_cursorX, _cursorY);
         _seat.SetPointerFocus(target, LocalX(target), LocalY(target));
         if (target is not null)
@@ -265,6 +321,28 @@ internal sealed class InputRouter
             _seat.SendMotion(target, LocalX(target), LocalY(target), time);
             _seat.SendPointerFrame(target);
         }
+    }
+
+    /// <summary>
+    /// Keyboard focus target for a press, which is the window and never an
+    /// ungrabbed popup: the keyboard leave that would follow reaches the
+    /// toplevel, clients such as Chrome read that as the window losing focus,
+    /// and they close the menu on the press before the click's release
+    /// arrives. A grabbed popup takes focus elsewhere; that is what a grab is
+    /// for. A parentless popup has no window to hold focus, so this reports
+    /// false and the caller leaves focus untouched rather than moving it onto
+    /// the popup.
+    /// </summary>
+    private static bool TryGetPressFocusTarget(SurfaceHandler hit, out SurfaceHandler? focus)
+    {
+        if (hit.XdgRole is { PopupRole: not null } popupSurface)
+        {
+            focus = popupSurface.RootToplevelSurface;
+            return focus is not null;
+        }
+
+        focus = hit.XdgRole?.RootToplevelSurface ?? hit;
+        return true;
     }
 
     private void HandleButton(int code, bool pressed, uint time)
@@ -276,6 +354,16 @@ internal sealed class InputRouter
         // orphan the first button's release.
         if (!pressed)
         {
+            if (_settingsPressConsumedButtons.Remove(code))
+            {
+                if (_shell is { } settingsOwner)
+                {
+                    settingsOwner.Settings.PointerReleased();
+                }
+
+                return;
+            }
+
             if (_shell is { } openShell)
             {
                 openShell.PressedPin = -1;
@@ -287,20 +375,87 @@ internal sealed class InputRouter
             }
         }
 
-        // Shell chrome eats clicks first: the system menu panel (it draws
-        // over the taskbar on small outputs, so what you see is what you
-        // click), the taskbar strip, then the click-outside dismissal. None
-        // may leak into client windows underneath.
-        if (pressed && _shell is { } shell)
+        // An explicit xdg_popup grab takes precedence over shell chrome.
+        // Owner surfaces remain interactive; outside presses dismiss the grab
+        // and are consumed rather than leaking to an unrelated client.
+        if (_scene.TopmostPopupGrab is { } grabbedPopup)
         {
-            var (outputWidth, outputHeight) = _scene.OutputSize;
-            if (shell.Menu.IsOpen && shell.Menu.PanelRect(outputWidth, outputHeight).Contains(_cursorX, _cursorY))
+            if (pressed)
             {
-                shell.Menu.HandleClick(_cursorX, _cursorY, outputWidth, outputHeight);
-                _chromePressConsumedButtons.Add(code);
+                var target = _scene.HitTest(_cursorX, _cursorY);
+                if (target is null)
+                {
+                    _scene.DismissPopupGrabs();
+                    _chromePressConsumedButtons.Add(code);
+                    if (_scene.TopmostPopupGrab is null)
+                    {
+                        var hit = _scene.HitTest(_cursorX, _cursorY);
+                        if (hit is null)
+                        {
+                            _seat.SetKeyboardFocus(null, _pressedKeys);
+                        }
+                        else if (TryGetPressFocusTarget(hit, out var dismissedFocus))
+                        {
+                            _seat.SetKeyboardFocus(dismissedFocus, _pressedKeys);
+                        }
+                    }
+
+                    return;
+                }
+
+                _seat.SetPointerFocus(target, LocalX(target), LocalY(target));
+                _buttonPressTargets[code] = target;
+                if (!ReferenceEquals(target, grabbedPopup.Surface))
+                {
+                    _scene.Raise(target);
+                }
+
+                _seat.SetKeyboardFocus(grabbedPopup.Surface, _pressedKeys);
+                _seat.SendButton(target, code, pressed: true, time);
+                _seat.SendPointerFrame(target);
                 return;
             }
 
+            if (_buttonPressTargets.Remove(code, out var popupPressTarget))
+            {
+                _seat.SetPointerFocus(popupPressTarget, LocalX(popupPressTarget), LocalY(popupPressTarget));
+                _seat.SendButton(popupPressTarget, code, pressed: false, time);
+                _seat.SendPointerFrame(popupPressTarget);
+            }
+
+            return;
+        }
+
+        // The settings panel is drawn over the taskbar and owns all presses
+        // in its bounds. Its volume slider may continue a drag outside it.
+        if (_shell is { Settings.IsOpen: true } settingsShell)
+        {
+            var (width, height) = _scene.OutputSize;
+            var settingsLayout = settingsShell.LastBarLayout
+                ?? Bar.ComputeLayout(width, height, Bar.ClockString(), _scene.TaskWindows(), settingsShell.Pinned);
+            var inPanel = settingsShell.Settings.PanelRect(settingsLayout.Clock, width, height).Contains(_cursorX, _cursorY);
+            if (inPanel || settingsShell.Settings.IsDraggingVolume)
+            {
+                if (settingsShell.Settings.HandlePointer(_cursorX, _cursorY, settingsLayout.Clock, width, height, pressed))
+                {
+                    _settingsPressConsumedButtons.Add(code);
+                    _scene.MarkDirty();
+                    return;
+                }
+            }
+
+            if (pressed && !settingsLayout.Clock.Contains(_cursorX, _cursorY) && !settingsShell.Settings.IsDraggingVolume)
+            {
+                settingsShell.Settings.Close();
+                _scene.MarkDirty();
+            }
+        }
+
+        // Shell chrome eats clicks first: the settings panel, taskbar strip,
+        // then click-outside dismissal. None may leak into client windows underneath.
+        if (pressed && _shell is { } shell)
+        {
+            var (outputWidth, outputHeight) = _scene.OutputSize;
             if (_cursorY >= outputHeight - Shell.BarHeight)
             {
                 HandleTaskbarClick(shell, outputWidth, outputHeight, _cursorX, _cursorY);
@@ -308,10 +463,10 @@ internal sealed class InputRouter
                 return;
             }
 
-            if (shell.Menu.IsOpen)
+            if (shell.Settings.IsOpen)
             {
-                // A click outside the panel dismisses it.
-                shell.Menu.Close();
+                shell.Settings.Close();
+                _scene.MarkDirty();
                 _chromePressConsumedButtons.Add(code);
                 return;
             }
@@ -330,7 +485,11 @@ internal sealed class InputRouter
             {
                 _buttonPressTargets[code] = target;
                 _scene.Raise(target);
-                _seat.SetKeyboardFocus(target, _pressedKeys);
+
+                if (TryGetPressFocusTarget(target, out var pressFocus))
+                {
+                    _seat.SetKeyboardFocus(pressFocus, _pressedKeys);
+                }
             }
         }
         else if (_buttonPressTargets.Remove(code, out var pressedTarget))
@@ -361,8 +520,18 @@ internal sealed class InputRouter
         // Kernel autorepeat is not forwarded: clients repeat on their own
         // schedule via repeat_info, and re-sending press would violate the
         // "no release without a press" rule for focused-mid-type clients.
+        // The open switcher is the one exception: a held Tab walks its rows,
+        // and the repeats still reach no client.
         if (e.Value == InputConstants.KeyRepeated)
         {
+            if (e.Code == InputConstants.KeyTab
+                && AltDown
+                && _shell is { Switcher.IsOpen: true } repeatShell)
+            {
+                repeatShell.Switcher.Next(backwards: ShiftDown, _scene.TaskWindows());
+                _scene.MarkDirty();
+            }
+
             return;
         }
 
@@ -376,6 +545,14 @@ internal sealed class InputRouter
             return;
         }
 
+        // The Alt+Tab switcher's keys come before every other consumer: Tab
+        // is consumed outright (its release with it), and Esc cancels the
+        // switch rather than reaching a client or closing the settings panel.
+        if (_shell is { } switcherShell && HandleTaskSwitcher(switcherShell, e, pressed))
+        {
+            return;
+        }
+
         // Bindings see the raw key before it joins the pressed set, so the
         // key that triggered one is never part of a later enter frame.
         if (e.Value == InputConstants.KeyPressed && TryHandleBinding(e.Code))
@@ -385,9 +562,19 @@ internal sealed class InputRouter
             return;
         }
 
-        // The system menu, when open, eats Esc: it closes the menu, and the
-        // key never reaches a client (press and release alike).
-        if (pressed && _shell is { Menu.IsOpen: true } menuShell && menuShell.Menu.HandleKey(e.Code))
+        // The topmost grabbed popup retains keyboard focus and Esc dismisses
+        // the full grab stack instead of leaking the key to another client.
+        if (pressed && e.Code == InputConstants.KeyEsc && _scene.TopmostPopupGrab is not null)
+        {
+            _scene.DismissPopupGrabs();
+            _consumedKeys.Add(e.Code);
+            SendModifiers(_seat.KeyboardFocus);
+            return;
+        }
+
+        // The settings panel, when open, eats Esc: it closes the panel, and
+        // the key never reaches a client (press and release alike).
+        if (pressed && _shell is { Settings.IsOpen: true } settingsShell && settingsShell.Settings.HandleKey(e.Code))
         {
             _consumedKeys.Add(e.Code);
             SendModifiers(_seat.KeyboardFocus);
@@ -444,6 +631,77 @@ internal sealed class InputRouter
         return false;
     }
 
+    /// <summary>
+    /// The Alt+Tab switcher's keys: Alt+Tab opens over the scene's windows
+    /// (selecting the previous window) and steps on later presses, Shift
+    /// reversing the direction; Esc cancels without focusing. An Alt release
+    /// commits the selection and then falls through, so the client sees the
+    /// release matching the Alt press it already saw — swallowing it would
+    /// leave a stuck modifier. True = the key is consumed.
+    /// </summary>
+    private bool HandleTaskSwitcher(Shell shell, InputEvent e, bool pressed)
+    {
+        var switcher = shell.Switcher;
+        var isAlt = e.Code is InputConstants.KeyLeftAlt or InputConstants.KeyRightAlt;
+
+        // A switch always runs with Alt held. If the pressed set lost it —
+        // a VT switch resets the state and the releases go to the other
+        // session — close the stale overlay now, rather than let a later
+        // chord commit a snapshot nobody is looking at.
+        if (switcher.IsOpen && !AltDown)
+        {
+            switcher.Cancel();
+            _scene.MarkDirty();
+        }
+
+        if (!pressed)
+        {
+            if (!isAlt || !switcher.IsOpen)
+            {
+                return false;
+            }
+
+            // Alt is still in the held set (the guard above cancels a switch
+            // whose chord was lost): the new focus's enter frame carries it,
+            // so the release below cannot arrive unmatched.
+            if (switcher.Commit() is { } surface)
+            {
+                shell.Windows?.RaiseAndFocus(surface, [.. _pressedKeys]);
+            }
+
+            _scene.MarkDirty();
+            return false;
+        }
+
+        if (e.Code == InputConstants.KeyEsc && switcher.IsOpen)
+        {
+            switcher.Cancel();
+            _consumedKeys.Add(e.Code);
+            _scene.MarkDirty();
+            SendModifiers(_seat.KeyboardFocus);
+            return true;
+        }
+
+        if (e.Code != InputConstants.KeyTab || !AltDown)
+        {
+            return false;
+        }
+
+        if (switcher.IsOpen)
+        {
+            switcher.Next(backwards: ShiftDown, _scene.TaskWindows());
+        }
+        else
+        {
+            switcher.Open(_scene.TaskWindows());
+        }
+
+        _consumedKeys.Add(e.Code);
+        _scene.MarkDirty();
+        SendModifiers(_seat.KeyboardFocus);
+        return true;
+    }
+
     /// <summary>The VT number a function key selects (F1..F12 → VT 1..12).</summary>
     internal static int? VtForKey(int code) => code switch
     {
@@ -459,16 +717,22 @@ internal sealed class InputRouter
         // hit rectangles cannot disagree; without a frame yet, compute one.
         var layout = shell.LastBarLayout ?? Bar.ComputeLayout(outputWidth, outputHeight, Bar.ClockString(), _scene.TaskWindows(), shell.Pinned);
 
-        // Any taskbar click closes the system menu first, except a click on
-        // the apple button itself, which toggles it.
-        if (shell.Menu.IsOpen && !layout.Start.Contains(x, y))
+        // The original launcher position remains reserved for later use.
+        // Clicking the clock toggles the system settings panel instead.
+        if (shell.Settings.IsOpen && !layout.Clock.Contains(x, y))
         {
-            shell.Menu.Close();
+            shell.Settings.Close();
+        }
+
+        if (layout.Clock.Contains(x, y))
+        {
+            shell.Settings.Toggle();
+            _scene.MarkDirty();
+            return;
         }
 
         if (layout.Start.Contains(x, y))
         {
-            shell.Menu.Toggle();
             return;
         }
 
@@ -509,12 +773,14 @@ internal sealed class InputRouter
 
     private bool SuperDown => _pressedKeys.Contains(InputConstants.KeyLeftMeta) || _pressedKeys.Contains(InputConstants.KeyRightMeta);
 
+    private bool ShiftDown => _pressedKeys.Contains(InputConstants.KeyLeftShift) || _pressedKeys.Contains(InputConstants.KeyRightShift);
+
 
     /// <summary>Sends wl_keyboard.modifiers when the mask changed.</summary>
     private void SendModifiers(SurfaceHandler? target)
     {
         var depressed = 0;
-        if (_pressedKeys.Contains(InputConstants.KeyLeftShift) || _pressedKeys.Contains(InputConstants.KeyRightShift))
+        if (ShiftDown)
         {
             depressed |= 1 << 0;
         }
@@ -575,12 +841,12 @@ internal sealed class InputRouter
 
         if (dy != 0)
         {
-            SendAxis(axis: 0, ScaleTouchpadY(dy), time);
+            SendAxis(axis: 0, ScaleScrollY(dy), time);
         }
 
         if (dx != 0)
         {
-            SendAxis(axis: 1, ScaleTouchpadX(dx), time);
+            SendAxis(axis: 1, ScaleScrollX(dx), time);
         }
     }
 

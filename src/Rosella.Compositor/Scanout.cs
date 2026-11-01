@@ -29,6 +29,9 @@ internal sealed class Scanout : IDisposable
     /// <summary>The release/acquire handshake with the VT switch signals.</summary>
     private readonly SwitchGate _switchGate = new();
 
+    /// <summary>What each dumb buffer still owes a repaint (see <see cref="BufferAge"/>).</summary>
+    private readonly BufferAge _age = new();
+
     /// <summary>Set when the loop must re-modeset (a failed acquire retry).</summary>
     private volatile bool _remodeset;
 
@@ -151,18 +154,29 @@ internal sealed class Scanout : IDisposable
     /// <summary>
     /// Runs the flip loop until the token is cancelled. Composites only when
     /// the scene is dirty (commits, cursor moves, shell state) or the clock
-    /// tick bound expires — an idle desktop burns no CPU. While the screen is
-    /// blanked nothing is rendered at all: the panel is unlit (DPMS off), so
-    /// there is no point drawing into it.
+    /// face turns its minute over — an idle desktop burns no CPU. Frames
+    /// repaint only their damage: the rest of the back buffer is seeded from
+    /// the frame already on screen. While the screen is blanked nothing is
+    /// rendered at all: the panel is unlit (DPMS off), so there is no point
+    /// drawing into it.
     /// </summary>
     public void Run(CancellationToken token)
     {
+        // Read the clock before the first frame: the loop must notice a turn
+        // that happens while that frame is being drawn.
+        var clock = Bar.ClockString();
         RenderInto(0, frame: 0);
         _device.SetCrtc(_output.CrtcId, _framebuffers[0], [_output.Connector.Id], _output.Mode);
 
         var front = 0;
         long frame = 1;
         var blankState = new BlankState();
+        Span<DamageRect> damage = stackalloc DamageRect[DamageTracker.Capacity];
+        Span<DamageRect> repaint = stackalloc DamageRect[DamageTracker.Capacity];
+
+        // Buffer 1 has never been drawn: until it is, it must be repainted
+        // whole, not seeded.
+        _age.MarkFull();
         while (!token.IsCancellationRequested)
         {
             // Another VT owns the display: stop flipping entirely and let
@@ -222,8 +236,11 @@ internal sealed class Scanout : IDisposable
             var blanked = wantBlank;
 
             // While the panel is unlit there is nothing to draw: wait for
-            // input rather than the one-second clock bound.
-            var wait = blanked ? TimeSpan.FromSeconds(30) : TimeSpan.FromSeconds(1);
+            // input rather than the clock. Awake, the only thing that changes
+            // on its own is the clock face, so the idle bound is the next
+            // minute boundary — or the blank policy's own deadline, whichever
+            // comes first, so going dark is never late.
+            var wait = blanked ? TimeSpan.FromSeconds(30) : IdleWait();
             if (!_scene.WaitForDirty(wait, token))
             {
                 break;
@@ -240,9 +257,34 @@ internal sealed class Scanout : IDisposable
                 continue;
             }
 
+            // The clock string the bar draws is the one thing that changes
+            // without a commit, so its turn is this loop's own damage.
+            var clockNow = Bar.ClockString();
+            if (!string.Equals(clock, clockNow, StringComparison.Ordinal))
+            {
+                clock = clockNow;
+                MarkClockDamage();
+            }
+
+            var pieces = _scene.TakeDamage(OutputSize.Width, OutputSize.Height, damage);
+            if (pieces == 0)
+            {
+                // Nothing changed: the wake was the clock bound, a capture or
+                // a stale pulse. No paint, no flip, no frame callback.
+                ServePendingDiagnostics();
+                continue;
+            }
+
             var back = 1 - front;
+            var (width, height) = OutputSize;
+            var repaintCount = _age.Take(back, damage[..pieces], width, height, repaint);
+            if (repaintCount == 0)
+            {
+                continue;
+            }
+
             ServePendingDiagnostics();
-            RenderInto(back, frame);
+            RenderDamage(front, back, frame, repaint[..repaintCount]);
             _device.PageFlip(_output.CrtcId, _framebuffers[back], (ulong)frame);
             WaitForFlip((ulong)frame, token);
             _scene.CompleteFrame();
@@ -250,6 +292,111 @@ internal sealed class Scanout : IDisposable
             _front = back;
             frame++;
         }
+    }
+
+    /// <summary>Physical output size, from the mode the buffers were made for.</summary>
+    private (int Width, int Height) OutputSize => (checked((int)_output.Mode.HDisplay), checked((int)_output.Mode.VDisplay));
+
+    /// <summary>
+    /// How long the loop may sleep with nothing to do: the clock face only
+    /// changes on a minute boundary. A small bias past the boundary keeps the
+    /// wake from landing a millisecond early (and then sleeping another
+    /// minute); the clamp keeps a stepped clock, or an arithmetic slip, from
+    /// wedging the loop.
+    /// </summary>
+    internal static TimeSpan NextClockWake(DateTime now)
+    {
+        var intoMinute = now.Ticks % TimeSpan.TicksPerMinute;
+        var remaining = TimeSpan.TicksPerMinute - intoMinute + TimeSpan.FromMilliseconds(20).Ticks;
+        return TimeSpan.FromTicks(Math.Clamp(remaining, TimeSpan.FromMilliseconds(50).Ticks, TimeSpan.TicksPerMinute));
+    }
+
+    /// <summary>
+    /// The awake idle bound: the next clock change, shortened to the blank
+    /// policy's deadline so the panel still goes dark on time, and never so
+    /// short that the loop spins.
+    /// </summary>
+    private TimeSpan IdleWait()
+    {
+        var wait = NextClockWake(DateTime.Now);
+        if (_screenPower is { } power)
+        {
+            var untilBlank = power.UntilIdle;
+            if (untilBlank < wait)
+            {
+                wait = untilBlank;
+            }
+        }
+
+        return wait < MinimumWait ? MinimumWait : wait;
+    }
+
+    private static readonly TimeSpan MinimumWait = TimeSpan.FromMilliseconds(50);
+
+    /// <summary>
+    /// Damages what a turning clock face can change: the whole taskbar band,
+    /// because a wider face (or a locale's longer month) reflows the bar's
+    /// own layout. Once a minute, so the band's cost is irrelevant.
+    /// </summary>
+    private void MarkClockDamage()
+    {
+        if (_scene.Shell is null)
+        {
+            return;
+        }
+
+        var (width, height) = OutputSize;
+        var scale = Math.Max(1, _scene.Scale);
+        var bandTop = Math.Max(0, ((height / scale) - Shell.BarHeight) * scale);
+        _scene.MarkDirty(new DamageRect(0, bandTop, width, height - bandTop));
+    }
+
+    /// <summary>
+    /// Composites one frame's damage into the back buffer. The front buffer
+    /// is the newest complete frame, so every pixel the render will not touch
+    /// is seeded from it first — otherwise untouched areas would show the
+    /// frame from two flips ago.
+    /// </summary>
+    private void RenderDamage(int front, int back, long frame, ReadOnlySpan<DamageRect> damage)
+    {
+        var source = _buffers[front].Pixels;
+        var targetBuffer = _buffers[back];
+        var target = targetBuffer.Pixels;
+        var (width, height) = OutputSize;
+        var stride = checked((int)targetBuffer.Pitch);
+        foreach (var region in damage)
+        {
+            // A full frame repaints every pixel of the output, so seeding it
+            // would be a wasted copy of the whole buffer.
+            if (region.Area < (long)width * height)
+            {
+                CopyRegion(source, target, stride, region);
+            }
+
+            _scene.RenderRegion(target, width, height, stride, frame, region);
+        }
+    }
+
+    /// <summary>
+    /// Copies one region of the front buffer into the back buffer row by row.
+    /// Returns the bytes copied (the seeding half of a damage frame's cost).
+    /// </summary>
+    internal static long CopyRegion(ReadOnlySpan<byte> source, Span<byte> target, int stride, in DamageRect region)
+    {
+        if (region.IsEmpty)
+        {
+            return 0;
+        }
+
+        var bytes = region.W * 4;
+        var offset = (region.Y * stride) + (region.X * 4);
+        for (var row = 0; row < region.H; row++)
+        {
+            source.Slice(offset, bytes).CopyTo(target.Slice(offset, bytes));
+            offset += stride;
+        }
+
+        return (long)bytes * region.H;
     }
 
     private volatile bool _dumpRequested;
@@ -331,7 +478,9 @@ internal sealed class Scanout : IDisposable
             _dumpRequested = true;
         }
 
-        _scene.MarkDirty();
+        // Wake the loop without inventing damage: a capture reads the front
+        // buffer, so nothing needs repainting.
+        _scene.MarkDirty(DamageRect.Empty);
         return tcs.Task;
     }
 

@@ -10,6 +10,12 @@ namespace Rosella.Compositor;
 /// by a quick second touch that moves drags with the button held. A real
 /// button press always beats a pending tap.
 ///
+/// Disable-while-typing: a contact that begins while the keyboard is in use
+/// is a palm or a graze, so the whole contact is inert — no motion, no
+/// scroll, no tap — until every finger lifts. Typing that starts during a
+/// gesture freezes that gesture the same way. Physical buttons are never
+/// suppressed: they are deliberate.
+///
 /// Part of the router's fixed input policy. Not thread-safe by itself — the
 /// router serialises every call under its input gate.
 /// </summary>
@@ -38,6 +44,7 @@ internal sealed class TouchpadGestures
     private readonly Action<int, int, uint> _move;
     private readonly Action<int, int, uint> _scroll;
     private readonly Action<int, bool, uint> _button;
+    private readonly Func<uint, bool> _isTyping;
 
     private readonly Dictionary<int, Finger> _fingers = new();
     private readonly HashSet<int> _heldPhysical = new();
@@ -48,6 +55,7 @@ internal sealed class TouchpadGestures
     private bool _scrolled;
     private bool _physical;
     private bool _consumed;
+    private bool _inert;
     private bool _dragPending;
     private bool _dragging;
     private int _dragSlot = -1;
@@ -56,11 +64,12 @@ internal sealed class TouchpadGestures
     private int _scrollCarryX;
     private int _scrollCarryY;
 
-    internal TouchpadGestures(Action<int, int, uint> move, Action<int, int, uint> scroll, Action<int, bool, uint> button)
+    internal TouchpadGestures(Action<int, int, uint> move, Action<int, int, uint> scroll, Action<int, bool, uint> button, Func<uint, bool> isTyping)
     {
         _move = move;
         _scroll = scroll;
         _button = button;
+        _isTyping = isTyping;
     }
 
     /// <summary>ABS_MT_SLOT: selects the finger the next events describe.</summary>
@@ -126,6 +135,7 @@ internal sealed class TouchpadGestures
         _scrolled = false;
         _physical = false;
         _consumed = false;
+        _inert = false;
         _dragPending = false;
         _heldPhysical.Clear();
         _dragSlot = -1;
@@ -165,6 +175,13 @@ internal sealed class TouchpadGestures
 
         _fingers[_slot] = new Finger();
         _maxFingers = Math.Max(_maxFingers, _fingers.Count);
+
+        if (_fingers.Count == 1)
+        {
+            // A palm resting on the pad while the keyboard is in use: this
+            // whole contact set is ignored until every finger lifts.
+            _inert = _isTyping(timeMs);
+        }
     }
 
     private void Slide(int value, bool horizontal, uint timeMs)
@@ -172,6 +189,14 @@ internal sealed class TouchpadGestures
         if (!_fingers.TryGetValue(_slot, out var finger))
         {
             return; // stray coordinates after the finger is gone
+        }
+
+        if (_inert || _isTyping(timeMs))
+        {
+            // Typing that begins mid-gesture freezes it: a hand reaching for
+            // the keyboard drags across the pad on the way.
+            _inert = true;
+            return;
         }
 
         if (horizontal ? !finger.HasX : !finger.HasY)
@@ -292,6 +317,13 @@ internal sealed class TouchpadGestures
 
         if (_fingers.Count > 0)
         {
+            return;
+        }
+
+        if (_inert)
+        {
+            // The contact was a palm or a graze: it never becomes a tap.
+            _inert = false;
             return;
         }
 

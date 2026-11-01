@@ -38,6 +38,10 @@ internal sealed class XdgToplevelHandler : IRequestHandler, IXdgRoleObject
     /// <summary>Whether the window holds keyboard focus (xdg state 4, activated).</summary>
     internal bool Activated { get; set; }
 
+    internal SurfaceHandler Surface => _surface.Surface;
+
+    internal bool IsMapped => _surface.IsMapped;
+
     internal void Bind(ClientSession session, ServerObject self)
     {
         _session = session;

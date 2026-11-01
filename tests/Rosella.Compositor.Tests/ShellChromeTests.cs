@@ -17,8 +17,8 @@ public class ShellChromeTests
     {
         var layout = Bar.ComputeLayout(1920, 1080, "14:33  28/10/2026", []);
 
-        // The button hugs the left edge; its box centres the apple EdgePad
-        // from the screen edge.
+        // The reserved slot hugs the left edge: one icon box, EdgePad from
+        // the screen edge, empty but available for a launcher.
         Assert.Equal(new Rect(0, 1080 - Shell.BarHeight + 6, Shell.BarHeight - 12, Shell.BarHeight - 12), layout.Start);
     }
 
@@ -114,40 +114,32 @@ public class ShellChromeTests
     }
 
     [Fact]
-    public void StartIcon_IsAnAppleWithABiteAndALeaf()
+    public void ReservedStartSlot_DrawsNothing()
     {
+        // The left slot is reserved for a launcher but shows no artwork: the
+        // apple that used to sit there is gone, and an empty bar left of the
+        // clock must be pure background.
         var w = 600;
         var h = 48;
         var stride = w * 4;
         var buffer = new byte[stride * h];
         var layout = Bar.ComputeLayout(w, h, "14:33  28/10/2026", []);
         Bar.Draw(buffer, w, h, stride, 1, layout, "14:33  28/10/2026", null);
-        var x0 = layout.Start.X + ((layout.Start.W - 20) / 2);
-        var y0 = layout.Start.Y + ((layout.Start.H - 20) / 2);
 
-        // The silhouette is drawn (AppleIconTests pin its shape); here it
-        // is the placement that matters: ink in the icon box, background
-        // at its corners, and a solid core where the body sits.
-        Assert.Equal(0xFFE8E8ECu, PixelAt(buffer, stride, x0 + 10, y0 + 13));
-        Assert.Equal(0xFF16171Eu, PixelAt(buffer, stride, x0, y0));
-        Assert.Equal(0xFF16171Eu, PixelAt(buffer, stride, x0 + 19, y0 + 19));
-
-        // Everything painted left of the clock zone lives inside the start
-        // button's rect (the clock/task labels share the icon's colour).
         for (var y = 0; y < h; y++)
         {
             for (var x = 0; x < layout.Clock.X - 4; x++)
             {
-                if (PixelAt(buffer, stride, x, y) == 0xFFE8E8ECu)
-                {
-                    Assert.True(layout.Start.Contains(x, y), $"icon pixel outside the start rect at {x},{y}");
-                }
+                var pixel = PixelAt(buffer, stride, x, y);
+                Assert.True(
+                    pixel is 0xFF16171Eu or 0xFF2A2C36u,
+                    $"ink at {x},{y} where the bar should be bare (0x{pixel:X8})");
             }
         }
     }
 
     [Fact]
-    public void EdgeContent_SitsEdgePadFromTheScreenEdges()
+    public void ClockEndsEdgePadFromTheRightEdge()
     {
         var w = 600;
         var h = 48;
@@ -156,9 +148,9 @@ public class ShellChromeTests
         var layout = Bar.ComputeLayout(w, h, "14:33  28/10/2026", []);
         Bar.Draw(buffer, w, h, stride, 1, layout, "14:33  28/10/2026", null);
 
-        // Scan the bar below the hairline for the leftmost and rightmost
-        // ink: the apple's first painted column and the clock's last glyph.
-        var leftmost = int.MaxValue;
+        // Scan the bar below the hairline for the rightmost ink: the clock's
+        // last glyph, which ends within a couple of pixels of EdgePad from
+        // the right edge.
         var rightmost = int.MinValue;
         for (var y = 1; y < h; y++)
         {
@@ -166,17 +158,11 @@ public class ShellChromeTests
             {
                 if (PixelAt(buffer, stride, x, y) != 0xFF16171Eu)
                 {
-                    leftmost = Math.Min(leftmost, x);
                     rightmost = Math.Max(rightmost, x);
                 }
             }
         }
 
-        // The apple's ink starts within a pixel of EdgePad (its bitmap box
-        // starts exactly there; the silhouette's edge is anti-aliased), and
-        // the clock's last glyph ends within a couple of pixels of EdgePad
-        // from the right edge.
-        Assert.InRange(leftmost, Bar.EdgePad, Bar.EdgePad + 2);
         Assert.InRange(rightmost, w - Bar.EdgePad - 4, w - Bar.EdgePad - 1);
     }
 
@@ -438,7 +424,7 @@ public class ShellChromeTests
         Assert.True(seen > 0, "fallback letter drew nothing");
     }
 
-    // --- Narrow bars: the group clamps between the apple and the clock --
+    // --- Narrow bars: the group clamps between the slot and the clock ---
 
     [Fact]
     public void ComputeLayout_NarrowBar_TheGroupStaysBetweenTheAppleAndTheClock()

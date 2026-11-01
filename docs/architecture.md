@@ -125,7 +125,13 @@ Verified against libwayland's marshalling code and the protocol docs:
   enter carries the held keys and is always followed by modifiers, frame
   gated at v5, release/teardown unregister. The policy: click-to-focus +
   raise, keys to the focus, xdg activation configure rounds, Alt+F4 =
-  close, Super+Esc = quit; one cursor sprite, set_cursor ignored. All seat
+  close, Super+Esc = quit; one cursor sprite, set_cursor ignored. Trackpad
+  gestures: one finger moves, tap-to-click by finger count, tap-then-drag,
+  multi-finger scroll, all in millimetres (the pad reports 94/92 units per
+  mm) rather than raw device units, and disable-while-typing: a contact that
+  begins within 500 ms of a key event is inert until every finger lifts, and
+  typing that starts mid-gesture freezes that gesture. Physical clicks are
+  never suppressed. All seat
   sends run under the seat gate (serialised against object death: nothing
   can name an object after delete_id) and per-target try/catch so one dead
   client never poisons the fan-out. Reviewed once — 15 findings fixed
@@ -133,13 +139,13 @@ Verified against libwayland's marshalling code and the protocol docs:
   destroy id resurrection, unlocked xdg configure state), 10 new regression
   tests. Known accepted limits are in Open risks.
 - **M7 — the shell**: ✅ done, then redesigned to Windows 11 style on the
-  user's request: a bottom taskbar (apple button, task buttons with a focus
-  accent, clock in AU format), the pinned app launchers centred on the bar
+  user's request: a bottom taskbar (a reserved launcher slot, task buttons
+  with a focus accent, clock in AU format), the pinned app launchers centred on the bar
   (six fixed entries resolved from XDG desktop files — GLib-style Exec
   parsing, icons decoded through gdk-pixbuf into premultiplied ARGB, click
   focuses the app's newest window or launches it with the right
-  WAYLAND_DISPLAY), and an apple system menu (Log Out, Restart, Shut Down —
-  ISystemActions so tests can fake them). No workspaces — one desktop, by
+  WAYLAND_DISPLAY), and a settings panel (Log Out, Restart, Shut Down —
+  ISystemActions so tests can fake them) opened from the clock. No workspaces — one desktop, by
   design. The
   background is a calm dark gradient (the milestone-3 colour bars and
   moving stripe are gone: the user found them annoying). Windows sit in

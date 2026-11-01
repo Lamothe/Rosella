@@ -7,7 +7,16 @@
 # source tree is gone.
 set -euo pipefail
 
-export XDG_CURRENT_DESKTOP=Rosella
+# Rosella keeps its own identity but advertises GNOME as its compatibility
+# token, the same way Ubuntu ships "ubuntu:GNOME". Portal backends and
+# toolkits select their implementation by matching this string against the
+# UseIn= lists in /usr/share/xdg-desktop-portal/portals/*.portal; no backend
+# claims bare "Rosella", so the session fell back to a GTK portal with no
+# org.freedesktop.portal.Secret. Flatpak Chromium gets its OSCrypt key from
+# that portal, so without it every saved login and cookie became
+# undecryptable and Chrome looked signed out.
+export XDG_CURRENT_DESKTOP=Rosella:GNOME
+export XDG_SESSION_DESKTOP=rosella
 export XDG_SESSION_TYPE=wayland
 
 user_build="$HOME/Projects/Rosella/build/publish/Rosella.Compositor"
@@ -18,6 +27,18 @@ if [ -x "$user_build" ] && [ -f "$(dirname "$user_build")/libcoreclr.so" ]; then
 else
     binary="/usr/local/lib/rosella/Rosella.Compositor"
 fi
+
+# The session's user services: publish the environment above to the systemd
+# user manager, then start the standard session target. Portals are systemd
+# user services that pick their backend from the manager's environment, not
+# from the app's, and xdg-desktop-portal.service is Requisite= on
+# graphical-session.target. GDM starts no such target for this session, so
+# without these two lines a cold login has no portal at all — Chrome then
+# has nowhere to fetch its key. Failures are not fatal: the compositor is
+# still usable without portals, and `|| true` keeps `set -e` from killing
+# the session over a bus that is not up yet.
+systemctl --user import-environment XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE 2>/dev/null || true
+systemctl --user start graphical-session.target 2>/dev/null || true
 
 # evdev nodes are root:input 660. If this login predates the seat user's
 # input-group grant (getty logins cache credentials from first login), the

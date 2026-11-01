@@ -96,10 +96,11 @@ public class InputTests
         harness.Client.RegisterObject(22, "wl_pointer");
         harness.RoundTrip();
 
-        // The cursor sits on the open system-menu panel, just off its rows:
-        // a press there is consumed by the chrome and the panel stays open.
-        shell.Menu.Open();
-        var panel = shell.Menu.PanelRect(1920, 1080);
+        // The cursor sits on the open settings panel's edge: a press there
+        // is consumed by the chrome rather than reaching the client window.
+        var layout = Bar.ComputeLayout(1920, 1080, Bar.ClockString(), []);
+        shell.Settings.Toggle();
+        var panel = shell.Settings.PanelRect(layout.Clock, 1920, 1080);
         harness.Router.PlaceCursor(panel.X + 2, panel.Y + 2);
         harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventKey, InputConstants.ButtonLeft, InputConstants.KeyPressed));
         harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventKey, InputConstants.ButtonRight, InputConstants.KeyPressed));
@@ -364,7 +365,9 @@ public class InputTests
         harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventRelative, InputConstants.RelativeWheel, 1));
         var axis = harness.Client.ReadUntil(22, "axis");
         Assert.Equal(0u, axis.Arguments[1].AsUInt32()); // vertical
-        Assert.Equal(-40 << 8, axis.Arguments[2].AsFixed().RawValue);
+        // One detent is one notch: 10 axis units, the unit the trackpad scroll
+        // policy shares.
+        Assert.Equal(-10 << 8, axis.Arguments[2].AsFixed().RawValue);
         harness.Client.ReadUntil(22, "frame");
     }
 
@@ -555,10 +558,11 @@ public class InputTests
         harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtPositionX, 500));
         harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtPositionY, 300));
 
-        // 20 units of finger travel = 7 cursor pixels (the 7/20 scale).
-        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtPositionX, 520));
-        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtPositionY, 280));
-        Assert.Equal((107, 93), harness.Router.Cursor);
+        // The pad reports 93 device units per millimetre and the policy is
+        // 6 logical pixels per millimetre: 310 units (3.3 mm) = 20 pixels.
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtPositionX, 810));
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtPositionY, 610));
+        Assert.Equal((120, 120), harness.Router.Cursor);
     }
 
     [Fact]
@@ -650,9 +654,10 @@ public class InputTests
         harness.RoundTrip();
         harness.Router.PlaceCursor(950, 530);
 
-        // One finger of a pair travels 20 units of Y: the mean over the two
-        // contacts is 10 raw units, the 7/20 scale makes 3 logical pixels,
-        // and fingers down scroll down (positive), unlike the wheel's sign.
+        // One finger of a pair travels 310 units of Y: the mean over the two
+        // contacts is 155 raw units (1.7 mm), the scroll policy is 3 axis
+        // units per millimetre, so 5; and fingers down scroll down
+        // (positive), unlike the wheel's sign.
         harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtSlot, 0));
         harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtTrackingId, 7));
         harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtPositionX, 500));
@@ -662,12 +667,12 @@ public class InputTests
         harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtPositionX, 600));
         harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtPositionY, 300));
         harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtSlot, 0));
-        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtPositionY, 320));
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventAbsolute, InputConstants.AbsMtPositionY, 610));
 
         harness.Client.ReadUntil(22, "enter");
         var axis = harness.Client.ReadUntil(22, "axis");
         Assert.Equal(0u, axis.Arguments[1].AsUInt32()); // vertical
-        Assert.Equal(3 << 8, axis.Arguments[2].AsFixed().RawValue);
+        Assert.Equal(5 << 8, axis.Arguments[2].AsFixed().RawValue);
         Assert.Equal((950, 530), harness.Router.Cursor);
     }
 
@@ -695,6 +700,70 @@ public class InputTests
     private static uint PixelAt(byte[] frame, int width, int x, int y)
     {
         return MemoryMarshal.Cast<byte, uint>(frame.AsSpan())[(y * width) + x];
+    }
+
+
+    // --- Disable while typing -------------------------------------------
+
+    /// <summary>An evdev event at a chosen millisecond (for the typing clock).</summary>
+    private static InputEvent At(uint timeMs, ushort type, ushort code, int value) =>
+        new(timeMs / 1000, (timeMs % 1000) * 1000, type, code, value);
+
+    /// <summary>A key event on the keyboard at a chosen millisecond.</summary>
+    private static InputEvent KeyAt(uint timeMs, ushort code, bool pressed) =>
+        At(timeMs, InputConstants.EventKey, code, pressed ? InputConstants.KeyPressed : InputConstants.KeyReleased);
+
+    /// <summary>Drags one finger from (500, 300) to (500 + dx, 300 + dy).</summary>
+    private static void Swipe(InputRouter router, uint timeMs, int dx, int dy)
+    {
+        router.ProcessEvent(At(timeMs, InputConstants.EventAbsolute, InputConstants.AbsMtSlot, 0));
+        router.ProcessEvent(At(timeMs, InputConstants.EventAbsolute, InputConstants.AbsMtTrackingId, 7));
+        router.ProcessEvent(At(timeMs, InputConstants.EventAbsolute, InputConstants.AbsMtPositionX, 500));
+        router.ProcessEvent(At(timeMs, InputConstants.EventAbsolute, InputConstants.AbsMtPositionY, 300));
+        router.ProcessEvent(At(timeMs + 20, InputConstants.EventAbsolute, InputConstants.AbsMtPositionX, 500 + dx));
+        router.ProcessEvent(At(timeMs + 20, InputConstants.EventAbsolute, InputConstants.AbsMtPositionY, 300 + dy));
+        router.ProcessEvent(At(timeMs + 40, InputConstants.EventAbsolute, InputConstants.AbsMtTrackingId, InputConstants.TrackingIdUp));
+    }
+
+    [Fact]
+    public void Typing_KeepsTheTrackpadOffUntilTheWindowPasses()
+    {
+        using var harness = new Harness();
+        harness.Router.PlaceCursor(200, 200);
+
+        // Typing at t=1000 makes the pad inert: a palm swipe right after
+        // must not move the cursor or click.
+        harness.Router.ProcessEvent(KeyAt(1000, InputConstants.KeyA, pressed: true));
+        harness.Router.ProcessEvent(KeyAt(1050, InputConstants.KeyA, pressed: false));
+        Swipe(harness.Router, 1100, dx: 310, dy: 310);
+        Assert.Equal((200, 200), harness.Router.Cursor);
+
+        // Past the 500 ms window a fresh touch moves again: 310 units is
+        // 3.3 mm, and the policy is 6 pixels per millimetre.
+        Swipe(harness.Router, 1800, dx: 310, dy: 310);
+        Assert.Equal((220, 220), harness.Router.Cursor);
+    }
+
+    [Fact]
+    public void Typing_GrazeDoesNotClick()
+    {
+        using var harness = new Harness();
+        harness.BindXdg();
+        harness.MapWindow(8, 11, 12);
+        harness.Client.SendRequest(20, "wl_seat", "get_pointer", WireArgument.NewId(22));
+        harness.Client.RegisterObject(22, "wl_pointer");
+        harness.RoundTrip();
+        harness.Router.PlaceCursor(950, 530);
+
+        // A quick graze while typing is a tap by timing alone; the typing
+        // window must swallow it.
+        harness.Router.ProcessEvent(KeyAt(1000, InputConstants.KeyA, pressed: true));
+        Swipe(harness.Router, 1010, dx: 20, dy: 0);
+        Assert.DoesNotContain((22u, "button"), harness.CollectUntilRoundTrip());
+
+        // The same graze past the window is an ordinary tap and clicks.
+        Swipe(harness.Router, 2000, dx: 20, dy: 0);
+        Assert.Contains((22u, "button"), harness.CollectUntilRoundTrip());
     }
 
     private sealed class Harness : IDisposable

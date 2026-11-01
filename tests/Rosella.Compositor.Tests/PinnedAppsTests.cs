@@ -10,10 +10,10 @@ namespace Rosella.Compositor.Tests;
 public class PinnedAppsTests
 {
     [Fact]
-    public void Table_IsTheSixLaunchersInOrder()
+    public void Table_IsTheFiveLaunchersInOrder()
     {
         Assert.Equal(
-            ["Google Chrome", "Terminal", "Files", "Visual Studio Code", "Steam", "Resources"],
+            ["Google Chrome", "Terminal", "Files", "Visual Studio Code", "Resources"],
             PinnedApps.Table.Select(entry => entry.Name));
     }
 
@@ -28,8 +28,7 @@ public class PinnedAppsTests
             PinnedApps.Table[1].DesktopIds);
         Assert.Equal(["org.gnome.Nautilus.desktop", "nautilus.desktop"], PinnedApps.Table[2].DesktopIds);
         Assert.Equal(["com.visualstudio.code.desktop", "com.microsoft.VSCode.desktop", "code.desktop", "code-oss.desktop"], PinnedApps.Table[3].DesktopIds);
-        Assert.Equal(["com.valvesoftware.Steam.desktop", "steam.desktop"], PinnedApps.Table[4].DesktopIds);
-        Assert.Equal(["net.nokyan.Resources.desktop", "org.gnome.World.Resources.desktop", "resources.desktop"], PinnedApps.Table[5].DesktopIds);
+        Assert.Equal(["net.nokyan.Resources.desktop", "org.gnome.World.Resources.desktop", "resources.desktop"], PinnedApps.Table[4].DesktopIds);
     }
 
     [Fact]

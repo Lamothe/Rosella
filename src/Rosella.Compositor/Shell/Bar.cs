@@ -10,8 +10,8 @@ internal sealed record BarTask(string Label, string AppId, SurfaceHandler Surfac
 internal sealed record PinnedButton(Rect Rect, PinnedLauncher Launcher, bool Running);
 
 /// <summary>
-/// The taskbar: Windows 11 style — a bottom strip with the apple button at
-/// the left, the pinned app launchers as one centred group, one button per
+/// The taskbar: Windows 11 style — a bottom strip with a reserved launcher
+/// slot at the left, the pinned app launchers as one centred group, one button per
 /// remaining window, and the clock at the right. No workspaces, no
 /// configuration. Layout is logical pixels (the input thread hit-tests the
 /// same rectangles); drawing scales by the output factor.
@@ -41,7 +41,7 @@ internal static class Bar
 
     private const uint BarBackground = 0xFF16171E;
     private const uint BarHairline = 0xFF2A2C36;
-    private const uint StartIconColour = 0xFFE8E8EC;
+    private const uint ClockHoverColour = 0xFF33363F;
     private const uint TaskBackground = 0xFF22242E;
     private const uint TaskFocusedBackground = 0xFF33363F;
     private const uint TaskPressedBackground = 0xFF3D404B;
@@ -102,8 +102,8 @@ internal static class Bar
 
     /// <summary>
     /// The one layout both drawing and hit-testing use. The pinned group is
-    /// centred on the whole bar (clamped to sit between the apple button
-    /// and the clock); task buttons fill between it and the clock, and only
+    /// centred on the whole bar (clamped to sit between the reserved launcher
+    /// slot and the clock); task buttons fill between it and the clock, and only
     /// for windows no pinned launcher claims.
     /// </summary>
     internal static BarLayout ComputeLayout(int width, int height, string clock, IReadOnlyList<BarTask> tasks, IReadOnlyList<PinnedLauncher>? pinned = null)
@@ -111,9 +111,8 @@ internal static class Bar
         var innerY = (height - Shell.BarHeight) + 6;
         var innerH = IconBoxSize;
 
-        // The apple's bitmap lands EdgePad from the screen edge: the button
-        // is the icon's own box, hugging the edge, so the corner stays
-        // quiet and the logo sits close to it.
+        // Reserve the original launcher position for later use; the panel
+        // opens from the clock and does not alter this control.
         var start = new Rect(0, innerY, IconBoxSize, innerH);
 
         var clockWidth = ShellText.Measure(clock, ShellText.BarEm).Width + Pad + EdgePad;
@@ -122,9 +121,9 @@ internal static class Bar
 
         // The pinned group: horizontally centred on the bar, one icon box
         // per resolved app with a small gap and side padding. Centring is
-        // clamped so the group never overlaps the apple button or the
-        // clock: it sits between them when it fits, packed right of the
-        // apple as a last resort when it does not.
+        // clamped so the group never overlaps the reserved launcher slot or
+        // the clock: it sits between them when it fits, packed right of the
+        // slot as a last resort when it does not.
         pinned ??= [];
         var box = IconBoxSize;
         var groupWidth = GroupWidth(pinned.Count);
@@ -177,7 +176,13 @@ internal static class Bar
         Chrome.FillRect(pixels, clipW, clipH, stride, new Rect(0, barY, fullW, Shell.BarHeight + scale), BarBackground, scale);
         Chrome.FillRect(pixels, clipW, clipH, stride, new Rect(0, barY, fullW, 1), BarHairline, scale);
 
-        DrawStartIcon(pixels, clipW, clipH, stride, scale, layout.Start);
+        if (pointer is { } pointerPosition && layout.Clock.Contains(pointerPosition.X, pointerPosition.Y))
+        {
+            Chrome.FillRoundedRect(pixels, clipW, clipH, stride, layout.Clock, 6, ClockHoverColour, scale);
+        }
+
+        var clockY = layout.Clock.Y + ((layout.Clock.H - ShellText.LineHeight(ShellText.BarEm)) / 2);
+        ShellText.DrawText(pixels, clipW, clipH, stride, clock, (layout.Clock.X + Pad) * scale, clockY * scale, TextColour, ShellText.BarEm, scale);
 
         for (var i = 0; i < layout.Pinned.Length; i++)
         {
@@ -216,8 +221,6 @@ internal static class Bar
             ShellText.DrawText(pixels, clipW, clipH, stride, task.Label, (rect.X + 12) * scale, textY * scale, TextColour, ShellText.BarEm, scale);
         }
 
-        var clockY = layout.Clock.Y + ((layout.Clock.H - ShellText.LineHeight(ShellText.BarEm)) / 2);
-        ShellText.DrawText(pixels, clipW, clipH, stride, clock, (layout.Clock.X + Pad) * scale, clockY * scale, TextColour, ShellText.BarEm, scale);
     }
 
     /// <summary>
@@ -260,17 +263,6 @@ internal static class Bar
         Chrome.FillRect(pixels, clipW, clipH, stride, new Rect(x + 1, y + 2, barWidth - 2, 1), TaskFocusedAccent, scale);
     }
 
-    /// <summary>
-    /// The Start button icon: an apple silhouette with a stem, a leaf and a
-    /// bite (Mac style, per the desktop's opinionated aesthetic), drawn
-    /// anti-aliased at the output scale from the flattened SVG path.
-    /// </summary>
-    internal static void DrawStartIcon(Span<byte> pixels, int clipW, int clipH, int stride, int scale, Rect start)
-    {
-        var x0 = start.X + ((start.W - AppleIcon.Width) / 2);
-        var y0 = start.Y + ((start.H - AppleIcon.Height) / 2);
-        AppleIcon.Blend(pixels, clipW, clipH, stride, x0, y0, scale, StartIconColour);
-    }
 }
 
 /// <summary>The drawn taskbar: rectangles and their tasks, in one order.</summary>

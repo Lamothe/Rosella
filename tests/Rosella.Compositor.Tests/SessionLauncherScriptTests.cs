@@ -30,7 +30,7 @@ public sealed class SessionLauncherScriptTests : IDisposable
         var digest = Convert.ToHexString(SHA256.HashData(scriptBytes));
         // Fail closed if launcher code changes: the test must be re-reviewed
         // before any modified shell script can execute on a development host.
-        Assert.Equal("B90528E0DABA549C284457B06AF57C93A62D124C446F7B99B5D42438F4C00222", digest);
+        Assert.Equal("74EBC9B4E2B75F07630493CC40CB0C6DF692A02E40CEC582CD8E86E1A84FCA2C", digest);
         const string fallbackPath = "/usr/local/lib/rosella/Rosella.Compositor";
         Assert.Contains(fallbackPath, script);
         script = script.Replace(fallbackPath, _fallback, StringComparison.Ordinal);
@@ -62,8 +62,8 @@ public sealed class SessionLauncherScriptTests : IDisposable
 
         Assert.Equal(0, output.ExitCode);
         var expected = hasInputGroup
-            ? new[] { "user", "Rosella", "wayland", "argument with spaces" }
-            : new[] { "user", "Rosella", "wayland" }; // GDM passes no arguments via sg.
+            ? new[] { "user", "Rosella:GNOME", "wayland", "argument with spaces" }
+            : new[] { "user", "Rosella:GNOME", "wayland" }; // GDM passes no arguments via sg.
         Assert.Equal(expected, File.ReadAllLines(_capture));
     }
 
@@ -90,7 +90,7 @@ public sealed class SessionLauncherScriptTests : IDisposable
         var output = Run(hasInputGroup);
 
         Assert.Equal(0, output.ExitCode);
-        Assert.Equal(new[] { "fallback", _fallback, "Rosella", "wayland" }, File.ReadAllLines(_capture));
+        Assert.Equal(new[] { "fallback", _fallback, "Rosella:GNOME", "wayland" }, File.ReadAllLines(_capture));
     }
 
     private (int ExitCode, string Error) Run(bool hasInputGroup, params string[] arguments)

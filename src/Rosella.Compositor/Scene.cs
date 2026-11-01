@@ -9,7 +9,14 @@ public sealed class Scene
 {
     private readonly object _gate = new();
     private readonly List<SurfaceHandler> _surfaces = new();
+    private readonly List<XdgPopupHandler> _popupGrabs = new();
     private bool _dirty = true;
+
+    /// <summary>The pixels this frame has to repaint (guarded by <see cref="_gate"/>).</summary>
+    private readonly DamageTracker _damage = new();
+
+    /// <summary>Scratch for the parts of a damage region no opaque window covers; render-loop only.</summary>
+    private readonly RectList _uncovered = new();
 
     /// <summary>
     /// Something on screen changed: the scanout loop composites on the next
@@ -22,7 +29,38 @@ public sealed class Scene
         lock (_gate)
         {
             _dirty = true;
+            _damage.MarkFull();
             Monitor.PulseAll(_gate);
+        }
+    }
+
+    /// <summary>
+    /// Something changed only inside <paramref name="rect"/>: the loop wakes
+    /// and repaints that region instead of the whole output. Callers that
+    /// cannot say what changed keep using the no-argument overload, which
+    /// means "repaint everything" — over-painting is a cost, under-painting
+    /// is a bug.
+    /// </summary>
+    internal void MarkDirty(in DamageRect rect)
+    {
+        lock (_gate)
+        {
+            _dirty = true;
+            _damage.Add(rect);
+            Monitor.PulseAll(_gate);
+        }
+    }
+
+    /// <summary>
+    /// Takes this frame's damage, clipped to an output of the given size.
+    /// Zero rects means nothing changed (the loop can skip the frame
+    /// entirely); one whole-output rect means everything did.
+    /// </summary>
+    internal int TakeDamage(int width, int height, Span<DamageRect> destination)
+    {
+        lock (_gate)
+        {
+            return _damage.Take(width, height, destination);
         }
     }
 
@@ -71,6 +109,12 @@ public sealed class Scene
         {
             surface.Position = Cascade(_surfaces.Count);
             _surfaces.Add(surface);
+
+            // Joining, leaving and restacking change what is on screen in
+            // ways the scene cannot name: damage the whole output. A wake
+            // with no damage would otherwise paint nothing and leave the
+            // departed window's pixels up (see MarkDirty).
+            _damage.MarkFull();
             _dirty = true;
             Monitor.PulseAll(_gate);
         }
@@ -83,6 +127,8 @@ public sealed class Scene
             // Gone first: a stale hit-test reference must not be re-focused.
             surface.Gone = true;
             _surfaces.Remove(surface);
+            _popupGrabs.RemoveAll(popup => ReferenceEquals(popup.Surface, surface));
+            _damage.MarkFull();
             _dirty = true;
             Monitor.PulseAll(_gate);
         }
@@ -104,8 +150,21 @@ public sealed class Scene
     /// <summary>Where windows live: the output minus the taskbar band.</summary>
     internal Rect WorkArea => new(0, 0, OutputSize.Width, OutputSize.Height - (Shell is null ? 0 : Shell.BarHeight));
 
-    /// <summary>The desktop shell, when one is wired in (taskbar and system menu).</summary>
-    internal Shell? Shell { get; set; }
+    /// <summary>The desktop shell, when one is wired in (taskbar and settings panel).</summary>
+    internal Shell? Shell
+    {
+        get => _shell;
+        set
+        {
+            _shell = value;
+            if (value is not null)
+            {
+                value.Settings.Dirty = MarkDirty;
+            }
+        }
+    }
+
+    private Shell? _shell;
 
     /// <summary>
     /// The input seat, notified when surfaces hide or go away. Setting it
@@ -139,16 +198,65 @@ public sealed class Scene
 
         set
         {
+            // Read the pointer footprint before taking the gate: the seat and
+            // surface locks are never taken underneath it.
+            var footprint = CursorFootprint();
             lock (_gate)
             {
-                _cursor = value;
-            }
+                var previous = _cursor;
+                if (previous == value)
+                {
+                    return;
+                }
 
-            MarkDirty();
+                _cursor = value;
+                _dirty = true;
+
+                // A moving pointer changes two small boxes and nothing else:
+                // the frame has to repaint where it was and where it is, not
+                // the whole desktop.
+                _damage.Add(CursorDamage(previous, footprint));
+                _damage.Add(CursorDamage(value, footprint));
+                Monitor.PulseAll(_gate);
+            }
         }
     }
 
     private (int X, int Y) _cursor;
+
+    /// <summary>
+    /// Everything the pointer image can occupy at a position, in logical
+    /// pixels: the built-in arrow (anchored at the pointer) and a client
+    /// cursor surface (anchored at its hotspot) both fit.
+    /// </summary>
+    private (int Width, int Height, int HotspotX, int HotspotY) CursorFootprint()
+    {
+        var width = CursorSprite.Width;
+        var height = CursorSprite.Height;
+        var hotspotX = 0;
+        var hotspotY = 0;
+        var cursor = Seat?.CurrentCursor() ?? default;
+        if (cursor.Surface is { } surface)
+        {
+            width = Math.Max(width, surface.ContentWidth);
+            height = Math.Max(height, surface.ContentHeight);
+            hotspotX = Math.Max(0, cursor.HotspotX);
+            hotspotY = Math.Max(0, cursor.HotspotY);
+        }
+
+        return (width, height, hotspotX, hotspotY);
+    }
+
+    /// <summary>The physical box the pointer image can touch at a position (one pixel of slack).</summary>
+    private DamageRect CursorDamage((int X, int Y) position, (int Width, int Height, int HotspotX, int HotspotY) footprint)
+    {
+        var scale = Math.Max(1, Scale);
+        return new DamageRect(
+            (position.X - footprint.HotspotX) * scale,
+            (position.Y - footprint.HotspotY) * scale,
+            (footprint.Width + footprint.HotspotX + 1) * scale,
+            (footprint.Height + footprint.HotspotY + 1) * scale);
+    }
 
     /// <summary>Focus teardown for the seat (unmap = leave, destroy = silent).</summary>
     internal void OnSurfaceHidden(SurfaceHandler surface, bool canSendLeave)
@@ -168,6 +276,7 @@ public sealed class Scene
         {
             _surfaces.Remove(surface);
             _surfaces.Add(surface);
+            _damage.MarkFull();
             _dirty = true;
             Monitor.PulseAll(_gate);
             return (WorkArea.X, WorkArea.Y);
@@ -192,16 +301,88 @@ public sealed class Scene
 
     public void Render(Span<byte> pixels, int width, int height, int stride, long frame)
     {
-        Background.Render(pixels, width, height, stride);
+        RenderRegion(pixels, width, height, stride, frame, DamageRect.For(width, height));
+    }
+
+    /// <summary>
+    /// Composites one damage region of a frame. The caller has seeded the
+    /// rest of the buffer from the frame already on screen, so every pixel
+    /// inside <paramref name="damage"/> comes out identical to what a full
+    /// <see cref="Render"/> would put there, while the untouched pixels cost
+    /// nothing. Returns what was written — the number damage tracking exists
+    /// to shrink.
+    /// </summary>
+    internal RenderCost RenderRegion(Span<byte> pixels, int width, int height, int stride, long frame, in DamageRect damage)
+    {
         var scale = Math.Max(1, Scale);
+        var region = damage.Intersect(DamageRect.For(width, height));
+        if (region.IsEmpty)
+        {
+            return default;
+        }
+
+        // Opaque windows hide the desktop: only the rest of the region needs
+        // the background painted under it. Repainting a whole-output
+        // wallpaper behind a maximised window is most of the memcpy the
+        // damage path exists to remove.
+        _uncovered.Reset(region);
+        lock (_gate)
+        {
+            foreach (var surface in _surfaces)
+            {
+                if (IsOpaqueWindow(surface))
+                {
+                    _uncovered.Subtract(WindowRect(surface, scale));
+                    if (_uncovered.Overflowed)
+                    {
+                        break;
+                    }
+                }
+            }
+        }
+
+        long backgroundPixels = 0;
+        if (_uncovered.Overflowed)
+        {
+            backgroundPixels += Background.RenderRegion(pixels, width, height, stride, region);
+        }
+        else
+        {
+            for (var index = 0; index < _uncovered.Count; index++)
+            {
+                backgroundPixels += Background.RenderRegion(pixels, width, height, stride, _uncovered[index]);
+            }
+        }
+
+        long surfacePixels = 0;
+        var surfaceCount = 0;
         lock (_gate)
         {
             foreach (var surface in _surfaces)
             {
                 // Cursor surfaces are drawn at the pointer, never as windows.
-                if (surface.IsMapped && !surface.IsCursorSurface)
+                if (!surface.IsMapped || surface.IsCursorSurface)
                 {
-                    surface.BlitInto(pixels, width, height, stride, scale);
+                    continue;
+                }
+
+                var rect = WindowRect(surface, scale).Intersect(region);
+
+                // The desktop was painted on the assumption that opaque
+                // windows hide it. A window that is translucent *now* — it
+                // committed a different format, or lost its content, since
+                // the pass above — must blend against the desktop, not
+                // against the frame it is replacing.
+                if (!IsOpaqueWindow(surface) && !_uncovered.Touches(rect))
+                {
+                    backgroundPixels += Background.RenderRegion(pixels, width, height, stride, rect);
+                }
+
+                surface.BlitInto(pixels, width, height, stride, scale, region);
+                if (!rect.IsEmpty)
+                {
+                    surfacePixels += rect.Area;
+                    surfaceCount++;
                 }
             }
 
@@ -210,8 +391,15 @@ public sealed class Scene
         }
 
         // Chrome lays out in logical pixels (matching the input thread's
-        // hit-tests exactly) and draws scaled onto the physical scanout.
-        Shell?.Draw(pixels, width / scale, height / scale, stride, scale, Bar.ClockString(), TaskWindows(), Seat?.KeyboardFocus, Cursor);
+        // hit-tests exactly) and draws scaled onto the physical scanout. It
+        // is drawn whole whenever the region can show it — the band is
+        // opaque and opaque-overdrawn pixels are pixels already correct in
+        // the seeded buffer — and skipped when the region cannot, which is
+        // what makes a pointer move over the desktop cheap.
+        if (NeedsChrome(region, scale, width, height))
+        {
+            Shell?.Draw(pixels, width / scale, height / scale, stride, scale, Bar.ClockString(), TaskWindows(), Seat?.KeyboardFocus, Cursor);
+        }
 
         // The cursor: the client's cursor surface when the focused client set
         // one (context shapes — text beam, hand — as the apps intend), hidden
@@ -232,14 +420,71 @@ public sealed class Scene
                 cursorSurface.BlitAt(
                     pixels, width, height, stride,
                     (cursorX - hotspotX) * scale, (cursorY - hotspotY) * scale,
-                    cursorSurface.ContentWidth * scale, cursorSurface.ContentHeight * scale);
+                    cursorSurface.ContentWidth * scale, cursorSurface.ContentHeight * scale,
+                    region);
             }
         }
         else
         {
-            CursorSprite.Draw(pixels, width, height, stride, cursorX * scale, cursorY * scale, scale);
+            // The arrow draws at the pointer with the buffer's dimensions;
+            // handing it a viewport at the region's origin clips it to the
+            // damage without it having to know about damage at all.
+            var viewport = pixels.Slice((region.Y * stride) + (region.X * 4));
+            CursorSprite.Draw(viewport, region.W, region.H, stride, (cursorX * scale) - region.X, (cursorY * scale) - region.Y, scale);
         }
+
+        return new RenderCost(backgroundPixels, surfacePixels, surfaceCount);
     }
+
+    /// <summary>
+    /// Whether a region can show chrome: the taskbar band, which every
+    /// chrome draw repaints in full, or the settings panel, which floats
+    /// above the work area whenever it is open. Anything else is a region the
+    /// seeded buffer already shows correctly, so the chrome stays untouched —
+    /// which is what makes a pointer move over the desktop cheap.
+    /// </summary>
+    private bool NeedsChrome(in DamageRect region, int scale, int width, int height)
+    {
+        if (Shell is not { } shell)
+        {
+            return false;
+        }
+
+        var bandTop = ((height / scale) - Shell.BarHeight) * scale;
+        if (region.Y + region.H > bandTop)
+        {
+            return true;
+        }
+
+        if (!shell.Settings.IsOpen)
+        {
+            return false;
+        }
+
+        // The panel sits over the work area: a region that cannot reach it
+        // does not need it redrawn (a video playing behind an open panel must
+        // not pay for the panel every frame).
+        if (shell.LastBarLayout is not { } layout)
+        {
+            return true;
+        }
+
+        var panel = shell.Settings.PanelRect(layout.Clock, width / scale, height / scale).Scaled(scale);
+        return region.Intersects(new DamageRect(panel.X, panel.Y, panel.W, panel.H));
+    }
+
+    /// <summary>Whether the surface is a mapped opaque (xrgb) window: nothing shows through it.</summary>
+    private static bool IsOpaqueWindow(SurfaceHandler surface) =>
+        surface.IsMapped
+        && !surface.Gone
+        && !surface.IsCursorSurface
+        && surface.Format == ShmFormats.Xrgb8888
+        && surface.ContentWidth > 0
+        && surface.ContentHeight > 0;
+
+    /// <summary>The physical rectangle a window's content is blitted into.</summary>
+    private static DamageRect WindowRect(SurfaceHandler surface, int scale) =>
+        new(surface.Position.X * scale, surface.Position.Y * scale, surface.Width * scale, surface.Height * scale);
 
     /// <summary>Fires frame callbacks for the frame just composited.</summary>
     public void CompleteFrame()
@@ -268,11 +513,108 @@ public sealed class Scene
         }
     }
 
+    /// <summary>Enables a popup grab, keeping the popup stack in creation order.</summary>
+    internal bool TryGrabPopup(XdgPopupHandler popup)
+    {
+        lock (_gate)
+        {
+            if (popup.RootParentSurface?.XdgRole?.Toplevel is not { } rootToplevel
+                || rootToplevel.Surface.Session != popup.Surface.Session)
+            {
+                return false;
+            }
+
+            if (popup.ParentIsPopup && (popup.Parent is not { } parent || !_popupGrabs.Contains(parent)))
+            {
+                return false;
+            }
+
+            _popupGrabs.Add(popup);
+            return true;
+        }
+    }
+
+    /// <summary>Snapshot of popup grabs in nesting order.</summary>
+    internal XdgPopupHandler[] PopupGrabs
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return [.. _popupGrabs];
+            }
+        }
+    }
+
+    /// <summary>The current topmost grabbed popup, if any.</summary>
+    internal XdgPopupHandler? TopmostPopupGrab
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _popupGrabs.Count > 0 ? _popupGrabs[^1] : null;
+            }
+        }
+    }
+
+    /// <summary>Releases a popup grab and any nested grabs above it.</summary>
+    internal void ReleasePopupGrab(XdgPopupHandler popup)
+    {
+        XdgPopupHandler[] descendants;
+        lock (_gate)
+        {
+            var index = _popupGrabs.IndexOf(popup);
+            if (index < 0)
+            {
+                return;
+            }
+
+            descendants = _popupGrabs.Skip(index + 1).Reverse().ToArray();
+            _popupGrabs.RemoveRange(index, _popupGrabs.Count - index);
+        }
+
+        foreach (var descendant in descendants)
+        {
+            descendant.ParentDismissed();
+        }
+    }
+
+    /// <summary>Dismisses the current grab stack in reverse nesting order.</summary>
+    internal void DismissPopupGrabs()
+    {
+        while (TopmostPopupGrab is { } popup)
+        {
+            popup.DismissFromCompositor();
+        }
+    }
+
     /// <summary>The topmost mapped surface at the point, if any.</summary>
     internal SurfaceHandler? HitTest(int x, int y)
     {
         lock (_gate)
         {
+            if (_popupGrabs.Count > 0)
+            {
+                var popup = _popupGrabs[^1];
+                var popupSurface = popup.Surface;
+                for (var i = _surfaces.Count - 1; i >= 0; i--)
+                {
+                    var surface = _surfaces[i];
+                    if (surface.Session != popupSurface.Session || !surface.IsMapped || surface.Gone || surface.IsCursorSurface
+                        || !Contains(surface.Visible, x, y))
+                    {
+                        continue;
+                    }
+
+                    return surface;
+                }
+
+                // An owner-events grab blocks unrelated clients from receiving
+                // the press. The caller dismisses the grab on this null hit.
+                return null;
+            }
+
             for (var i = _surfaces.Count - 1; i >= 0; i--)
             {
                 var surface = _surfaces[i];
@@ -321,27 +663,46 @@ public sealed class Scene
     /// </summary>
     internal void DismissDescendantPopups(SurfaceHandler surface)
     {
-        List<SurfaceHandler> snapshot;
+        List<XdgSurfaceHandler> snapshot;
         lock (_gate)
         {
-            snapshot = _surfaces.ToList();
+            snapshot = _surfaces
+                .Where(candidate => candidate.XdgRole?.PopupParent is not null)
+                .Select(candidate => candidate.XdgRole!)
+                .OrderByDescending(role => PopupDepth(role))
+                .ToList();
         }
 
-        foreach (var candidate in snapshot)
+        foreach (var role in snapshot)
         {
-            var role = candidate.XdgRole;
-            while (role is not null)
+            var parent = role.PopupParent;
+            while (parent is not null)
             {
-                if (role.PopupParent?.Surface == surface)
+                if (parent.Surface == surface)
                 {
                     role.DismissPopup();
                     break;
                 }
 
-                role = role.PopupParent;
+                parent = parent.PopupParent;
             }
         }
     }
+
+    private static int PopupDepth(XdgSurfaceHandler role)
+    {
+        var depth = 0;
+        while (role.PopupParent is { } parent)
+        {
+            depth++;
+            role = parent;
+        }
+
+        return depth;
+    }
+
+    private static bool Contains((int X, int Y, int W, int H) rect, int x, int y) =>
+        x >= rect.X && x < rect.X + rect.W && y >= rect.Y && y < rect.Y + rect.H;
 
     /// <summary>Raises the surface to the top (it renders last).</summary>
     internal void Raise(SurfaceHandler surface)
@@ -351,6 +712,7 @@ public sealed class Scene
             if (_surfaces.Remove(surface))
             {
                 _surfaces.Add(surface);
+                _damage.MarkFull();
                 _dirty = true;
                 Monitor.PulseAll(_gate);
             }

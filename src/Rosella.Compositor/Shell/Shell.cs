@@ -1,10 +1,10 @@
 namespace Rosella.Compositor;
 
 /// <summary>
-/// The desktop shell: Windows 11 style — a bottom taskbar with the apple
-/// button, the pinned app launchers centred on the bar, window buttons and
-/// the clock; clicking the apple opens the system menu. One desktop; there
-/// are no workspaces. Everything is hardcoded; there is no configuration.
+/// The desktop shell: Windows 11 style — a bottom taskbar with a reserved
+/// launcher position, centred pinned app launchers, window buttons and a
+/// clock; clicking the clock opens the extensible settings panel. One
+/// desktop; there are no workspaces.
 /// Layout is in logical pixels; drawing multiplies by the output scale.
 /// </summary>
 internal sealed class Shell
@@ -15,13 +15,20 @@ internal sealed class Shell
     /// <summary>Menu text scale (the bitmap font's natural size is 8x16).</summary>
     internal const int FontScale = 2;
 
-    internal Shell(ISystemActions? systemActions = null)
+    internal Shell(ISystemActions? systemActions = null, IVolumeControl? volumeControl = null)
     {
-        Menu = new SystemMenu(systemActions ?? new SystemActions(() => { }));
+        Settings = new SettingsPanel(systemActions ?? new SystemActions(() => { }), volumeControl ?? new WpctlVolumeControl());
+        Switcher = new TaskSwitcher();
     }
 
-    /// <summary>The apple system menu (log out, restart, shut down).</summary>
-    internal SystemMenu Menu { get; }
+    /// <summary>The clock-anchored system settings and power panel.</summary>
+    internal SettingsPanel Settings { get; }
+
+    /// <summary>
+    /// The Alt+Tab window switcher: a centred overlay drawn over the whole
+    /// desktop, above the taskbar and the settings panel.
+    /// </summary>
+    internal TaskSwitcher Switcher { get; }
 
     /// <summary>The pinned taskbar launchers that resolved at startup.</summary>
     internal PinnedLauncher[] Pinned { get; set; } = [];
@@ -43,7 +50,7 @@ internal sealed class Shell
     internal BarLayout? LastBarLayout { get; private set; }
 
     /// <summary>
-    /// Draws the taskbar and, when open, the system menu overlay. Width and
+    /// Draws the taskbar and, when open, the settings panel. Width and
     /// height are logical pixels; the chrome is drawn scaled onto the
     /// physical scanout. The pointer drives hover highlighting.
     /// </summary>
@@ -53,9 +60,14 @@ internal sealed class Shell
         LastBarLayout = layout;
         Bar.Draw(pixels, width, height, stride, scale, layout, clock, focused, pointer, PressedPin);
 
-        if (Menu.IsOpen)
+        if (Settings.IsOpen)
         {
-            Menu.Draw(pixels, width, height, stride, scale, pointer);
+            Settings.Draw(pixels, width, height, stride, scale, layout.Clock, pointer);
+        }
+
+        if (Switcher.IsOpen)
+        {
+            Switcher.Draw(pixels, width, height, stride, scale, tasks);
         }
     }
 }

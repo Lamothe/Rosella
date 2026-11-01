@@ -107,6 +107,14 @@ internal sealed class XdgSurfaceHandler : IRequestHandler, ISurfaceRole, IDispos
     /// <summary>The popup parent role, when this surface is a popup.</summary>
     internal XdgSurfaceHandler? PopupParent => _popupParent;
 
+    internal XdgPopupHandler? PopupRole => _roleObject as XdgPopupHandler;
+
+    internal Scene Scene => _scene;
+
+    internal bool IsMapped => _mapped;
+
+    internal SurfaceHandler? RootToplevelSurface => _popupParent?.RootToplevelSurface ?? (_toplevel is not null ? _surface : null);
+
     /// <summary>True once the xdg_surface object is gone (session end or destroy).</summary>
     public bool IsDefunct => _destroyed;
 
@@ -246,7 +254,14 @@ internal sealed class XdgSurfaceHandler : IRequestHandler, ISurfaceRole, IDispos
         }
         else
         {
-            Unmap(surface);
+            if (_roleObject is XdgPopupHandler { IsGrabbed: true })
+            {
+                DismissPopup();
+            }
+            else
+            {
+                Unmap(surface);
+            }
 
             // A newly-unmapped surface must repeat the mapping dance. Sent
             // serials stay ackable across the unmap (spec: only a serial
@@ -265,6 +280,13 @@ internal sealed class XdgSurfaceHandler : IRequestHandler, ISurfaceRole, IDispos
     /// <summary>The wl_surface died underneath the role: the role is defunct.</summary>
     public void OnSurfaceDestroyed()
     {
+        if (_roleObject is XdgPopupHandler popup)
+        {
+            _scene.ReleasePopupGrab(popup);
+            popup.RoleDestroyed();
+        }
+
+        _scene.DismissDescendantPopups(_surface);
         Unmap(_surface);
         _surfaceDefunct = true;
     }
@@ -272,6 +294,13 @@ internal sealed class XdgSurfaceHandler : IRequestHandler, ISurfaceRole, IDispos
     /// <summary>The role object was destroyed: the surface is unmapped for good.</summary>
     internal void OnRoleDestroyed()
     {
+        _scene.DismissDescendantPopups(_surface);
+        if (_roleObject is XdgPopupHandler popup)
+        {
+            _scene.ReleasePopupGrab(popup);
+            popup.RoleDestroyed();
+        }
+
         Unmap(_surface);
 
         // Same gate as the activation/configure path: the input thread

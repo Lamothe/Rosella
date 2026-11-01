@@ -413,6 +413,15 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
     /// </summary>
     internal void BlitInto(Span<byte> pixels, int width, int height, int stride, int outputScale)
     {
+        BlitInto(pixels, width, height, stride, outputScale, DamageRect.For(width, height));
+    }
+
+    /// <summary>
+    /// The damage path: the same blit, clipped to one physical region, so a
+    /// repaint of part of the screen only pays for that part.
+    /// </summary>
+    internal void BlitInto(Span<byte> pixels, int width, int height, int stride, int outputScale, in DamageRect clip)
+    {
         lock (_state)
         {
             if (_content is null)
@@ -433,12 +442,19 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
                 Position.X * outputScale,
                 Position.Y * outputScale,
                 Width * outputScale,
-                Height * outputScale);
+                Height * outputScale,
+                clip);
         }
     }
 
     /// <summary>Blits the content at a physical position (the pointer cursor).</summary>
     internal void BlitAt(Span<byte> pixels, int width, int height, int stride, int x, int y, int destinationWidth, int destinationHeight)
+    {
+        BlitAt(pixels, width, height, stride, x, y, destinationWidth, destinationHeight, DamageRect.For(width, height));
+    }
+
+    /// <summary>Blits the content at a physical position, clipped to a damage region.</summary>
+    internal void BlitAt(Span<byte> pixels, int width, int height, int stride, int x, int y, int destinationWidth, int destinationHeight, in DamageRect clip)
     {
         lock (_state)
         {
@@ -460,7 +476,8 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
                 x,
                 y,
                 destinationWidth,
-                destinationHeight);
+                destinationHeight,
+                clip);
         }
     }
 

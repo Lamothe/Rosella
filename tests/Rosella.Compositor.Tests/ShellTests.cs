@@ -7,7 +7,7 @@ namespace Rosella.Compositor.Tests;
 
 /// <summary>
 /// The Windows 11 style shell over a real socket: windows land above the
-/// taskbar, the taskbar's apple, pinned and task buttons are clickable,
+/// taskbar, the taskbar's pinned and task buttons are clickable,
 /// binding keys never leak to clients, and windows wear no chrome of their
 /// own. The Super key by itself does nothing.
 /// </summary>
@@ -130,6 +130,106 @@ public class ShellTests
     }
 
     [Fact]
+    public void GrabbedPopupPress_KeepsKeyboardFocusOnTheParentWindow()
+    {
+        // A mouse press on a menu item must not move keyboard focus off the
+        // toplevel: that deactivates the window and the client closes its menu
+        // before the release arrives. Keyboard Enter works because focus stays.
+        using var harness = new Harness();
+        harness.MapWindow(8, 11, 12, title: "Menu host");
+        var parent = harness.MappedSurface(8);
+        harness.OpenPointer();
+        harness.CollectUntilRoundTrip();
+
+        // The grab needs a real press serial the client received (the menu
+        // button press that opens it).
+        harness.ClickAt(950, 530);
+        var pressSerial = harness.Client.ReadUntil(22, "button").Arguments[0].AsUInt32();
+        harness.MapPopup(parentXdgSurfaceId: 11, popupSurfaceId: 15, popupXdgSurfaceId: 16, popupId: 13, grab: true, grabSerial: pressSerial);
+        var popup = harness.MappedSurface(15);
+        Assert.Same(parent, harness.Seat.KeyboardFocus);
+
+        var centre = (popup.Visible.X + popup.Visible.W / 2, popup.Visible.Y + popup.Visible.H / 2);
+        harness.Router.PlaceCursor(centre.Item1, centre.Item2);
+        harness.Press(InputConstants.ButtonLeft);
+
+        // The popup takes the press and keyboard focus, but its parent window
+        // is never deactivated: the menu must survive until the release.
+        Assert.Same(popup, harness.Seat.KeyboardFocus);
+        Assert.True(parent.XdgRole!.Toplevel!.Activated);
+        harness.Release(InputConstants.ButtonLeft);
+
+        // Leaving the menu for an unrelated window deactivates the parent
+        // window too, not just the popup's (non-toplevel) role.
+        harness.MapWindow(30, 31, 32, title: "Other");
+        harness.Seat.SetKeyboardFocus(harness.MappedSurface(30), []);
+        Assert.False(parent.XdgRole!.Toplevel!.Activated);
+    }
+
+    [Fact]
+    public void UngrabbedPopupClick_KeepsKeyboardFocusOnTheWindow()
+    {
+        // A plain menu popup takes no grab, so it must not take keyboard
+        // focus either: the keyboard leave that follows reaches the toplevel,
+        // which Chrome reads as the window losing focus and closes the menu
+        // before the click's release arrives.
+        using var harness = new Harness();
+        harness.MapWindow(8, 11, 12, title: "Host");
+        harness.MapPopup(parentXdgSurfaceId: 11, popupSurfaceId: 15, popupXdgSurfaceId: 16, popupId: 13);
+        var window = harness.MappedSurface(8);
+        var popup = harness.MappedSurface(15);
+        harness.OpenKeyboard();
+        harness.OpenPointer();
+        harness.CollectUntilRoundTrip();
+
+        harness.Router.PlaceCursor(window.Visible.X + 5, window.Visible.Y + 5);
+        harness.Press(InputConstants.ButtonLeft);
+        harness.Release(InputConstants.ButtonLeft);
+        harness.CollectUntilRoundTrip();
+        Assert.Equal(8u, harness.Seat.KeyboardFocus?.Id);
+
+        harness.Router.PlaceCursor(popup.Visible.X + (popup.Visible.W / 2), popup.Visible.Y + (popup.Visible.H / 2));
+        harness.Scene.Raise(popup);
+        harness.Press(InputConstants.ButtonLeft);
+        Assert.Equal(15u, harness.Seat.PointerFocus?.Id);
+
+        Assert.Equal(8u, harness.Seat.KeyboardFocus?.Id);
+        Assert.DoesNotContain(
+            harness.DrainUntilRoundTrip(),
+            e => e.ObjectId == 21 && harness.Client.EventName(e) is "enter" or "leave");
+    }
+
+    [Fact]
+    public void ParentlessPopupPress_LeavesKeyboardFocusAlone()
+    {
+        // xdg-shell allows get_popup with a null parent, and such a popup can
+        // never be grabbed (a grab needs a root toplevel). Pressing it must
+        // leave keyboard focus where it was rather than moving focus onto the
+        // popup, which is the same failure as the ungrabbed-menu click.
+        using var harness = new Harness();
+        harness.MapWindow(8, 11, 12, title: "Host");
+        harness.OpenKeyboard();
+        harness.OpenPointer();
+        harness.CollectUntilRoundTrip();
+
+        harness.ClickAt(950, 530);
+        harness.CollectUntilRoundTrip();
+        Assert.Equal(8u, harness.Seat.KeyboardFocus?.Id);
+
+        harness.MapPopup(parentXdgSurfaceId: 0, popupSurfaceId: 15, popupXdgSurfaceId: 16, popupId: 13);
+        var popup = harness.MappedSurface(15);
+        harness.Router.PlaceCursor(popup.Visible.X + (popup.Visible.W / 2), popup.Visible.Y + (popup.Visible.H / 2));
+        harness.Scene.Raise(popup);
+        harness.Press(InputConstants.ButtonLeft);
+
+        Assert.Equal(15u, harness.Seat.PointerFocus?.Id);
+        Assert.Equal(8u, harness.Seat.KeyboardFocus?.Id);
+        Assert.DoesNotContain(
+            harness.DrainUntilRoundTrip(),
+            e => e.ObjectId == 21 && harness.Client.EventName(e) is "enter" or "leave");
+    }
+
+    [Fact]
     public void ChromePress_SwallowsOnlyItsOwnButtonRelease()
     {
         using var harness = new Harness();
@@ -186,7 +286,7 @@ public class ShellTests
         Assert.Null(harness.Seat.KeyboardFocus);
     }
 
-    // --- The Super key: unbound, the menu launcher is gone --------------
+    // --- The Super key remains unbound ----------------------------------
 
     [Fact]
     public void SuperAlone_DoesNothing()
@@ -198,7 +298,7 @@ public class ShellTests
         harness.Press(InputConstants.KeyRightMeta);
         harness.Release(InputConstants.KeyRightMeta);
 
-        Assert.False(harness.Shell.Menu.IsOpen);
+        Assert.False(harness.Shell.Settings.IsOpen);
         Assert.False(harness.Quit);
     }
 
@@ -212,61 +312,53 @@ public class ShellTests
         harness.Release(InputConstants.KeyA);
         harness.Release(InputConstants.KeyLeftMeta);
 
-        Assert.False(harness.Shell.Menu.IsOpen);
+        Assert.False(harness.Shell.Settings.IsOpen);
         Assert.False(harness.Quit);
     }
 
-    // --- The apple system menu -----------------------------------------
+    // --- Clock-anchored settings panel ----------------------------------
 
     [Fact]
-    public void AppleButton_TogglesTheSystemMenu()
+    public void ClockButton_TogglesSettingsAndLeavesStartButtonAvailable()
     {
         using var harness = new Harness();
-        var start = Bar.ComputeLayout(1920, 1080, Bar.ClockString(), []).Start;
+        var layout = Bar.ComputeLayout(1920, 1080, Bar.ClockString(), []);
 
-        harness.ClickAt(start.X + (start.W / 2), start.Y + (start.H / 2));
-        Assert.True(harness.Shell.Menu.IsOpen);
+        harness.ClickAt(layout.Clock.X + (layout.Clock.W / 2), layout.Clock.Y + (layout.Clock.H / 2));
+        Assert.True(harness.Shell.Settings.IsOpen);
 
-        harness.ClickAt(start.X + (start.W / 2), start.Y + (start.H / 2));
-        Assert.False(harness.Shell.Menu.IsOpen);
+        harness.ClickAt(layout.Clock.X + (layout.Clock.W / 2), layout.Clock.Y + (layout.Clock.H / 2));
+        Assert.False(harness.Shell.Settings.IsOpen);
+
+        harness.ClickAt(layout.Start.X + (layout.Start.W / 2), layout.Start.Y + (layout.Start.H / 2));
+        Assert.False(harness.Shell.Settings.IsOpen);
     }
 
     [Fact]
-    public void AppleMenu_ItemClickRunsTheActionAndCloses()
+    public void SettingsAction_ClickRunsAndClosesPanel()
     {
         using var harness = new Harness();
-        var start = Bar.ComputeLayout(1920, 1080, Bar.ClockString(), []).Start;
-        harness.ClickAt(start.X + (start.W / 2), start.Y + (start.H / 2));
+        var layout = Bar.ComputeLayout(1920, 1080, Bar.ClockString(), []);
+        harness.ClickAt(layout.Clock.X + (layout.Clock.W / 2), layout.Clock.Y + (layout.Clock.H / 2));
 
-        var row = SystemMenu.RowRect(harness.Shell.Menu.PanelRect(1920, 1080), 1);
+        var panel = harness.Shell.Settings.PanelRect(layout.Clock, 1920, 1080);
+        var row = SettingsPanel.ActionRect(panel, 1);
         harness.ClickAt(row.X + (row.W / 2), row.Y + (row.H / 2));
 
-        Assert.False(harness.Shell.Menu.IsOpen);
+        Assert.False(harness.Shell.Settings.IsOpen);
         Assert.Equal(["Restart"], harness.Actions.Calls);
     }
 
     [Fact]
-    public void AppleMenuClick_OutsideClosesWithoutActing()
+    public void SettingsPanel_EscCloses()
     {
         using var harness = new Harness();
-        var start = Bar.ComputeLayout(1920, 1080, Bar.ClockString(), []).Start;
-        harness.ClickAt(start.X + (start.W / 2), start.Y + (start.H / 2));
-
-        harness.ClickAt(0, 200);
-        Assert.False(harness.Shell.Menu.IsOpen);
-        Assert.Empty(harness.Actions.Calls);
-    }
-
-    [Fact]
-    public void AppleMenu_EscClosesThePanel()
-    {
-        using var harness = new Harness();
-        var start = Bar.ComputeLayout(1920, 1080, Bar.ClockString(), []).Start;
-        harness.ClickAt(start.X + (start.W / 2), start.Y + (start.H / 2));
+        var clock = Bar.ComputeLayout(1920, 1080, Bar.ClockString(), []).Clock;
+        harness.ClickAt(clock.X + (clock.W / 2), clock.Y + (clock.H / 2));
 
         harness.Press(InputConstants.KeyEsc);
         harness.Release(InputConstants.KeyEsc);
-        Assert.False(harness.Shell.Menu.IsOpen);
+        Assert.False(harness.Shell.Settings.IsOpen);
     }
 
     // --- Pinned launchers: focus-or-launch and window claims ------------
@@ -473,7 +565,7 @@ public class ShellTests
         }
 
         /// <summary>Maps a popup on the parent's xdg_surface through the dance.</summary>
-        public void MapPopup(uint parentXdgSurfaceId, uint popupSurfaceId, uint popupXdgSurfaceId, uint popupId)
+        public void MapPopup(uint parentXdgSurfaceId, uint popupSurfaceId, uint popupXdgSurfaceId, uint popupId, bool grab = false, uint grabSerial = 0)
         {
             Client.SendRequest(10, "xdg_wm_base", "create_positioner", WireArgument.NewId(14));
             Client.RegisterObject(14, "xdg_positioner");
@@ -485,6 +577,11 @@ public class ShellTests
             Client.RegisterObject(popupXdgSurfaceId, "xdg_surface");
             Client.SendRequest(popupXdgSurfaceId, "xdg_surface", "get_popup", WireArgument.NewId(popupId), WireArgument.Object(parentXdgSurfaceId), WireArgument.Object(14));
             Client.RegisterObject(popupId, "xdg_popup");
+            if (grab)
+            {
+                Client.SendRequest(popupId, "xdg_popup", "grab", WireArgument.Object(20), WireArgument.UInt32(grabSerial));
+            }
+
             Client.SendRequest(popupSurfaceId, "wl_surface", "commit");
             Client.ReadUntil(popupId, "configure");
             var configure = Client.ReadUntil(popupXdgSurfaceId, "configure");

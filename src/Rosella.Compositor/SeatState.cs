@@ -29,6 +29,7 @@ internal sealed class SeatState
 
     /// <summary>The latest wl_pointer.enter serial sent on each pointer.</summary>
     private readonly Dictionary<ServerObject, uint> _pointerEnterSerials = new();
+    private readonly Dictionary<ClientSession, HashSet<uint>> _inputSerials = new();
     private int _depressed;
     private int _locked;
     private int _pointerX;
@@ -292,6 +293,12 @@ internal sealed class SeatState
 
             _keyboardFocus = focus;
 
+            // Focus moving between a window and its own popup (a menu) keeps
+            // the window activated: deactivating it makes the client close the
+            // menu before the click's release arrives.
+            var sameWindow = previous is not null && focus is not null
+                && ReferenceEquals(RootWindow(previous), RootWindow(focus));
+
             if (previous is not null)
             {
                 foreach (var (session, keyboard) in Of(_keyboards, previous))
@@ -299,7 +306,10 @@ internal sealed class SeatState
                     TrySend(session, keyboard, "leave", WireArgument.UInt32(session.NextSerial()), WireArgument.Object(previous.Id));
                 }
 
-                previous.XdgRole?.SetActivated(false);
+                if (!sameWindow)
+                {
+                    RootWindow(previous).XdgRole?.SetActivated(false);
+                }
             }
 
             if (focus is not null)
@@ -472,15 +482,45 @@ internal sealed class SeatState
         {
             foreach (var (session, pointer) in Of(_pointers, target))
             {
+                var serial = session.NextSerial();
+                if (pressed)
+                {
+                    RememberInputSerial(session, serial);
+                }
+
                 TrySend(
                     session,
                     pointer,
                     "button",
-                    WireArgument.UInt32(session.NextSerial()),
+                    WireArgument.UInt32(serial),
                     WireArgument.UInt32(time),
                     WireArgument.UInt32((uint)button),
                     WireArgument.UInt32(pressed ? 1u : 0u));
             }
+        }
+    }
+
+    /// <summary>Whether a recent pointer press serial belongs to this client.</summary>
+    internal bool IsValidInputSerial(ClientSession session, uint serial)
+    {
+        lock (_gate)
+        {
+            return _inputSerials.TryGetValue(session, out var serials) && serials.Contains(serial);
+        }
+    }
+
+    private void RememberInputSerial(ClientSession session, uint serial)
+    {
+        if (!_inputSerials.TryGetValue(session, out var serials))
+        {
+            serials = [];
+            _inputSerials.Add(session, serials);
+        }
+
+        serials.Add(serial);
+        while (serials.Count > 64)
+        {
+            serials.Remove(serials.Min());
         }
     }
 
@@ -590,6 +630,10 @@ internal sealed class SeatState
             WireArgument.Object(focus.Id),
             WireArgument.Array(keys));
     }
+
+    /// <summary>The toplevel surface a focus belongs to (the surface itself for a plain window).</summary>
+    private static SurfaceHandler RootWindow(SurfaceHandler surface) =>
+        surface.XdgRole?.RootToplevelSurface ?? surface;
 
     private void SendEnterOn(ClientSession session, ServerObject pointer, SurfaceHandler focus)
     {

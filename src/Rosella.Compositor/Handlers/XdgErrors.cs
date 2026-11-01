@@ -8,6 +8,7 @@ internal static class XdgErrors
     // xdg_wm_base.error
     internal const uint Role = 0;
     internal const uint DefunctSurfaces = 1;
+    internal const uint NotTheTopmostPopup = 2;
     internal const uint InvalidPopupParent = 3;
     internal const uint InvalidPositioner = 5;
 

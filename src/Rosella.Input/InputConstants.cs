@@ -23,6 +23,7 @@ public static class InputConstants
     public const ushort Key2 = 3;
     public const ushort Key3 = 4;
     public const ushort Key4 = 5;
+    public const ushort KeyTab = 15;
     public const ushort KeyEnter = 28;
     public const ushort KeyA = 30;
     public const ushort KeyLeftCtrl = 29;

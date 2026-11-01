@@ -29,6 +29,9 @@ public sealed class ClientSession
     private readonly ServerObject _display;
     private uint _serial;
 
+    /// <summary>The last request dispatched, named for the protocol-error log.</summary>
+    private string? _lastRequest;
+
     public ClientSession(
         WireConnection connection,
         ProtocolDescription protocol,
@@ -253,6 +256,10 @@ public sealed class ClientSession
 
         try
         {
+            // Remembered so a fatal protocol error can name the request that
+            // caused it: the client only reports "Error 71 (Protocol error)"
+            // and exits, which reads as a random crash from the outside.
+            _lastRequest = $"{target.Interface.Name}@{target.Id}.{target.Interface.FindRequest(message.Opcode)?.Name ?? $"#{message.Opcode}"}";
             target.Handler.HandleRequest(this, target, message);
         }
         finally
@@ -278,6 +285,16 @@ public sealed class ClientSession
 
     private void TrySendError(uint objectId, uint code, string message)
     {
+        // A posted error ends most clients with only "Error 71 (Protocol
+        // error)" on their side, so this line is the only place the real
+        // cause is visible: name the object and the request.
+        var subject = TryGetObject(objectId, out var target)
+            ? $"{target.Interface.Name}@{objectId}"
+            : $"object {objectId}";
+        Console.Error.WriteLine(
+            $"rosella: protocol error: {subject}: {message} (code {code})"
+            + (_lastRequest is null ? string.Empty : $", after {_lastRequest}"));
+
         try
         {
             SendError(objectId, code, message);

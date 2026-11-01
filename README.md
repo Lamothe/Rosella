@@ -66,13 +66,19 @@ configuration is where desktop environments go to die.
   raise, keys to the keyboard focus, xdg_toplevel activation configure
   rounds, and two hardcoded keybindings (Alt+F4 = close window,
   Super+Esc = quit). One built-in cursor sprite, drawn topmost;
-  `set_cursor` is deliberately ignored. All seat sends are serialised under
+  `set_cursor` is deliberately ignored. The trackpad policy is fixed too:
+  one finger moves, a tap clicks (right with two, middle with three), a
+  second touch drags, two or more fingers scroll — at 6 logical pixels and
+  3 axis units per millimetre of finger travel, calibrated from the pad's
+  reported resolution — and the pad goes inert for 500 ms after the last
+  key, so a hand reaching for the keyboard cannot move, scroll or click.
+  All seat sends are serialised under
   the seat gate against object death, so no event can name an object after
   its `delete_id`.
 - **M7 — shell**: done. The Windows 11 style shell chrome: a bottom
-  taskbar (apple button, pinned app launchers centred on the bar, task
-  buttons with a focus accent, clock), and the apple system menu (Log Out,
-  Restart, Shut Down).
+  taskbar (a reserved launcher slot, pinned app launchers centred on the
+  bar, task buttons with a focus accent, clock), and a settings panel (Log
+  Out, Restart, Shut Down) that opens from the clock.
 
 ## Layout
 
@@ -143,9 +149,9 @@ runs the freshly published build, logging to `/tmp/rosella.log`.
 ### What you get
 
 The first connected output is driven at its preferred mode with the Windows
-11 style desktop: a bottom taskbar (apple button, pinned app launchers
-centred on the bar, task buttons, clock), an apple system menu (Log Out,
-Restart, Shut Down), and a calm dark gradient background — no workspaces, by
+11 style desktop: a bottom taskbar (a reserved launcher slot, pinned app
+launchers centred on the bar, task buttons, clock), a settings panel (Log
+Out, Restart, Shut Down) opened from the clock, and a calm dark gradient background — no workspaces, by
 design. The Super key is unbound; Alt+F4 closes a window and Super+Esc quits.
 
 Recovery if anything goes wrong: `Ctrl+Alt+F3`, log in,
