@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Rosella login session: run by GDM when "Rosella" is chosen at the greeter.
+# Rosella login session: run by the display manager when "Rosella" is chosen.
 #
 # The user's own build wins when present — updating the session is then
 # just `dotnet publish` plus a restart, with no sudo and no dialog. The
@@ -32,11 +32,11 @@ fi
 # user manager, then start the standard session target. Portals are systemd
 # user services that pick their backend from the manager's environment, not
 # from the app's, and xdg-desktop-portal.service is Requisite= on
-# graphical-session.target. GDM starts no such target for this session, so
-# without these two lines a cold login has no portal at all — Chrome then
-# has nowhere to fetch its key. Failures are not fatal: the compositor is
-# still usable without portals, and `|| true` keeps `set -e` from killing
-# the session over a bus that is not up yet.
+# graphical-session.target. A display manager starts no such target for this
+# session, so without these two lines a cold login has no portal at all —
+# Chrome then has nowhere to fetch its key. Failures are not fatal: the
+# compositor is still usable without portals, and `|| true` keeps `set -e`
+# from killing the session over a bus that is not up yet.
 systemctl --user import-environment XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE 2>/dev/null || true
 systemctl --user start graphical-session.target 2>/dev/null || true
 
@@ -44,7 +44,8 @@ systemctl --user start graphical-session.target 2>/dev/null || true
 # input-group grant (getty logins cache credentials from first login), the
 # group is missing even though /etc/group is correct. `sg` re-resolves
 # membership from the group database and adds it, no password needed for
-# an existing member. No args are passed to the session; GDM passes none.
+# an existing member. No args are passed to the session; the display manager
+# passes none.
 if id -nG | tr ' ' '\n' | grep -qx input; then
     exec "$binary" "$@"
 fi

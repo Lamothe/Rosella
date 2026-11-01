@@ -3,7 +3,7 @@ using System.Security.Cryptography;
 
 namespace Rosella.Compositor.Tests;
 
-/// <summary>Checks the GDM launcher against stub executables, never a compositor.</summary>
+/// <summary>Checks the login launcher against stub executables, never a compositor.</summary>
 public sealed class SessionLauncherScriptTests : IDisposable
 {
     private readonly string _root = Path.Combine("/tmp", $"rosella-session-{Guid.NewGuid():N}");
@@ -30,7 +30,7 @@ public sealed class SessionLauncherScriptTests : IDisposable
         var digest = Convert.ToHexString(SHA256.HashData(scriptBytes));
         // Fail closed if launcher code changes: the test must be re-reviewed
         // before any modified shell script can execute on a development host.
-        Assert.Equal("74EBC9B4E2B75F07630493CC40CB0C6DF692A02E40CEC582CD8E86E1A84FCA2C", digest);
+        Assert.Equal("659E8CCD8A5E14FC27DA884481FE736235CBE8E254C0C644F4A7B6A3D8A6B6A9", digest);
         const string fallbackPath = "/usr/local/lib/rosella/Rosella.Compositor";
         Assert.Contains(fallbackPath, script);
         script = script.Replace(fallbackPath, _fallback, StringComparison.Ordinal);
@@ -63,7 +63,7 @@ public sealed class SessionLauncherScriptTests : IDisposable
         Assert.Equal(0, output.ExitCode);
         var expected = hasInputGroup
             ? new[] { "user", "Rosella:GNOME", "wayland", "argument with spaces" }
-            : new[] { "user", "Rosella:GNOME", "wayland" }; // GDM passes no arguments via sg.
+            : new[] { "user", "Rosella:GNOME", "wayland" }; // The display manager passes no arguments via sg.
         Assert.Equal(expected, File.ReadAllLines(_capture));
     }
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Publishes Rosella and installs it as a GDM login session. Requires sudo —
+# Publishes Rosella and registers it as a Wayland login session. Requires sudo —
 # once. Day-to-day updates need no sudo at all: scripts/deploy.sh publishes
 # the build the session launcher prefers, then the session is restarted.
 # Remove the session again with: sudo rm /usr/share/wayland-sessions/rosella.desktop \
@@ -40,7 +40,7 @@ sudo install -m 644 "$root/scripts/rosella.desktop" /usr/share/wayland-sessions/
 seatUser="$owner"
 sudo usermod -aG input "$seatUser"
 
-echo "Installed. 'Rosella' now appears in the GDM session chooser."
+echo "Installed. 'Rosella' now appears in the login screen's session list."
 echo "Windows, a cursor and keyboard input (Alt+F4 closes, Super+Esc quits)."
 echo "Added $seatUser to the 'input' group — log out and back in for it to take effect."
 echo "Recovery: Ctrl+Alt+F3 (or another VT), pkill -f Rosella.Compositor (or pick GNOME at the greeter)."

@@ -2,7 +2,7 @@
 # Publishes Rosella for the current user and verifies the artefact. No
 # sudo: scripts/rosella-session prefers this build, so an update is this
 # script plus a session restart. `install-session.sh` remains for the
-# one-time GDM registration (which does need sudo).
+# one-time session registration (which does need sudo).
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -47,9 +47,9 @@ fi
 mkdir -p "$HOME/.local/bin"
 ln -sf "$root/scripts/rosella-dev.sh" "$HOME/.local/bin/rosella"
 
-# GDM uses a separately installed wrapper. A newer user build alone cannot
-# fix an old wrapper that still launches the system copy. Warn after a
-# successful publish without blocking the VT-only workflow.
+# The login session uses a separately installed wrapper. A newer user build
+# alone cannot fix an old wrapper that still launches the system copy. Warn
+# after a successful publish without blocking the VT-only workflow.
 installed_session=/usr/local/bin/rosella-session
 installed_desktop=/usr/share/wayland-sessions/rosella.desktop
 if [ -e "$installed_session" ] || [ -e "$installed_desktop" ]; then
@@ -57,7 +57,7 @@ if [ -e "$installed_session" ] || [ -e "$installed_desktop" ]; then
         || ! cmp -s "$root/scripts/rosella-session" "$installed_session" \
         || ! cmp -s "$root/scripts/rosella.desktop" "$installed_desktop"; then
         echo "WARNING: the installed Rosella login launcher or session entry differs from this repository." >&2
-        echo "The GDM login may use an old build; refresh the registration with scripts/install-session.sh." >&2
+        echo "The login session may use an old build; refresh the registration with scripts/install-session.sh." >&2
     fi
 fi
 

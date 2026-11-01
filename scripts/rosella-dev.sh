@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Runs Rosella on this VT right now, without logging out of GNOME.
 #
-# GDM only allows one session per user, so you cannot pick "Rosella" at the
-# greeter while GNOME is running. This is the flip-to-a-VT-and-go path; the
-# proper login is "Rosella" in the GDM session chooser (rosella.desktop ->
-# rosella-session). Both run the same build.
+# The seat takes one compositor at a time, so you cannot pick "Rosella" at
+# the login screen while GNOME is running. This is the flip-to-a-VT-and-go
+# path; the proper login is "Rosella" in the login screen's session list
+# (rosella.desktop -> rosella-session). Both run the same build.
 #
 # Any previous instance is stopped first: two compositors on one seat steal
 # each other's input devices and the keyboard dies while the desktop keeps

@@ -28,7 +28,7 @@ public sealed class DeployScriptTests : IDisposable
         // must be reviewed before redirecting its registration paths in tests.
         var deployBytes = File.ReadAllBytes(Path.Combine(RepoFiles.Root, "scripts", "deploy.sh"));
         var digest = Convert.ToHexString(SHA256.HashData(deployBytes));
-        Assert.Equal("C40CD169F1AEF8BECEF2CD5925215669C983D6436A1A77D3A4645E4733DFBB09", digest);
+        Assert.Equal("4F3A4DB6FF120CB41D8EA65DBF54C073D49C79982E72F512980FB553CC1FD9A0", digest);
         var deploy = System.Text.Encoding.UTF8.GetString(deployBytes)
             .Replace("installed_session=/usr/local/bin/rosella-session", $"installed_session='{_installedSession}'", StringComparison.Ordinal)
             .Replace("installed_desktop=/usr/share/wayland-sessions/rosella.desktop", $"installed_desktop='{_installedDesktop}'", StringComparison.Ordinal);
@@ -111,7 +111,7 @@ public sealed class DeployScriptTests : IDisposable
 
         Assert.Equal(0, result.ExitCode);
         Assert.Contains("WARNING:", result.Error);
-        Assert.Contains("GDM login may use an old build", result.Error);
+        Assert.Contains("login session may use an old build", result.Error);
         Assert.True(File.Exists(Path.Combine(_project, "build", "publish", "libcoreclr.so")));
     }
 

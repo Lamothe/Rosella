@@ -334,7 +334,8 @@ public class GreeterConversationTests
 
 /// <summary>
 /// The session picker's source: the same /usr/share/wayland-sessions desktop
-/// files GDM reads. Name= is what the picker shows, Exec= is the argv handed
+/// files the display manager reads. Name= is what the picker shows, Exec= is
+/// the argv handed
 /// to start_session, and hidden entries must not appear.
 /// </summary>
 public sealed class GreeterSessionTests : IDisposable
