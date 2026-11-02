@@ -88,7 +88,12 @@ var cursorSettings = CursorSettings.Resolve();
 string? cursorThemeName = null;
 foreach (var name in new[] { cursorSettings.Theme, cursorSettings.Fallback, "default", "Adwaita" })
 {
-    if (name is not null && CursorTheme.Open(name, cursorSettings.Size) is { } theme)
+    // A directory that exists but has no usable pointer must not shadow the
+    // next candidate: loading the shape also warms the cache the render loop
+    // will use.
+    if (name is not null
+        && CursorTheme.Open(name, cursorSettings.Size) is { } theme
+        && theme.Pointer(scale) is not null)
     {
         scene.Cursors = theme;
         cursorThemeName = name;

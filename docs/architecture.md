@@ -78,9 +78,9 @@ Verified against libwayland's marshalling code and the protocol docs:
    pointer image is the pointer-focused client's `set_cursor` surface at
    pointer−hotspot (hidden on NULL), else the session's Xcursor theme
    (`CursorSettings` picks the name and size GTK clients use — GSettings,
-   then settings.ini, then Adwaita 24; `CursorTheme` follows libXcursor's
-   inherit and size rules), with the built-in arrow only when no theme
-   loads — always scoped to the owning client's pointer focus.
+   then settings.ini, then the `default` theme at 24; `CursorTheme` follows
+   libXcursor's inherit and size rules), with the built-in arrow only when
+   no theme loads — always scoped to the owning client's pointer focus.
 
 ## Milestones
 

@@ -184,6 +184,14 @@ public sealed class CursorThemeTests : IDisposable
     }
 
     [Fact]
+    public void CursorTheme_RejectsATraversingShape()
+    {
+        var theme = Build("ShapeGuard", ("left_ptr", [Small(0xFFFFFFFFu)]));
+
+        Assert.Null(theme!.Image("../left_ptr", 24));
+    }
+
+    [Fact]
     public void CursorSettings_PrefersGSettings()
     {
         var choice = CursorSettings.Resolve(
@@ -308,29 +316,49 @@ public sealed class CursorThemeTests : IDisposable
             OutputSize = (64, 48),
             Scale = 2,
             Cursors = theme,
-            Cursor = (10, 10),
+            Cursor = (50, 40),
         };
 
         Span<DamageRect> damage = stackalloc DamageRect[DamageTracker.Capacity];
+        scene.TakeDamage(128, 96, damage); // flush the first placement
+
+        scene.Cursor = (10, 10);
         var count = scene.TakeDamage(128, 96, damage);
 
-        var painted = false;
+        // The image is drawn at (17, 19)..(40, 42); the old maths started
+        // one column right of that and clipped it.
+        var found = false;
         for (var index = 0; index < count; index++)
         {
             var rect = damage[index];
-            if (Contains(rect, 17, 19) && Contains(rect, 40, 42))
+            if (Contains(rect, 17, 19)
+                && rect.X <= 17 && rect.Y <= 19
+                && rect.X + rect.W >= 41 && rect.Y + rect.H >= 43)
             {
-                painted = true;
+                found = true;
             }
         }
 
-        Assert.True(painted, "damage does not cover the pointer's physical box");
+        Assert.True(found, "damage does not cover the pointer's physical box");
+    }
+
+    [Fact]
+    public void PointerBox_KeepsANegativeClientHotspot()
+    {
+        // A client may hand set_cursor a negative hotspot. The union must
+        // place that image at its own origin (pointer + 10) and still reach
+        // its far edge, instead of clamping the hotspot to zero.
+        var box = Scene.PointerBox((24, 24, 24, 24), (64, 64, -10, 0));
+
+        Assert.Equal((-24, -24, 98, 88), box);
+        Assert.True(box.X + box.Width >= 74, "the client image's right edge is outside the box");
+        Assert.True(box.Y + box.Height >= 64, "the client image's bottom edge is outside the box");
     }
 
     [Fact]
     public void Scene_PartialRegionDrawsThePointerLikeAFullFrame()
     {
-        var theme = Build("Region", ("left_ptr", [(24, 2, 2, 1, 1, [0xFFFF00FFu, 0xFF00FF00u, 0xFF0000FFu, 0xFFFFFFFFu])]));
+        var theme = Build("Region", ("left_ptr", [(24, 24, 24, 3, 1, Fill(24, 24, 0xFFFFFFFFu))]));
         var scene = new Scene
         {
             OutputSize = (64, 48),
@@ -340,7 +368,10 @@ public sealed class CursorThemeTests : IDisposable
         };
 
         var full = Render(scene, 64, 48);
-        var region = new DamageRect(8, 8, 4, 4);
+
+        // The 24x24 pointer starts at (7, 9); this region clips most of it
+        // away, so an unclipped blit would paint the pixels outside it.
+        var region = new DamageRect(7, 9, 6, 6);
         var seeded = new byte[64 * 48 * 4];
         Array.Fill(seeded, (byte)0x11);
         scene.RenderRegion(seeded, 64, 48, 64 * 4, frame: 1, region);
@@ -353,8 +384,10 @@ public sealed class CursorThemeTests : IDisposable
             }
         }
 
-        // Outside the damage the seeded buffer is untouched.
-        Assert.Equal(0x11111111u, Pixel(seeded, 64, 30, 20));
+        // Inside the pointer but outside the damage: untouched seed proves
+        // the blit was clipped, not just offset.
+        Assert.Equal(0x11111111u, Pixel(seeded, 64, 20, 9));
+        Assert.Equal(0x11111111u, Pixel(seeded, 64, 7, 25));
     }
 
     [Fact]

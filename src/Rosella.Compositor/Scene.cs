@@ -256,25 +256,47 @@ public sealed class Scene
     internal CursorTheme? Cursors { get; set; }
 
     /// <summary>
-    /// Everything the pointer image can occupy at a position, in physical
-    /// pixels: the themed pointer (or the built-in arrow) anchored at its
-    /// hotspot, and a client cursor surface (whose size and hotspot are
-    /// logical), whichever is larger.
+    /// The union of every pointer image's box relative to the pointer, in
+    /// physical pixels: (X, Y) is the top-left offset, Width/Height the
+    /// extent. The themed pointer and a client cursor surface have
+    /// independent hotspots — a client's may be negative — so they cannot
+    /// share one width/hotspot pair without under-covering one of them.
     /// </summary>
-    private (int Width, int Height, int HotspotX, int HotspotY) CursorFootprint()
+    private (int X, int Y, int Width, int Height) CursorFootprint()
     {
         var scale = Math.Max(1, Scale);
-        var (width, height, hotspotX, hotspotY) = OwnPointerFootprint(scale);
+        var own = OwnPointerFootprint(scale);
         var cursor = Seat?.CurrentCursor() ?? default;
-        if (cursor.Surface is { } surface)
+        var client = cursor.Surface is { } surface
+            ? (surface.ContentWidth * scale, surface.ContentHeight * scale, cursor.HotspotX * scale, cursor.HotspotY * scale)
+            : ((int, int, int, int)?)null;
+        return PointerBox(own, client);
+    }
+
+    /// <summary>
+    /// The union of the own pointer and an optional client cursor, each as
+    /// (width, height, hotspot) physical pixels, expressed as a box relative
+    /// to the pointer. A client hotspot may be negative; clamping or
+    /// re-deriving it from the union would leave part of its image outside
+    /// the damage rect, so the box keeps each image's own origin.
+    /// </summary>
+    internal static (int X, int Y, int Width, int Height) PointerBox(
+        (int Width, int Height, int HotspotX, int HotspotY) own,
+        (int Width, int Height, int HotspotX, int HotspotY)? client)
+    {
+        var left = -own.HotspotX;
+        var top = -own.HotspotY;
+        var right = own.Width - own.HotspotX;
+        var bottom = own.Height - own.HotspotY;
+        if (client is { } box)
         {
-            width = Math.Max(width, surface.ContentWidth * scale);
-            height = Math.Max(height, surface.ContentHeight * scale);
-            hotspotX = Math.Max(0, cursor.HotspotX * scale);
-            hotspotY = Math.Max(0, cursor.HotspotY * scale);
+            left = Math.Min(left, -box.HotspotX);
+            top = Math.Min(top, -box.HotspotY);
+            right = Math.Max(right, box.Width - box.HotspotX);
+            bottom = Math.Max(bottom, box.Height - box.HotspotY);
         }
 
-        return (width, height, hotspotX, hotspotY);
+        return (left, top, Math.Max(1, right - left), Math.Max(1, bottom - top));
     }
 
     /// <summary>
@@ -294,15 +316,15 @@ public sealed class Scene
         return (CursorSprite.Width * scale, CursorSprite.Height * scale, 0, 0);
     }
 
-    /// <summary>The physical box the pointer image can touch at a position (one pixel of slack).</summary>
-    private DamageRect CursorDamage((int X, int Y) position, (int Width, int Height, int HotspotX, int HotspotY) footprint)
+    /// <summary>The physical box any pointer image can touch at a position (one pixel of slack).</summary>
+    private DamageRect CursorDamage((int X, int Y) position, (int X, int Y, int Width, int Height) footprint)
     {
         var scale = Math.Max(1, Scale);
         return new DamageRect(
-            (position.X * scale) - footprint.HotspotX,
-            (position.Y * scale) - footprint.HotspotY,
-            footprint.Width + footprint.HotspotX + 1,
-            footprint.Height + footprint.HotspotY + 1);
+            (position.X * scale) + footprint.X,
+            (position.Y * scale) + footprint.Y,
+            footprint.Width + 1,
+            footprint.Height + 1);
     }
 
     /// <summary>Focus teardown for the seat (unmap = leave, destroy = silent).</summary>

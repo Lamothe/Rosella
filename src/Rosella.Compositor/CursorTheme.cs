@@ -73,7 +73,10 @@ internal sealed class CursorTheme
     /// </summary>
     internal CursorBitmap? Image(string shape, int pixels)
     {
-        if (pixels <= 0)
+        if (pixels <= 0
+            || string.IsNullOrWhiteSpace(shape)
+            || Path.GetFileName(shape) != shape
+            || shape is "." or "..")
         {
             return null;
         }
