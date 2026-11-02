@@ -268,6 +268,157 @@ public class FieldReportTests
     }
 
     [Fact]
+    public void Shake_OverAClient_DrawsTheThemesLargeArt()
+    {
+        using var harness = new Harness();
+        var root = Path.Combine(Path.GetTempPath(), $"rosella-shake-{Guid.NewGuid():N}");
+        try
+        {
+            // A theme with 24 px red art and 72 px green art: the enlarged
+            // pointer must be the theme's crisp 72, never the client's own
+            // 32 px bitmap warped to 96.
+            harness.Scene.Cursors = CursorThemeFixture.Create(
+                root,
+                "Shake",
+                24,
+                ("left_ptr",
+                [
+                    new XCursorSpec(24, 24, 24, 12, 12, CursorThemeFixture.Fill(24, 24, 0xFFFF0000u)),
+                    new XCursorSpec(72, 72, 72, 36, 36, CursorThemeFixture.Fill(72, 72, 0xFF00FF00u)),
+                ]));
+            harness.Scene.Now = () => 0;
+            var (surface, _) = SetClientCursor(harness, 0xFFFFFFFFu);
+            Assert.True(surface.IsCursorSurface);
+
+            // Unmagnified, the app's own image is what shows: the client
+            // square at pointer − hotspot.
+            harness.Router.PlaceCursor(200, 100);
+            var normal = harness.RenderFrame();
+            Assert.Equal(0xFFFFFFFFu, PixelAt(normal, 1920 * 4, 220, 100));
+
+            harness.Scene.MagnifyCursor();
+            var render = harness.RenderFrame();
+
+            // Magnified, the theme's 72 px green art replaces it: 24 px right
+            // of the hotspot is inside the client's square (which ends at
+            // pointer + 30), and 34 px right is outside it, where only the
+            // theme's image reaches.
+            Assert.Equal(0xFF00FF00u, PixelAt(render, 1920 * 4, 224, 100));
+            Assert.Equal(0xFF00FF00u, PixelAt(render, 1920 * 4, 234, 100));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Shake_OverAClientWithoutATheme_StretchesTheBitmap()
+    {
+        using var harness = new Harness();
+        var (surface, _) = SetClientCursor(harness, 0xFFFFFFFFu);
+        Assert.True(surface.IsCursorSurface);
+        harness.Router.PlaceCursor(200, 100);
+        harness.Scene.MagnifyCursor();
+
+        // No theme art to use: the app's own square grows about its hotspot
+        // (32 px at 3x is 96 px, so 40 px right of the pointer is inside it
+        // where the normal 32 px image would have ended).
+        var render = harness.RenderFrame();
+        Assert.Equal(0xFFFFFFFFu, PixelAt(render, 1920 * 4, 240, 100));
+        Assert.Equal(0xFFFFFFFFu, PixelAt(render, 1920 * 4, 200, 140));
+    }
+
+    [Fact]
+    public void Shake_WithAClientBitmapLargerThanTheThemesArt_StretchesIt()
+    {
+        using var harness = new Harness();
+        var root = Path.Combine(Path.GetTempPath(), $"rosella-shake-{Guid.NewGuid():N}");
+        try
+        {
+            // Only 24 px art: the client's 32 px bitmap is the better
+            // source, so it is stretched rather than replaced by a warped
+            // red ring — the theme's art cannot show more than it has.
+            harness.Scene.Cursors = CursorThemeFixture.Create(
+                root,
+                "Shake",
+                24,
+                ("left_ptr", [new XCursorSpec(24, 24, 24, 12, 12, CursorThemeFixture.Fill(24, 24, 0xFFFF0000u))]));
+            harness.Scene.Now = () => 0;
+            var (surface, _) = SetClientCursor(harness, 0xFFFFFFFFu);
+            Assert.True(surface.IsCursorSurface);
+
+            harness.Router.PlaceCursor(200, 100);
+            harness.Scene.MagnifyCursor();
+            var render = harness.RenderFrame();
+
+            Assert.Equal(0xFFFFFFFFu, PixelAt(render, 1920 * 4, 234, 100));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Shake_WithAHiddenClientCursor_StaysHidden()
+    {
+        using var harness = new Harness();
+        var root = Path.Combine(Path.GetTempPath(), $"rosella-shake-{Guid.NewGuid():N}");
+        try
+        {
+            // A theme is loaded, so "hidden wins over the enlarged theme art"
+            // is the precedence under test, not just the absence of a theme.
+            harness.Scene.Cursors = CursorThemeFixture.Create(
+                root,
+                "Shake",
+                24,
+                ("left_ptr", [new XCursorSpec(72, 72, 72, 36, 36, CursorThemeFixture.Fill(72, 72, 0xFF00FF00u))]));
+            harness.Scene.Now = () => 0;
+            var (_, serial) = SetClientCursor(harness, 0xFFFFFFFFu);
+
+        // The client then hides the image (NULL surface): the shake must not
+        // conjure a pointer the client asked not to have.
+        harness.Client.SendRequest(41, "wl_pointer", "set_cursor", WireArgument.UInt32(serial), WireArgument.Object(0), WireArgument.Int32(0), WireArgument.Int32(0));
+        harness.RoundTrip();
+        Assert.True(harness.Seat.CurrentCursor().Hidden);
+
+            harness.Router.PlaceCursor(200, 100);
+            harness.Scene.MagnifyCursor();
+            var atPointer = harness.RenderFrame();
+
+            // Nothing is drawn where the pointer is: park it elsewhere and
+            // the same pixels come out of an ordinary frame.
+            harness.Router.PlaceCursor(600, 400);
+            var away = harness.RenderFrame();
+
+            Assert.Equal(PixelAt(away, 1920 * 4, 200, 100), PixelAt(atPointer, 1920 * 4, 200, 100));
+            Assert.Equal(PixelAt(away, 1920 * 4, 234, 100), PixelAt(atPointer, 1920 * 4, 234, 100));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    /// <summary>Gives the pointer focus a client which names a 32 px white cursor.</summary>
+    private static (SurfaceHandler Surface, uint Serial) SetClientCursor(Harness harness, uint colour)
+    {
+        var white = new byte[32 * 32 * 4];
+        MemoryMarshal.Cast<byte, uint>(white.AsSpan()).Fill(colour);
+        harness.CommitRaw(20, 32, 32, white);
+        harness.CommitRaw(21, 32, 32, white);
+        harness.BindSeat(40, 41);
+        harness.Seat.SetPointerFocus(harness.Scene.Surfaces.First(s => s.Id == 20), 5, 5);
+        var serial = harness.Client.ReadUntil(41, "enter").Arguments[0].AsUInt32();
+        harness.Client.SendRequest(41, "wl_pointer", "set_cursor", WireArgument.UInt32(serial), WireArgument.Object(21), WireArgument.Int32(2), WireArgument.Int32(3));
+        harness.RoundTrip();
+        var surface = harness.Scene.Surfaces.First(s => s.Id == 21);
+        CompositorSessionTests.WaitFor(() => surface, value => value.IsCursorSurface);
+        return (surface, serial);
+    }
+
+    [Fact]
     public void SetCursor_OnARoledSurface_ReportsRoleError()
     {
         using var harness = new Harness();

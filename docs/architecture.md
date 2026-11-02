@@ -82,10 +82,16 @@ Verified against libwayland's marshalling code and the protocol docs:
    libXcursor's inherit and size rules), with the built-in arrow only when
    no theme loads — always scoped to the owning client's pointer focus.
    A shake (three fast strokes, 40 logical px or more, inside 700 ms) grows
-   the pointer to 3× for one second: the theme's nearest larger image is
-   used natively (a theme with no larger art is stretched instead), the
-   enlarged image stays anchored at its hotspot, and the hold is a deadline
-   the scanout loop wakes for. A held button suppresses the gesture.
+   the pointer for one second: the theme is asked for three times the
+   nominal size and its own image at that size is drawn natively. While
+   enlarged, the theme's art wins over a client's `set_cursor` bitmap — a
+   client image is a fixed resolution, and warping 24 px to 72 smears its
+   antialiased rim, so the gesture would be at its least legible exactly
+   where it is used most (much of the screen is a window). A client bitmap
+   already larger than the theme's enlarged image is still stretched, and a
+   hidden cursor stays hidden. The enlarged image stays anchored at its
+   hotspot, and the hold is a deadline the scanout loop wakes for. A held
+   button suppresses the gesture.
 
 ## Milestones
 

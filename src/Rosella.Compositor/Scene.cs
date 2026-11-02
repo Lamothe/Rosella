@@ -601,9 +601,26 @@ public sealed class Scene
         var (cursorX, cursorY) = Cursor;
         var cursor = Seat?.CurrentCursor() ?? default;
         var factor = Magnified ? MagnifyFactor : 1;
+
+        // A client's cursor is a fixed small bitmap: warping it to three
+        // times its size makes its antialiased rim three pixels of mush.
+        // While the pointer is enlarged the theme's own large art is drawn
+        // instead — for the shake the point is to be found, not to keep the
+        // app's shape for one second. A client bitmap with more pixels than
+        // the theme's own art is still stretched: it is the better source,
+        // and replacing it with less detailed art would lose the pointer
+        // rather than find it.
+        var client = cursor.Surface is { } clientSurface
+            ? (Width: clientSurface.ContentWidth * scale, Height: clientSurface.ContentHeight * scale)
+            : default;
+        var enlarged = factor > 1 ? Cursors?.Pointer(scale, factor) : null;
         if (cursor.Hidden)
         {
             // The focused client hid the pointer image (spec: NULL surface).
+        }
+        else if (enlarged is { } big && client.Width <= big.SourceWidth && client.Height <= big.SourceHeight)
+        {
+            DrawTheme(pixels, width, height, stride, cursorX, cursorY, scale, big, region);
         }
         else if (cursor.Surface is { } cursorSurface)
         {
@@ -629,21 +646,9 @@ public sealed class Scene
                     region);
             }
         }
-        else if (Cursors?.Pointer(scale, factor) is { } bitmap)
+        else if (Cursors?.Pointer(scale) is { } bitmap)
         {
-            // The theme image is native physical pixels and its hotspot is in
-            // physical pixels. The destination is the image's own box, which
-            // is the source's unless an enlargement had to stretch it;
-            // either way the blit is clipped to this region.
-            Blitter.Blit(
-                pixels, width, height, stride,
-                MemoryMarshal.AsBytes(bitmap.Pixels.AsSpan()),
-                bitmap.SourceWidth, bitmap.SourceHeight, bitmap.SourceWidth * 4,
-                ShmFormats.Argb8888,
-                (cursorX * scale) - bitmap.HotspotX,
-                (cursorY * scale) - bitmap.HotspotY,
-                bitmap.Width, bitmap.Height,
-                region);
+            DrawTheme(pixels, width, height, stride, cursorX, cursorY, scale, bitmap, region);
         }
         else
         {
@@ -656,6 +661,30 @@ public sealed class Scene
 
         return new RenderCost(backgroundPixels, surfacePixels, surfaceCount);
     }
+
+    /// <summary>
+    /// Draws one of the theme's pointer images at the pointer: native
+    /// physical pixels, its own hotspot, clipped to the damage region.
+    /// </summary>
+    private static void DrawTheme(
+        Span<byte> pixels,
+        int width,
+        int height,
+        int stride,
+        int cursorX,
+        int cursorY,
+        int scale,
+        CursorBitmap bitmap,
+        in DamageRect region) =>
+        Blitter.Blit(
+            pixels, width, height, stride,
+            MemoryMarshal.AsBytes(bitmap.Pixels.AsSpan()),
+            bitmap.SourceWidth, bitmap.SourceHeight, bitmap.SourceWidth * 4,
+            ShmFormats.Argb8888,
+            (cursorX * scale) - bitmap.HotspotX,
+            (cursorY * scale) - bitmap.HotspotY,
+            bitmap.Width, bitmap.Height,
+            region);
 
     /// <summary>
     /// Whether a region can show chrome: the taskbar band, which every

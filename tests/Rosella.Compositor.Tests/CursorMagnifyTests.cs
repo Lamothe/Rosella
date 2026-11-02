@@ -217,7 +217,7 @@ public sealed class CursorMagnifyTests : IDisposable
     {
         // The theme ships 24 and 72: the enlargement must pick 72 (native),
         // not stretch the 24 px image.
-        var theme = Theme(("left_ptr", [(24, 24, 24, 12, 12, Fill(24, 24, 0xFFFF0000u)), (72, 72, 72, 36, 36, Fill(72, 72, 0xFF00FF00u))]));
+        var theme = Theme((24, 24, 24, 12, 12, 0xFFFF0000u), (72, 72, 72, 36, 36, 0xFF00FF00u));
         var scene = new Scene { OutputSize = (256, 256), Scale = 1, Cursors = theme, Cursor = (128, 128), Now = () => 1000 };
 
         scene.MagnifyCursor();
@@ -232,7 +232,7 @@ public sealed class CursorMagnifyTests : IDisposable
     [Fact]
     public void Scene_MagnifiedPointerShrinksBackAfterTheHold()
     {
-        var theme = Theme(("left_ptr", [(24, 24, 24, 12, 12, Fill(24, 24, 0xFFFF0000u)), (72, 72, 72, 36, 36, Fill(72, 72, 0xFF00FF00u))]));
+        var theme = Theme((24, 24, 24, 12, 12, 0xFFFF0000u), (72, 72, 72, 36, 36, 0xFF00FF00u));
         long now = 1000;
         var scene = new Scene { OutputSize = (256, 256), Scale = 1, Cursors = theme, Cursor = (128, 128), Now = () => now };
 
@@ -295,7 +295,7 @@ public sealed class CursorMagnifyTests : IDisposable
     {
         // Only 24 px art: no larger image exists, so the gesture stretches
         // the one there is rather than doing nothing.
-        var theme = Theme(("left_ptr", [(24, 24, 24, 12, 12, Fill(24, 24, 0xFFFF0000u))]));
+        var theme = Theme((24, 24, 24, 12, 12, 0xFFFF0000u));
         var scene = new Scene { OutputSize = (256, 256), Scale = 1, Cursors = theme, Cursor = (128, 128), Now = () => 0 };
 
         scene.MagnifyCursor();
@@ -337,6 +337,16 @@ public sealed class CursorMagnifyTests : IDisposable
         Assert.Equal(TimeSpan.FromSeconds(2), Scanout.IdleWait(now, TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(5)));
     }
 
+    /// <summary>A one-shape theme whose left_ptr has these solid images.</summary>
+    private CursorTheme Theme(params (int Size, int Width, int Height, int HotspotX, int HotspotY, uint Colour)[] images) =>
+        CursorThemeFixture.Create(
+            _root,
+            "Shake",
+            24,
+            ("left_ptr", images
+                .Select(image => new XCursorSpec(image.Size, image.Width, image.Height, image.HotspotX, image.HotspotY, CursorThemeFixture.Fill(image.Width, image.Height, image.Colour)))
+                .ToArray()));
+
     private static readonly TimeSpan Hold = Scene.MagnifyHold;
 
     private static byte[] Render(Scene scene, int width, int height)
@@ -354,72 +364,6 @@ public sealed class CursorMagnifyTests : IDisposable
         var pixels = new uint[width * height];
         Array.Fill(pixels, colour);
         return pixels;
-    }
-
-    private CursorTheme? Theme(params (string Shape, (int Size, int Width, int Height, int XHot, int YHot, uint[] Pixels)[] Images)[] shapes)
-    {
-        var directory = Path.Combine(_root, "Shake");
-        Directory.CreateDirectory(Path.Combine(directory, "cursors"));
-        foreach (var (shape, images) in shapes)
-        {
-            File.WriteAllBytes(Path.Combine(directory, "cursors", shape), Encode(images));
-        }
-
-        return CursorTheme.Open("Shake", 24, [_root]);
-    }
-
-    private static byte[] Encode(params (int Size, int Width, int Height, int XHot, int YHot, uint[] Pixels)[] images)
-    {
-        const int header = 16;
-        const int tocEntry = 12;
-        const int imageHeader = 36;
-        const uint imageType = 0xFFFD0002;
-
-        var offsets = new int[images.Length];
-        var length = header + (images.Length * tocEntry);
-        for (var index = 0; index < images.Length; index++)
-        {
-            offsets[index] = length;
-            length += imageHeader + (images[index].Width * images[index].Height * 4);
-        }
-
-        var bytes = new byte[length];
-        var span = bytes.AsSpan();
-        BinaryPrimitives.WriteUInt32LittleEndian(span, 0x72756358);
-        BinaryPrimitives.WriteUInt32LittleEndian(span[4..], header);
-        BinaryPrimitives.WriteUInt32LittleEndian(span[8..], 0x00010000);
-        BinaryPrimitives.WriteUInt32LittleEndian(span[12..], (uint)images.Length);
-
-        for (var index = 0; index < images.Length; index++)
-        {
-            var entry = span[(header + (index * tocEntry))..];
-            BinaryPrimitives.WriteUInt32LittleEndian(entry, imageType);
-            BinaryPrimitives.WriteUInt32LittleEndian(entry[4..], (uint)images[index].Size);
-            BinaryPrimitives.WriteUInt32LittleEndian(entry[8..], (uint)offsets[index]);
-        }
-
-        for (var index = 0; index < images.Length; index++)
-        {
-            var (size, width, height, xhot, yhot, pixels) = images[index];
-            var chunk = span[offsets[index]..];
-            BinaryPrimitives.WriteUInt32LittleEndian(chunk, imageHeader);
-            BinaryPrimitives.WriteUInt32LittleEndian(chunk[4..], imageType);
-            BinaryPrimitives.WriteUInt32LittleEndian(chunk[8..], (uint)size);
-            BinaryPrimitives.WriteUInt32LittleEndian(chunk[12..], 1);
-            BinaryPrimitives.WriteUInt32LittleEndian(chunk[16..], (uint)width);
-            BinaryPrimitives.WriteUInt32LittleEndian(chunk[20..], (uint)height);
-            BinaryPrimitives.WriteUInt32LittleEndian(chunk[24..], (uint)xhot);
-            BinaryPrimitives.WriteUInt32LittleEndian(chunk[28..], (uint)yhot);
-            BinaryPrimitives.WriteUInt32LittleEndian(chunk[32..], 0);
-
-            var data = chunk[imageHeader..];
-            for (var pixel = 0; pixel < pixels.Length; pixel++)
-            {
-                BinaryPrimitives.WriteUInt32LittleEndian(data[(pixel * 4)..], pixels[pixel]);
-            }
-        }
-
-        return bytes;
     }
 
     /// <summary>A router with no client: just the pointer policy under test.</summary>
