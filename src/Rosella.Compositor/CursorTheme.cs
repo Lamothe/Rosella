@@ -1,7 +1,18 @@
 namespace Rosella.Compositor;
 
-/// <summary>A pointer image in physical pixels, ready to blit at 1:1.</summary>
-internal sealed record CursorBitmap(int Width, int Height, int HotspotX, int HotspotY, uint[] Pixels);
+/// <summary>
+/// A pointer image as it will be drawn: the theme's native pixels plus the
+/// physical box they map onto. The two differ only when an enlargement had
+/// no larger art to use and the image is stretched about its hotspot.
+/// </summary>
+internal sealed record CursorBitmap(
+    uint[] Pixels,
+    int SourceWidth,
+    int SourceHeight,
+    int Width,
+    int Height,
+    int HotspotX,
+    int HotspotY);
 
 /// <summary>
 /// Rosella's own pointer, drawn from the Xcursor theme GTK clients use.
@@ -57,11 +68,45 @@ internal sealed class CursorTheme
         return theme._directories.Count > 0 ? theme : null;
     }
 
-    /// <summary>The default pointer at an output scale, or null if the theme lacks it.</summary>
-    internal CursorBitmap? Pointer(int scale)
+    /// <summary>
+    /// The default pointer at an output scale, or null if the theme lacks
+    /// it. <paramref name="factor"/> asks for a larger nominal size — the
+    /// shake-to-find enlargement — and the theme's nearest image at that
+    /// size is returned natively, so the big pointer is crisp art rather
+    /// than a resample of the small one.
+    /// </summary>
+    internal CursorBitmap? Pointer(int scale, int factor = 1)
     {
-        var pixels = Size * Math.Max(1, scale);
-        return Image("left_ptr", pixels) ?? Image("default", pixels);
+        var normal = Size * Math.Max(1, scale);
+        var request = normal * Math.Max(1, factor);
+        var image = Image("left_ptr", request) ?? Image("default", request);
+        if (image is null)
+        {
+            return null;
+        }
+
+        // A theme with no art above the normal size cannot grow natively;
+        // stretch the art it does show rather than ignore the gesture. The
+        // comparison is against the image the pointer normally uses, not the
+        // nominal size, so a theme whose smallest art is already large still
+        // visibly grows.
+        if (factor > 1)
+        {
+            var shown = Image("left_ptr", normal) ?? Image("default", normal);
+            if (shown is not null && image.Width <= shown.Width)
+            {
+                return new CursorBitmap(
+                    shown.Pixels,
+                    shown.Width,
+                    shown.Height,
+                    shown.Width * factor,
+                    shown.Height * factor,
+                    shown.HotspotX * factor,
+                    shown.HotspotY * factor);
+            }
+        }
+
+        return image;
     }
 
     /// <summary>
@@ -157,7 +202,14 @@ internal sealed class CursorTheme
             }
         }
 
-        return new CursorBitmap(chosen.Width, chosen.Height, chosen.HotspotX, chosen.HotspotY, chosen.Pixels);
+        return new CursorBitmap(
+            chosen.Pixels,
+            chosen.Width,
+            chosen.Height,
+            chosen.Width,
+            chosen.Height,
+            chosen.HotspotX,
+            chosen.HotspotY);
     }
 
     private void AddChain(string directory, IReadOnlyList<string> roots, HashSet<string> visited)

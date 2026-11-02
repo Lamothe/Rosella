@@ -81,6 +81,11 @@ Verified against libwayland's marshalling code and the protocol docs:
    then settings.ini, then the `default` theme at 24; `CursorTheme` follows
    libXcursor's inherit and size rules), with the built-in arrow only when
    no theme loads — always scoped to the owning client's pointer focus.
+   A shake (three fast strokes, 40 logical px or more, inside 700 ms) grows
+   the pointer to 3× for one second: the theme's nearest larger image is
+   used natively (a theme with no larger art is stretched instead), the
+   enlarged image stays anchored at its hotspot, and the hold is a deadline
+   the scanout loop wakes for. A held button suppresses the gesture.
 
 ## Milestones
 

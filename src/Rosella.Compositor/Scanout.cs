@@ -311,21 +311,25 @@ internal sealed class Scanout : IDisposable
         return TimeSpan.FromTicks(Math.Clamp(remaining, TimeSpan.FromMilliseconds(50).Ticks, TimeSpan.TicksPerMinute));
     }
 
+    private TimeSpan IdleWait() => IdleWait(DateTime.Now, _screenPower?.UntilIdle, _scene.UntilPointerShrinks);
+
     /// <summary>
     /// The awake idle bound: the next clock change, shortened to the blank
-    /// policy's deadline so the panel still goes dark on time, and never so
+    /// policy's deadline and to a shrinking pointer's deadline (a shaken
+    /// pointer must shrink on time even on an idle desktop), and never so
     /// short that the loop spins.
     /// </summary>
-    private TimeSpan IdleWait()
+    internal static TimeSpan IdleWait(DateTime now, TimeSpan? untilBlank, TimeSpan? untilShrink)
     {
-        var wait = NextClockWake(DateTime.Now);
-        if (_screenPower is { } power)
+        var wait = NextClockWake(now);
+        if (untilBlank is { } blank && blank < wait)
         {
-            var untilBlank = power.UntilIdle;
-            if (untilBlank < wait)
-            {
-                wait = untilBlank;
-            }
+            wait = blank;
+        }
+
+        if (untilShrink is { } shrink && shrink < wait)
+        {
+            wait = shrink;
         }
 
         return wait < MinimumWait ? MinimumWait : wait;

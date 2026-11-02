@@ -75,6 +75,7 @@ public sealed class Scene
     /// </summary>
     internal int TakeDamage(int width, int height, Span<DamageRect> destination)
     {
+        ExpireMagnify();
         lock (_gate)
         {
             return _damage.Take(width, height, destination);
@@ -224,7 +225,7 @@ public sealed class Scene
         {
             // Read the pointer footprint before taking the gate: the seat and
             // surface locks are never taken underneath it.
-            var footprint = CursorFootprint();
+            var footprint = CursorFootprint(Magnified);
             lock (_gate)
             {
                 var previous = _cursor;
@@ -248,6 +249,98 @@ public sealed class Scene
 
     private (int X, int Y) _cursor;
 
+    /// <summary>How much larger a shaken pointer is drawn.</summary>
+    internal const int MagnifyFactor = 3;
+
+    /// <summary>How long the enlarged pointer stays before shrinking back.</summary>
+    internal static readonly TimeSpan MagnifyHold = TimeSpan.FromMilliseconds(1000);
+
+    /// <summary>Milliseconds since boot, injectable so tests can age the pointer.</summary>
+    internal Func<long> Now { get; set; } = () => Environment.TickCount64;
+
+    /// <summary>When the enlargement ends (guarded by <see cref="_gate"/>); 0 when not magnified.</summary>
+    private long _magnifyUntil;
+
+    /// <summary>Whether the pointer is currently drawn enlarged (guarded by <see cref="_gate"/>).</summary>
+    private bool Magnified
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _magnifyUntil != 0;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Enlarges the pointer for a moment — the shake-to-find gesture. The
+    /// pointer grows around its hotspot and shrinks back after
+    /// <see cref="MagnifyHold"/>; shaking again during the hold restarts the
+    /// clock. The growth is a different image from the theme (crisp, not a
+    /// resample) at <see cref="MagnifyFactor"/> the nominal size.
+    /// </summary>
+    internal void MagnifyCursor()
+    {
+        // Both footprints are read before the gate: the seat and surface
+        // locks are never taken underneath it.
+        var normal = CursorFootprint(magnified: false);
+        var large = CursorFootprint(magnified: true);
+        lock (_gate)
+        {
+            _magnifyUntil = Now() + (long)MagnifyHold.TotalMilliseconds;
+            _dirty = true;
+            _damage.Add(CursorDamage(_cursor, normal));
+            _damage.Add(CursorDamage(_cursor, large));
+            Monitor.PulseAll(_gate);
+        }
+    }
+
+    /// <summary>
+    /// How long until an enlarged pointer shrinks back, or null when it is
+    /// not enlarged. The scanout loop sleeps no longer than this, so the
+    /// shrink happens on time even on an idle desktop.
+    /// </summary>
+    internal TimeSpan? UntilPointerShrinks
+    {
+        get
+        {
+            lock (_gate)
+            {
+                if (_magnifyUntil == 0)
+                {
+                    return null;
+                }
+
+                var remaining = _magnifyUntil - Now();
+                return remaining <= 0 ? TimeSpan.Zero : TimeSpan.FromMilliseconds(remaining);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Ends an enlargement whose hold has passed. Whole-output damage: the
+    /// large image has to be painted over wherever it was, and one full
+    /// repaint a second after a shake is cheaper than tracking the old box
+    /// through concurrent pointer moves (over-painting is a cost, under-
+    /// painting is a bug).
+    /// </summary>
+    private void ExpireMagnify()
+    {
+        lock (_gate)
+        {
+            if (_magnifyUntil == 0 || Now() < _magnifyUntil)
+            {
+                return;
+            }
+
+            _magnifyUntil = 0;
+            _dirty = true;
+            _damage.MarkFull();
+            Monitor.PulseAll(_gate);
+        }
+    }
+
     /// <summary>
     /// Rosella's own pointer art, loaded from the Xcursor theme the client
     /// toolkits use. Null keeps the built-in arrow (no theme found, or the
@@ -262,40 +355,56 @@ public sealed class Scene
     /// independent hotspots — a client's may be negative — so they cannot
     /// share one width/hotspot pair without under-covering one of them.
     /// </summary>
-    private (int X, int Y, int Width, int Height) CursorFootprint()
+    private (int X, int Y, int Width, int Height) CursorFootprint(bool magnified)
     {
         var scale = Math.Max(1, Scale);
-        var own = OwnPointerFootprint(scale);
+        var factor = magnified ? MagnifyFactor : 1;
+        var own = OwnPointerFootprint(scale, factor);
+        var ownBox = (-own.HotspotX, -own.HotspotY, own.Width, own.Height);
         var cursor = Seat?.CurrentCursor() ?? default;
-        var client = cursor.Surface is { } surface
-            ? (surface.ContentWidth * scale, surface.ContentHeight * scale, cursor.HotspotX * scale, cursor.HotspotY * scale)
-            : ((int, int, int, int)?)null;
-        return PointerBox(own, client);
+        var clientBox = cursor.Surface is { } surface
+            ? ClientCursorBox(surface.ContentWidth, surface.ContentHeight, cursor.HotspotX, cursor.HotspotY, scale, factor)
+            : ((int X, int Y, int Width, int Height)?)null;
+        return Union(ownBox, clientBox);
     }
 
     /// <summary>
-    /// The union of the own pointer and an optional client cursor, each as
-    /// (width, height, hotspot) physical pixels, expressed as a box relative
-    /// to the pointer. A client hotspot may be negative; clamping or
-    /// re-deriving it from the union would leave part of its image outside
-    /// the damage rect, so the box keeps each image's own origin.
+    /// A client cursor's physical box relative to the pointer. The hotspot
+    /// may be negative (the protocol allows it), and the enlargement scales
+    /// the image about that hotspot, so the box keeps its own origin.
     /// </summary>
-    internal static (int X, int Y, int Width, int Height) PointerBox(
-        (int Width, int Height, int HotspotX, int HotspotY) own,
-        (int Width, int Height, int HotspotX, int HotspotY)? client)
+    internal static (int X, int Y, int Width, int Height) ClientCursorBox(
+        int contentWidth,
+        int contentHeight,
+        int hotspotX,
+        int hotspotY,
+        int scale,
+        int factor) =>
+        (
+            -hotspotX * scale * factor,
+            -hotspotY * scale * factor,
+            contentWidth * scale * factor,
+            contentHeight * scale * factor
+        );
+
+    /// <summary>
+    /// The union of two pointer-image boxes relative to the pointer. Each
+    /// keeps its own origin: clamping or re-deriving one from the union
+    /// would leave part of that image outside the damage rect.
+    /// </summary>
+    internal static (int X, int Y, int Width, int Height) Union(
+        (int X, int Y, int Width, int Height) first,
+        (int X, int Y, int Width, int Height)? second)
     {
-        var left = -own.HotspotX;
-        var top = -own.HotspotY;
-        var right = own.Width - own.HotspotX;
-        var bottom = own.Height - own.HotspotY;
-        if (client is { } box)
+        if (second is not { } other)
         {
-            left = Math.Min(left, -box.HotspotX);
-            top = Math.Min(top, -box.HotspotY);
-            right = Math.Max(right, box.Width - box.HotspotX);
-            bottom = Math.Max(bottom, box.Height - box.HotspotY);
+            return first;
         }
 
+        var left = Math.Min(first.X, other.X);
+        var top = Math.Min(first.Y, other.Y);
+        var right = Math.Max(first.X + first.Width, other.X + other.Width);
+        var bottom = Math.Max(first.Y + first.Height, other.Y + other.Height);
         return (left, top, Math.Max(1, right - left), Math.Max(1, bottom - top));
     }
 
@@ -306,14 +415,14 @@ public sealed class Scene
     /// what lets the damage rect use the drawn origin exactly — dividing a
     /// hotspot down and back multiplies rounding error into missing columns.
     /// </summary>
-    private (int Width, int Height, int HotspotX, int HotspotY) OwnPointerFootprint(int scale)
+    private (int Width, int Height, int HotspotX, int HotspotY) OwnPointerFootprint(int scale, int factor)
     {
-        if (Cursors?.Pointer(scale) is { } bitmap)
+        if (Cursors?.Pointer(scale, factor) is { } bitmap)
         {
             return (bitmap.Width, bitmap.Height, bitmap.HotspotX, bitmap.HotspotY);
         }
 
-        return (CursorSprite.Width * scale, CursorSprite.Height * scale, 0, 0);
+        return (CursorSprite.Width * scale * factor, CursorSprite.Height * scale * factor, 0, 0);
     }
 
     /// <summary>The physical box any pointer image can touch at a position (one pixel of slack).</summary>
@@ -491,6 +600,7 @@ public sealed class Scene
         // flight).
         var (cursorX, cursorY) = Cursor;
         var cursor = Seat?.CurrentCursor() ?? default;
+        var factor = Magnified ? MagnifyFactor : 1;
         if (cursor.Hidden)
         {
             // The focused client hid the pointer image (spec: NULL surface).
@@ -499,22 +609,36 @@ public sealed class Scene
         {
             if (cursorSurface is { IsMapped: true, Gone: false })
             {
-                var (hotspotX, hotspotY) = (cursor.HotspotX, cursor.HotspotY);
+                // Enlarged, the client's bitmap is stretched about its
+                // hotspot: nearest-neighbour, but the shape the app chose is
+                // preserved. The box is the same one the damage footprint
+                // uses, so the two cannot drift apart.
+                var box = ClientCursorBox(
+                    cursorSurface.ContentWidth,
+                    cursorSurface.ContentHeight,
+                    cursor.HotspotX,
+                    cursor.HotspotY,
+                    scale,
+                    factor);
                 cursorSurface.BlitAt(
                     pixels, width, height, stride,
-                    (cursorX - hotspotX) * scale, (cursorY - hotspotY) * scale,
-                    cursorSurface.ContentWidth * scale, cursorSurface.ContentHeight * scale,
+                    (cursorX * scale) + box.X,
+                    (cursorY * scale) + box.Y,
+                    box.Width,
+                    box.Height,
                     region);
             }
         }
-        else if (Cursors?.Pointer(scale) is { } bitmap)
+        else if (Cursors?.Pointer(scale, factor) is { } bitmap)
         {
-            // The theme image is already at physical size and its hotspot is
-            // in physical pixels: blit 1:1, clipped to this region.
+            // The theme image is native physical pixels and its hotspot is in
+            // physical pixels. The destination is the image's own box, which
+            // is the source's unless an enlargement had to stretch it;
+            // either way the blit is clipped to this region.
             Blitter.Blit(
                 pixels, width, height, stride,
                 MemoryMarshal.AsBytes(bitmap.Pixels.AsSpan()),
-                bitmap.Width, bitmap.Height, bitmap.Width * 4,
+                bitmap.SourceWidth, bitmap.SourceHeight, bitmap.SourceWidth * 4,
                 ShmFormats.Argb8888,
                 (cursorX * scale) - bitmap.HotspotX,
                 (cursorY * scale) - bitmap.HotspotY,
@@ -527,7 +651,7 @@ public sealed class Scene
             // handing it a viewport at the region's origin clips it to the
             // damage without it having to know about damage at all.
             var viewport = pixels.Slice((region.Y * stride) + (region.X * 4));
-            CursorSprite.Draw(viewport, region.W, region.H, stride, (cursorX * scale) - region.X, (cursorY * scale) - region.Y, scale);
+            CursorSprite.Draw(viewport, region.W, region.H, stride, (cursorX * scale) - region.X, (cursorY * scale) - region.Y, scale * factor);
         }
 
         return new RenderCost(backgroundPixels, surfacePixels, surfaceCount);

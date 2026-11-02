@@ -348,11 +348,26 @@ public sealed class CursorThemeTests : IDisposable
         // A client may hand set_cursor a negative hotspot. The union must
         // place that image at its own origin (pointer + 10) and still reach
         // its far edge, instead of clamping the hotspot to zero.
-        var box = Scene.PointerBox((24, 24, 24, 24), (64, 64, -10, 0));
+        var box = Scene.Union((-24, -24, 24, 24), Scene.ClientCursorBox(64, 64, -10, 0, scale: 1, factor: 1));
 
         Assert.Equal((-24, -24, 98, 88), box);
         Assert.True(box.X + box.Width >= 74, "the client image's right edge is outside the box");
         Assert.True(box.Y + box.Height >= 64, "the client image's bottom edge is outside the box");
+    }
+
+    [Fact]
+    public void PointerBox_EnlargesTheClientCursorAboutItsHotspot()
+    {
+        // At scale 2 and 3x the image is 384 px wide, anchored where the
+        // hotspot sits: the drawn origin and the damage origin are one.
+        var box = Scene.ClientCursorBox(32, 32, 2, 3, scale: 2, factor: 3);
+
+        Assert.Equal((-12, -18, 192, 192), box);
+
+        // The own arrow is a 24x24 box at (-24, -24); the union reaches the
+        // client image's far corner (180, 174).
+        var union = Scene.Union((-24, -24, 24, 24), box);
+        Assert.Equal((-24, -24, 204, 198), union);
     }
 
     [Fact]

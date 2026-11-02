@@ -41,6 +41,12 @@ internal sealed class InputRouter
     private int _moveRemainderX;
     private int _moveRemainderY;
 
+    /// <summary>The shake-to-find gesture, per axis of pointer motion.</summary>
+    private readonly CursorShake _shake = new();
+
+    /// <summary>Buttons currently held, so a drag never reads as a shake.</summary>
+    private readonly HashSet<int> _heldButtons = new();
+
     // Touchpad gestures own the multitouch slot state (tap-to-click, scroll,
     // tap-drag); the router supplies the pointer, axis and button plumbing.
     private readonly TouchpadGestures _gestures;
@@ -124,6 +130,8 @@ internal sealed class InputRouter
             _chromePressConsumedButtons.Clear();
             _settingsPressConsumedButtons.Clear();
             _buttonPressTargets.Clear();
+            _heldButtons.Clear();
+            _shake.Reset();
             _lastDepressed = -1;
             _lastLocked = -1;
         }
@@ -319,6 +327,14 @@ internal sealed class InputRouter
         _cursorY = Math.Clamp(_cursorY + moveY, 0, Math.Max(0, outputHeight - 1));
         _scene.Cursor = (_cursorX, _cursorY);
 
+        // Shake to find the pointer: a few fast strokes grow it for a
+        // moment. Never while dragging — swiping a selection back and forth
+        // is not a search for the cursor.
+        if (_heldButtons.Count == 0 && _shake.Add(moveX, moveY, time))
+        {
+            _scene.MagnifyCursor();
+        }
+
         if (_shell is { Settings.IsOpen: true } settingsShell)
         {
             var settingsLayout = settingsShell.LastBarLayout
@@ -360,6 +376,20 @@ internal sealed class InputRouter
 
     private void HandleButton(int code, bool pressed, uint time)
     {
+        // Any physical button suppresses the shake gesture while it is held,
+        // and a press ends any stroke sequence: clicking must never add up to
+        // a shake. A set, not a flag, so releasing one button of a chording
+        // drag cannot re-arm the gesture with another still down.
+        if (pressed)
+        {
+            _heldButtons.Add(code);
+            _shake.Reset();
+        }
+        else
+        {
+            _heldButtons.Remove(code);
+        }
+
         // A press eaten by the shell chrome swallows its own release: no
         // client may see a release for a press it never received, and no
         // press may lose the release it is owed. Consumed buttons are a set

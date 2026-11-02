@@ -75,7 +75,11 @@ configuration is where desktop environments go to die.
   size and output scale clients load, so the desktop pointer and Chrome's
   bitmaps are one design — drawn topmost; the built-in arrow is only the
   fallback when no theme loads. Text beams, hands and resize cursors are
-  the app's. The trackpad policy is fixed too:
+  the app's. Shake the pointer and it grows for a second — the theme is
+  asked for three times the size and its own larger art is used natively,
+  not resampled — so a lost cursor is easy to find; the same shake while
+  dragging does nothing. The trackpad
+  policy is fixed too:
   one finger moves, a tap clicks (right with two, middle with three), a
   second touch drags, two or more fingers scroll — at 6 logical pixels and
   3 axis units per millimetre of finger travel, calibrated from the pad's
