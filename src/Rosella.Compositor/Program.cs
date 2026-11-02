@@ -78,6 +78,32 @@ shell.Pinned = PinnedApps.Resolve(Bar.IconSize * scale);
 // Scale times that. Windows, chrome and input all live in logical space.
 scene.Scale = scale;
 scene.OutputSize = (output.Mode.HDisplay / scale, output.Mode.VDisplay / scale);
+
+// Rosella's own pointer: the Xcursor theme the client toolkits use, at the
+// same logical size and output scale Chrome loads for its set_cursor
+// bitmaps. A schema's default name can point at a theme the machine lacks,
+// so the ini name and libXcursor's own "default" follow it; the built-in
+// arrow is the last resort, never a failed start.
+var cursorSettings = CursorSettings.Resolve();
+string? cursorThemeName = null;
+foreach (var name in new[] { cursorSettings.Theme, cursorSettings.Fallback, "default", "Adwaita" })
+{
+    if (name is not null && CursorTheme.Open(name, cursorSettings.Size) is { } theme)
+    {
+        scene.Cursors = theme;
+        cursorThemeName = name;
+        break;
+    }
+}
+
+if (scene.Cursors is null)
+{
+    Console.Error.WriteLine($"rosella: no cursor theme found ('{cursorSettings.Theme}'); using the built-in arrow");
+}
+else
+{
+    Console.Error.WriteLine($"rosella: cursor theme {cursorThemeName} at {cursorSettings.Size}");
+}
 var outputInfo = new OutputInfo(
     output.Mode.HDisplay,
     output.Mode.VDisplay,

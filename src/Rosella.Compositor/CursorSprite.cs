@@ -3,9 +3,10 @@ using System.Runtime.InteropServices;
 namespace Rosella.Compositor;
 
 /// <summary>
-/// The one cursor: a classic arrow, hand-authored as pixel art. Opacity is
-/// 1-bit (' ' transparent), the palette is black outline over white fill —
-/// deliberately not configurable.
+/// The last-resort pointer: a classic arrow, hand-authored as pixel art.
+/// Used only when no Xcursor theme loads (the normal pointer comes from
+/// <see cref="CursorTheme"/>); opacity is 1-bit (' ' transparent), the
+/// palette is black outline over white fill.
 /// </summary>
 internal static class CursorSprite
 {

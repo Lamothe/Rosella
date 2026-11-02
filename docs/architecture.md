@@ -66,7 +66,8 @@ Verified against libwayland's marshalling code and the protocol docs:
 5. **Test in a VM, iterate nested.** Real seat/KMS testing happens in a VM
    (virtio-gpu, virtio-input). A nested/windowed development backend can come
    later for fast iteration; the DE logic itself is testable anywhere.
-6. **The field-report policies** (all hardcoded, no settings): per-output
+6. **The field-report policies** (hardcoded, with no Rosella settings of
+   their own — the pointer theme is the environment's): per-output
    integer DPI scaling chosen like mutter (`ScalePolicy`: 135 DPI target
    under 20″, 110 above; falls back to 2× for laptop-class panels whose
    firmware fabricates a 96-DPI placeholder size); every toplevel opens
@@ -75,8 +76,11 @@ Verified against libwayland's marshalling code and the protocol docs:
    ARGB buffers blend source-over with premultiplied alpha (client-side
    decoration shadows render as translucent veils, not black squares); the
    pointer image is the pointer-focused client's `set_cursor` surface at
-   pointer−hotspot (hidden on NULL), else the built-in arrow — always scoped
-   to the owning client's pointer focus.
+   pointer−hotspot (hidden on NULL), else the session's Xcursor theme
+   (`CursorSettings` picks the name and size GTK clients use — GSettings,
+   then settings.ini, then Adwaita 24; `CursorTheme` follows libXcursor's
+   inherit and size rules), with the built-in arrow only when no theme
+   loads — always scoped to the owning client's pointer focus.
 
 ## Milestones
 
@@ -131,8 +135,9 @@ Verified against libwayland's marshalling code and the protocol docs:
   raise, keys to the focus, xdg activation configure rounds, Alt+F4 =
   close, Alt+Tab = switch windows (Shift reverses, Esc cancels),
   Super+Esc = quit, Ctrl+Alt+Fn = switch VT; the pointer image is the
-  pointer-focused client's `set_cursor` surface (hidden on NULL), else one
-  built-in arrow. Trackpad gestures: one finger moves, tap-to-click by
+  pointer-focused client's `set_cursor` surface (hidden on NULL), else the
+  session's Xcursor theme (the built-in arrow only when none loads). Trackpad
+  gestures: one finger moves, tap-to-click by
   finger count, tap-then-drag, multi-finger scroll, all in millimetres (the
   pad reports 94/92 units per mm) rather than raw device units, and
   disable-while-typing: a contact that begins within 500 ms of a key event

@@ -71,8 +71,11 @@ configuration is where desktop environments go to die.
   Alt+Tab switches windows (Shift reverses, Esc cancels), Super+Esc quits,
   Ctrl+Alt+Fn switches VT. The pointer image is the pointer-focused
   client's `set_cursor` surface at pointer−hotspot (hidden on NULL), else
-  the built-in arrow sprite, drawn topmost — so text beams, hands and
-  resize cursors are the app's. The trackpad policy is fixed too:
+  Rosella's own pointer from the session's Xcursor theme — the same name,
+  size and output scale clients load, so the desktop pointer and Chrome's
+  bitmaps are one design — drawn topmost; the built-in arrow is only the
+  fallback when no theme loads. Text beams, hands and resize cursors are
+  the app's. The trackpad policy is fixed too:
   one finger moves, a tap clicks (right with two, middle with three), a
   second touch drags, two or more fingers scroll — at 6 logical pixels and
   3 axis units per millimetre of finger travel, calibrated from the pad's

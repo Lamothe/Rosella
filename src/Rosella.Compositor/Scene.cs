@@ -1,4 +1,6 @@
 
+using System.Runtime.InteropServices;
+
 namespace Rosella.Compositor;
 
 /// <summary>
@@ -247,26 +249,49 @@ public sealed class Scene
     private (int X, int Y) _cursor;
 
     /// <summary>
-    /// Everything the pointer image can occupy at a position, in logical
-    /// pixels: the built-in arrow (anchored at the pointer) and a client
-    /// cursor surface (anchored at its hotspot) both fit.
+    /// Rosella's own pointer art, loaded from the Xcursor theme the client
+    /// toolkits use. Null keeps the built-in arrow (no theme found, or the
+    /// compositor started before any icons were installed).
+    /// </summary>
+    internal CursorTheme? Cursors { get; set; }
+
+    /// <summary>
+    /// Everything the pointer image can occupy at a position, in physical
+    /// pixels: the themed pointer (or the built-in arrow) anchored at its
+    /// hotspot, and a client cursor surface (whose size and hotspot are
+    /// logical), whichever is larger.
     /// </summary>
     private (int Width, int Height, int HotspotX, int HotspotY) CursorFootprint()
     {
-        var width = CursorSprite.Width;
-        var height = CursorSprite.Height;
-        var hotspotX = 0;
-        var hotspotY = 0;
+        var scale = Math.Max(1, Scale);
+        var (width, height, hotspotX, hotspotY) = OwnPointerFootprint(scale);
         var cursor = Seat?.CurrentCursor() ?? default;
         if (cursor.Surface is { } surface)
         {
-            width = Math.Max(width, surface.ContentWidth);
-            height = Math.Max(height, surface.ContentHeight);
-            hotspotX = Math.Max(0, cursor.HotspotX);
-            hotspotY = Math.Max(0, cursor.HotspotY);
+            width = Math.Max(width, surface.ContentWidth * scale);
+            height = Math.Max(height, surface.ContentHeight * scale);
+            hotspotX = Math.Max(0, cursor.HotspotX * scale);
+            hotspotY = Math.Max(0, cursor.HotspotY * scale);
         }
 
         return (width, height, hotspotX, hotspotY);
+    }
+
+    /// <summary>
+    /// The compositor's own pointer box in physical pixels: the themed bitmap
+    /// is native physical pixels (as Chrome's set_cursor bitmaps are), and
+    /// the arrow sprite is logical, so it scales up. Keeping this physical is
+    /// what lets the damage rect use the drawn origin exactly — dividing a
+    /// hotspot down and back multiplies rounding error into missing columns.
+    /// </summary>
+    private (int Width, int Height, int HotspotX, int HotspotY) OwnPointerFootprint(int scale)
+    {
+        if (Cursors?.Pointer(scale) is { } bitmap)
+        {
+            return (bitmap.Width, bitmap.Height, bitmap.HotspotX, bitmap.HotspotY);
+        }
+
+        return (CursorSprite.Width * scale, CursorSprite.Height * scale, 0, 0);
     }
 
     /// <summary>The physical box the pointer image can touch at a position (one pixel of slack).</summary>
@@ -274,10 +299,10 @@ public sealed class Scene
     {
         var scale = Math.Max(1, Scale);
         return new DamageRect(
-            (position.X - footprint.HotspotX) * scale,
-            (position.Y - footprint.HotspotY) * scale,
-            (footprint.Width + footprint.HotspotX + 1) * scale,
-            (footprint.Height + footprint.HotspotY + 1) * scale);
+            (position.X * scale) - footprint.HotspotX,
+            (position.Y * scale) - footprint.HotspotY,
+            footprint.Width + footprint.HotspotX + 1,
+            footprint.Height + footprint.HotspotY + 1);
     }
 
     /// <summary>Focus teardown for the seat (unmap = leave, destroy = silent).</summary>
@@ -305,10 +330,6 @@ public sealed class Scene
         }
     }
 
-    /// <summary>
-    /// Draws the background, the windows, the shell chrome, and the cursor —
-    /// all in logical pixels scaled to the physical scanout by Scale.
-    /// </summary>
     /// <summary>One line per surface (diagnostics: the runtime truth behind a render report).</summary>
     internal string[] DescribeSurfaces()
     {
@@ -321,6 +342,10 @@ public sealed class Scene
         return snapshot.Select(s => s.Describe()).ToArray();
     }
 
+    /// <summary>
+    /// Draws the background, the windows, the shell chrome, and the cursor —
+    /// all in logical pixels scaled to the physical scanout by Scale.
+    /// </summary>
     public void Render(Span<byte> pixels, int width, int height, int stride, long frame)
     {
         RenderRegion(pixels, width, height, stride, frame, DamageRect.For(width, height));
@@ -437,9 +462,11 @@ public sealed class Scene
 
         // The cursor: the client's cursor surface when the focused client set
         // one (context shapes — text beam, hand — as the apps intend), hidden
-        // when the focused client hid it, else our arrow. Once a client has
-        // named a cursor surface the image is that surface's — never our
-        // arrow over the app's intent (content may still be in flight).
+        // when the focused client hid it, else Rosella's own pointer from the
+        // cursor theme (or the built-in arrow when no theme loaded). Once a
+        // client has named a cursor surface the image is that surface's —
+        // never our pointer over the app's intent (content may still be in
+        // flight).
         var (cursorX, cursorY) = Cursor;
         var cursor = Seat?.CurrentCursor() ?? default;
         if (cursor.Hidden)
@@ -457,6 +484,20 @@ public sealed class Scene
                     cursorSurface.ContentWidth * scale, cursorSurface.ContentHeight * scale,
                     region);
             }
+        }
+        else if (Cursors?.Pointer(scale) is { } bitmap)
+        {
+            // The theme image is already at physical size and its hotspot is
+            // in physical pixels: blit 1:1, clipped to this region.
+            Blitter.Blit(
+                pixels, width, height, stride,
+                MemoryMarshal.AsBytes(bitmap.Pixels.AsSpan()),
+                bitmap.Width, bitmap.Height, bitmap.Width * 4,
+                ShmFormats.Argb8888,
+                (cursorX * scale) - bitmap.HotspotX,
+                (cursorY * scale) - bitmap.HotspotY,
+                bitmap.Width, bitmap.Height,
+                region);
         }
         else
         {
