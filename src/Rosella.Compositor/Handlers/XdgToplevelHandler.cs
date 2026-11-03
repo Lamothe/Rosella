@@ -128,9 +128,20 @@ internal sealed class XdgToplevelHandler : IRequestHandler, IXdgRoleObject
             case "unset_maximized":
             case "set_fullscreen":
             case "unset_fullscreen":
+                // Rosella has one window state: maximised to the work area.
+                // The requests are answered rather than applied — the spec
+                // requires a configure per request, and a toolkit that never
+                // receives one keeps its window in a pending state. The
+                // configure we send still says "maximized", which is the
+                // policy telling the client the truth; a client that asked
+                // for fullscreen gets the work area instead.
+                _surface.SendConfigure();
+                break;
+
             case "set_minimized":
-                // State changes the shell will honour from M7; M5 keeps the
-                // window in its policy slot.
+                // Compositor-side hide; the taskbar is the way back (the
+                // protocol has no "unminimize" request).
+                _surface.Minimize();
                 break;
 
             default:
@@ -144,9 +155,13 @@ internal sealed class XdgToplevelHandler : IRequestHandler, IXdgRoleObject
         if (!_capabilitiesSent && _self!.Version >= 5)
         {
             // Required once before the first xdg_surface.configure. Rosella
-            // has no interactive capabilities yet: the array is honest.
+            // honours set_minimized (the taskbar is the way back) and nothing
+            // else in this enum: there is no window menu, no floating state to
+            // maximize into, and no fullscreen. Advertising exactly what is
+            // honoured keeps capability-aware toolkits from drawing buttons
+            // whose request would change nothing.
             _capabilitiesSent = true;
-            _session!.SendEvent(_self, "wm_capabilities", WireArgument.Array([]));
+            _session!.SendEvent(_self, "wm_capabilities", WireArgument.Array([.. BitConverter.GetBytes(4u)]));
         }
 
         // Always maximised to the work area: the configure size is the work

@@ -105,6 +105,30 @@ internal sealed class SeatState
         }
     }
 
+    /// <summary>The keys held right now, for handing focus on without losing them.</summary>
+    internal IReadOnlyList<int> HeldKeys
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return [.. _heldKeys];
+            }
+        }
+    }
+
+    /// <summary>
+    /// Whether the keyboard focus is this window or one of its popups. Used
+    /// to decide if hiding a window actually takes the keyboard away.
+    /// </summary>
+    internal bool KeyboardFocusIsWithin(SurfaceHandler surface)
+    {
+        lock (_gate)
+        {
+            return _keyboardFocus is { } focus && ReferenceEquals(RootWindow(focus), surface);
+        }
+    }
+
     internal SurfaceHandler? PointerFocus
     {
         get

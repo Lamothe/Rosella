@@ -250,6 +250,34 @@ internal sealed class XdgSurfaceHandler : IRequestHandler, ISurfaceRole, IDispos
                 throw new ProtocolErrorException(_self!.Id, XdgErrors.UnconfiguredBuffer, "buffer attached before ack_configure");
             }
 
+            // A popup whose window is minimised belongs nowhere: the window
+            // is off screen, so a menu at its hidden corner must not appear
+            // (and must not take the keyboard with it). The commit still
+            // carries a buffer, so the surface is hidden and dismissed once
+            // rather than drawn as a role-less one.
+            if (_roleObject is XdgPopupHandler)
+            {
+                if (RootToplevelSurface is { Hidden: true })
+                {
+                    if (!surface.Hidden)
+                    {
+                        surface.Hidden = true;
+                        DismissPopup();
+                    }
+
+                    return;
+                }
+
+                // The window is back. A client that ignored popup_done and
+                // reused this surface gets a visible popup rather than one
+                // that stays hidden for the rest of its life.
+                if (surface.Hidden)
+                {
+                    surface.Hidden = false;
+                    _scene.MarkDirty();
+                }
+            }
+
             Map(surface, contentWidth, contentHeight);
         }
         else
@@ -294,22 +322,26 @@ internal sealed class XdgSurfaceHandler : IRequestHandler, ISurfaceRole, IDispos
     /// <summary>The role object was destroyed: the surface is unmapped for good.</summary>
     internal void OnRoleDestroyed()
     {
+        // Drop the role first: dismissing the popups below hands the
+        // keyboard back, and a handback must never send a configure for the
+        // object the client just destroyed. Same gate as the
+        // activation/configure path: the input thread dereferences
+        // _roleObject under it and must never see a torn pair.
+        var role = _roleObject;
+        lock (_configureGate)
+        {
+            _roleObject = null;
+            _toplevel = null;
+        }
+
         _scene.DismissDescendantPopups(_surface);
-        if (_roleObject is XdgPopupHandler popup)
+        if (role is XdgPopupHandler popup)
         {
             _scene.ReleasePopupGrab(popup);
             popup.RoleDestroyed();
         }
 
         Unmap(_surface);
-
-        // Same gate as the activation/configure path: the input thread
-        // dereferences _roleObject under it and must never see a torn pair.
-        lock (_configureGate)
-        {
-            _roleObject = null;
-            _toplevel = null;
-        }
     }
 
     /// <summary>Activation round-trip for input focus changes.</summary>
@@ -331,6 +363,18 @@ internal sealed class XdgSurfaceHandler : IRequestHandler, ISurfaceRole, IDispos
         if (_roleObject is XdgToplevelHandler toplevel)
         {
             toplevel.Close();
+        }
+    }
+
+    /// <summary>
+    /// xdg_toplevel.set_minimized: hide the window; the shell's taskbar is
+    /// the way back. The surface stays mapped, so restoring is one frame.
+    /// </summary>
+    internal void Minimize()
+    {
+        if (_roleObject is XdgToplevelHandler && _mapped)
+        {
+            _scene.Minimize(_surface);
         }
     }
 

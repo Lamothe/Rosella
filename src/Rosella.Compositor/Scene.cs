@@ -550,8 +550,10 @@ public sealed class Scene
         {
             foreach (var surface in _surfaces)
             {
-                // Cursor surfaces are drawn at the pointer, never as windows.
-                if (!surface.IsMapped || surface.IsCursorSurface)
+                // Cursor surfaces are drawn at the pointer, never as windows;
+                // minimised windows are off screen until the taskbar asks
+                // for them back.
+                if (!surface.IsMapped || surface.IsCursorSurface || surface.Hidden)
                 {
                     continue;
                 }
@@ -728,6 +730,7 @@ public sealed class Scene
         surface.IsMapped
         && !surface.Gone
         && !surface.IsCursorSurface
+        && !surface.Hidden
         && surface.Format == ShmFormats.Xrgb8888
         && surface.ContentWidth > 0
         && surface.ContentHeight > 0;
@@ -743,7 +746,14 @@ public sealed class Scene
         {
             foreach (var surface in _surfaces)
             {
-                if (surface.IsMapped)
+                // A minimised window gets no frame callbacks: that is the
+                // throttle xdg-shell points clients at, and it keeps a hidden
+                // video or spinner from redrawing for a screen it is not on.
+                // Callbacks queued while hidden are not dropped — they fire
+                // on the first frame after the restore, which is the frame
+                // the client's new content is actually on screen (a burst of
+                // "done" then is harmless: each was one-shot).
+                if (surface.IsMapped && !surface.Hidden)
                 {
                     surface.CompleteFrame();
                 }
@@ -852,7 +862,7 @@ public sealed class Scene
                 {
                     var surface = _surfaces[i];
                     if (surface.Session != popupSurface.Session || !surface.IsMapped || surface.Gone || surface.IsCursorSurface
-                        || !Contains(surface.Visible, x, y))
+                        || surface.Hidden || !Contains(surface.Visible, x, y))
                     {
                         continue;
                     }
@@ -868,7 +878,7 @@ public sealed class Scene
             for (var i = _surfaces.Count - 1; i >= 0; i--)
             {
                 var surface = _surfaces[i];
-                if (!surface.IsMapped || surface.IsCursorSurface)
+                if (!surface.IsMapped || surface.IsCursorSurface || surface.Hidden)
                 {
                     continue;
                 }
@@ -899,11 +909,91 @@ public sealed class Scene
 
                 if (surface.XdgRole?.Toplevel is { } toplevel)
                 {
-                    tasks.Add(new BarTask(Bar.LabelFor(toplevel.Title, toplevel.AppId), toplevel.AppId, surface));
+                    tasks.Add(new BarTask(
+                        Bar.LabelFor(toplevel.Title, toplevel.AppId), toplevel.AppId, surface, surface.Hidden));
                 }
             }
 
             return tasks;
+        }
+    }
+
+    /// <summary>
+    /// Hides a window (xdg_toplevel.set_minimized): no drawing, no hits, and
+    /// the keyboard goes to the topmost window still on screen. The surface
+    /// stays mapped with its buffer, and its taskbar button stays put — that
+    /// is the way back, since xdg-shell gives the client no "unminimize".
+    /// </summary>
+    internal void Minimize(SurfaceHandler surface)
+    {
+        lock (_gate)
+        {
+            if (surface.Hidden || !surface.IsMapped)
+            {
+                return;
+            }
+
+            surface.Hidden = true;
+            _damage.MarkFull();
+            _dirty = true;
+            Monitor.PulseAll(_gate);
+        }
+
+        // Snapshot the focus decision and the held keys before the popup
+        // teardown: dismissing a grabbed menu moves focus back to this
+        // window with an empty key set, and the handover must still carry
+        // what the user is holding. Hiding an unfocused window takes no
+        // focus with it, so it must not re-target anyone else's keyboard.
+        var hadFocus = Seat?.KeyboardFocusIsWithin(surface) == true;
+        var held = Seat?.HeldKeys ?? [];
+
+        // A menu or tooltip belongs to a place on screen the window no longer
+        // occupies.
+        DismissDescendantPopups(surface);
+
+        // Clears the seat's focus and sends leave while the surface id is
+        // still valid, exactly like an unmap.
+        Seat?.OnSurfaceHidden(surface, canSendLeave: true);
+
+        if (hadFocus && TopmostVisible() is { } next)
+        {
+            Seat?.SetKeyboardFocus(next, held);
+        }
+    }
+
+    /// <summary>Brings a minimised window back; the caller raises and focuses it.</summary>
+    internal void Restore(SurfaceHandler surface)
+    {
+        lock (_gate)
+        {
+            if (!surface.Hidden)
+            {
+                return;
+            }
+
+            surface.Hidden = false;
+            _damage.MarkFull();
+            _dirty = true;
+            Monitor.PulseAll(_gate);
+        }
+    }
+
+    /// <summary>The topmost window that is on screen and can take the keyboard.</summary>
+    internal SurfaceHandler? TopmostVisible()
+    {
+        lock (_gate)
+        {
+            for (var i = _surfaces.Count - 1; i >= 0; i--)
+            {
+                var candidate = _surfaces[i];
+                if (candidate.IsMapped && !candidate.Gone && !candidate.IsCursorSurface && !candidate.Hidden
+                    && candidate.XdgRole?.Toplevel is not null)
+                {
+                    return candidate;
+                }
+            }
+
+            return null;
         }
     }
 

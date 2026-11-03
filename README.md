@@ -94,9 +94,13 @@ configuration is where desktop environments go to die.
   taskbar (a reserved launcher slot, pinned app launchers centred on the
   bar, task buttons with a focus accent, clock), a settings panel (output
   and microphone volume sliders, Log Out, Restart, Shut Down) that opens
-  from the clock, and an Alt+Tab window switcher. The desktop picture is
-  Bing's daily wallpaper for Australia, with the dark gradient standing in
-  until it loads.
+  from the clock, and an Alt+Tab window switcher. A minimised window keeps
+  its taskbar button (muted label) and comes back from that button, a pinned
+  launcher or Alt+Tab; it stops drawing and stops getting frame callbacks
+  while it is hidden. The desktop picture is Bing's daily wallpaper for
+  Australia, with the dark gradient standing in until it loads. Windows are
+  always maximised to the work area, and `wm_capabilities` advertises
+  minimise only: a request for another state is answered, not granted.
 
 ## Layout
 

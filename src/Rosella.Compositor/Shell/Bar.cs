@@ -3,8 +3,8 @@ using System.Text;
 
 namespace Rosella.Compositor;
 
-/// <summary>A window button on the taskbar.</summary>
-internal sealed record BarTask(string Label, string AppId, SurfaceHandler Surface);
+/// <summary>A window button on the taskbar; minimised windows keep their button.</summary>
+internal sealed record BarTask(string Label, string AppId, SurfaceHandler Surface, bool Minimized = false);
 
 /// <summary>One pinned launcher button on the taskbar.</summary>
 internal sealed record PinnedButton(Rect Rect, PinnedLauncher Launcher, bool Running);
@@ -47,6 +47,9 @@ internal static class Bar
     private const uint TaskPressedBackground = 0xFF3D404B;
     private const uint TaskFocusedAccent = 0xFF7B86E8;
     private const uint TextColour = 0xFFE8E8EC;
+
+    /// <summary>A minimised window's label: present, but not claiming attention.</summary>
+    private const uint TextMutedColour = 0xFF8E909B;
 
     /// <summary>The window label: the title, or the app id, trimmed to the button.</summary>
     internal static string LabelFor(string title, string appId)
@@ -217,8 +220,13 @@ internal static class Bar
                 Chrome.FillRect(pixels, clipW, clipH, stride, new Rect(rect.X, rect.Y + rect.H - 2, rect.W, 2), TaskFocusedAccent, scale);
             }
 
+            // A minimised window keeps its button but not its emphasis: the
+            // label takes the bar's quieter text colour, so the taskbar shows
+            // both that the window exists and that it is not on screen.
             var textY = rect.Y + ((rect.H - ShellText.LineHeight(ShellText.BarEm)) / 2);
-            ShellText.DrawText(pixels, clipW, clipH, stride, task.Label, (rect.X + 12) * scale, textY * scale, TextColour, ShellText.BarEm, scale);
+            ShellText.DrawText(
+                pixels, clipW, clipH, stride, task.Label, (rect.X + 12) * scale, textY * scale,
+                task.Minimized ? TextMutedColour : TextColour, ShellText.BarEm, scale);
         }
 
     }

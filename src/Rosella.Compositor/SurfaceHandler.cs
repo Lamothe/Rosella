@@ -160,6 +160,35 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
         }
     }
 
+    /// <summary>
+    /// Off screen by policy: a minimised window, or a popup whose window is
+    /// minimised. The surface keeps its buffer — restoring must show the
+    /// window again without a round trip — but the scene neither draws nor
+    /// hit-tests it, and its frame callbacks stop. Only the policy sets and
+    /// clears this; an unmap clears it because the next map is a fresh
+    /// appearance.
+    /// </summary>
+    internal bool Hidden
+    {
+        get
+        {
+            lock (_state)
+            {
+                return _hidden;
+            }
+        }
+
+        set
+        {
+            lock (_state)
+            {
+                _hidden = value;
+            }
+        }
+    }
+
+    private bool _hidden;
+
     /// <summary>The surface's logical width: the placed rect, else the content's own.</summary>
     internal int Width
     {
@@ -263,6 +292,10 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
             _content = null;
             _width = 0;
             _height = 0;
+
+            // A window that leaves the screen cannot stay hidden: the next
+            // map is a fresh appearance and must be visible.
+            _hidden = false;
         }
 
         // The object still exists, so the seat may send leave events.
@@ -287,7 +320,7 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
         lock (_state)
         {
             var visible = _visible ?? (Position.X, Position.Y, Width, Height);
-            return $"surface {Id}: mapped={IsMapped} cursor={IsCursorSurface} xdg={HasXdgRole} gone={Gone} " +
+            return $"surface {Id}: mapped={IsMapped} hidden={_hidden} cursor={IsCursorSurface} xdg={HasXdgRole} gone={Gone} " +
                    $"content={_width}x{_height} fmt={_format:X} pos={Position.X},{Position.Y} " +
                    $"place={_placeWidth}x{_placeHeight} visible={visible.X},{visible.Y} {visible.W}x{visible.H}";
         }
@@ -622,9 +655,15 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
             _scene.OnSurfaceHidden(this, canSendLeave: true);
         }
 
-        // Every commit earns the next composited frame (frame callbacks
-        // fire "when the next frame is displayed after the commit").
-        _scene.MarkDirty();
+        // Every visible commit earns the next composited frame (frame callbacks
+        // fire "when the next frame is displayed after the commit"). A
+        // minimised window earns nothing: waking the scanout to paint pixels
+        // that are not on screen is the cost set_minimized exists to avoid.
+        // Unmaps still repaint, because the taskbar must lose the button.
+        if (unmapped || !Hidden)
+        {
+            _scene.MarkDirty();
+        }
     }
 
     private void Destroy(ClientSession session, ServerObject target)

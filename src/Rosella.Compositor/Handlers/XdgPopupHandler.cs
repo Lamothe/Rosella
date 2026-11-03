@@ -121,8 +121,10 @@ internal sealed class XdgPopupHandler : IRequestHandler, IXdgRoleObject
             return;
         }
 
-        if (RootParentSurface?.XdgRole is not { IsMapped: true })
+        if (RootParentSurface?.XdgRole is not { IsMapped: true } || RootParentSurface.Hidden)
         {
+            // A grab on a hidden window would hand the keyboard to a popup
+            // the user cannot see.
             _surface.DismissPopup();
             return;
         }
@@ -161,10 +163,47 @@ internal sealed class XdgPopupHandler : IRequestHandler, IXdgRoleObject
         {
             _surface.Scene.ReleasePopupGrab(this);
             _grabbed = false;
-            _surface.Scene.Seat?.SetKeyboardFocus(_surface.Scene.TopmostPopupGrab?.Surface ?? _surface.RootToplevelSurface, []);
+            RestoreFocusAfterGrab();
         }
 
         _session!.SendEvent(_self!, "popup_done");
+    }
+
+    /// <summary>
+    /// Hands the keyboard back after a grab ends, and only then: if the user
+    /// has moved the keyboard since the grab opened (Alt+Tab, a click
+    /// elsewhere), ending the grab must not pull it back. The target is the
+    /// next popup grab, else the window — and never a window that is hidden
+    /// or no longer on screen. The held keys are passed through instead of
+    /// cleared: a grab ending is not a key-up.
+    /// </summary>
+    private void RestoreFocusAfterGrab()
+    {
+        var scene = _surface.Scene;
+        if (scene.Seat is not { } seat)
+        {
+            return;
+        }
+
+        var root = _surface.RootToplevelSurface;
+        var ours = root is not null
+            ? seat.KeyboardFocusIsWithin(root)
+            : ReferenceEquals(seat.KeyboardFocus, Surface);
+        if (!ours)
+        {
+            // The keyboard has moved on since the grab opened: leave it be.
+            return;
+        }
+
+        var target = root is null
+            ? scene.TopmostVisible()
+            : scene.TopmostPopupGrab?.Surface ?? root;
+        if (target is null || target.Hidden || !target.IsMapped || target.Gone)
+        {
+            target = scene.TopmostVisible();
+        }
+
+        seat.SetKeyboardFocus(target, seat.HeldKeys);
     }
 
     internal void DismissFromCompositor()
@@ -181,7 +220,7 @@ internal sealed class XdgPopupHandler : IRequestHandler, IXdgRoleObject
         {
             _surface.Scene.ReleasePopupGrab(this);
             _grabbed = false;
-            _surface.Scene.Seat?.SetKeyboardFocus(_surface.Scene.TopmostPopupGrab?.Surface ?? _surface.RootToplevelSurface, []);
+            RestoreFocusAfterGrab();
         }
     }
 

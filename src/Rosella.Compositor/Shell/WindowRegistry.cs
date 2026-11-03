@@ -54,6 +54,9 @@ internal sealed class SceneWindowRegistry : IWindowRegistry
 
     public void RaiseAndFocus(SurfaceHandler surface, IReadOnlyList<int> heldKeys)
     {
+        // A pinned launcher or Alt+Tab can land on a window that was
+        // minimised; restoring is part of focusing it.
+        _scene.Restore(surface);
         _scene.Raise(surface);
         _seat.SetKeyboardFocus(surface, heldKeys);
     }

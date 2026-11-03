@@ -849,6 +849,10 @@ internal sealed class InputRouter
                 // was drawn. Ghosts get no focus.
                 if (task.Surface is { IsMapped: true, Gone: false } target)
                 {
+                    // A minimised window comes back before it takes the
+                    // keyboard: the taskbar is the only way back a
+                    // set_minimized window has.
+                    _scene.Restore(target);
                     _scene.Raise(target);
                     _seat.SetKeyboardFocus(target, _pressedKeys);
                 }

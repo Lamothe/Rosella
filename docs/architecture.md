@@ -177,15 +177,26 @@ Verified against libwayland's marshalling code and the protocol docs:
   in until it loads (the milestone-3 colour bars and moving stripe are gone:
   the user found them annoying). Windows sit in the work area above the
   taskbar, clamped to stay there; they carry no compositor decoration, and
-  the focused window's taskbar button shows an accent underline. Shell text
+  the focused window's taskbar button shows an accent underline. A
+  minimised window leaves the screen but keeps its taskbar button (muted
+  label) and comes back from that button, from a pinned launcher that
+  claims it, or through Alt+Tab — xdg-shell gives a client no way to
+  unminimise itself, so the shell owns the trip back. While hidden the
+  window earns no frame callbacks and its commits do not repaint; its
+  popups are dismissed, and one that commits anyway stays hidden until the
+  window returns. Maximise and fullscreen requests are answered with a
+  configure that repeats the one state Rosella has — maximised to the work
+  area — so no toolkit waits on one, though the window does not change;
+  `wm_capabilities` advertises minimise alone. Shell text
   is a real font rasterised through FreeType — proportional and
   anti-aliased, Open Sans first — with the embedded 8x16 bitmap font as the
   fallback when no font loads; drawing and hit-testing share one cached
   taskbar layout per frame. Notifications did not make the cut and may
   never: an opinionated desktop can do without them.
-- **M8 — session polish**: window states (maximise/fullscreen), lock
-  screen, idle handling, session startup, whatever the DE needs to feel
-  finished.
+- **M8 — session polish**: granting the states the policy answers but does
+  not give (fullscreen, and a floating restore for maximise — there is no
+  smaller state to return to yet), lock screen, idle handling, session
+  startup, whatever the DE needs to feel finished.
 
 ## Conventions the implementation follows
 
@@ -247,9 +258,10 @@ or hostile clients without touching the compositor.
   front); `get_xdg_surface` on a surface that already has content is not
   rejected (the spec names no error code); popup stacking rules
   (`not_the_topmost_popup`, parent-mapped-first) and positioner constraint
-  adjustment (flip/slide to stay on screen) are unimplemented; `xdg_toplevel`
-  state *requests* (maximise/fullscreen/minimise) are ignored — the policy is
-  always-maximised, and the states we send are M8's concern; the serial match
+  adjustment (flip/slide to stay on screen) are unimplemented; a
+  `xdg_toplevel` request for a state the policy does not grant (maximise,
+  unmaximise, fullscreen) is acknowledged but not granted (see M7); the
+  serial match
   for `set_cursor` is per pointer device where the spec words it per client
   (GTK/Qt bind one pointer per seat); `wl_surface.offset` on a cursor surface
   is accepted but the hotspot is not decremented at commit (clients pass the

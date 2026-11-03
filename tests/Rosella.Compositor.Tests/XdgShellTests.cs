@@ -265,6 +265,10 @@ public class XdgShellTests
         // The first two toplevel events must be capabilities, then configure.
         var capabilities = harness.NextEventOn(12);
         Assert.Equal("wm_capabilities", harness.Client.EventName(capabilities));
+
+        // minimize only: the one state request Rosella acts on.
+        Assert.Equal(BitConverter.GetBytes(4u), capabilities.Arguments[0].AsArray().ToArray());
+
         var roleConfigure = harness.NextEventOn(12);
         Assert.Equal("configure", harness.Client.EventName(roleConfigure));
     }
