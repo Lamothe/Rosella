@@ -3,18 +3,21 @@ using Rosella.Input;
 namespace Rosella.Compositor.Tests;
 
 /// <summary>
-/// The clock-anchored settings panel: volume slider, power actions and close behaviour.
+/// The clock-anchored settings panel: output and microphone sliders, power
+/// actions and close behaviour.
 /// </summary>
 public class SettingsPanelTests
 {
     [Fact]
-    public void StartsAtNeutralVolumeUntilThePanelIsOpened()
+    public void StartsAtNeutralLevelsUntilThePanelIsOpened()
     {
-        var volume = new FakeVolumeControl { Current = 64 };
+        var volume = new FakeVolumeControl { Output = 64, Microphone = 28 };
         var panel = CreatePanel(volume);
         Assert.Equal(50, panel.VolumePercent);
-        panel.RefreshVolume();
+        Assert.Equal(50, panel.MicrophonePercent);
+        panel.RefreshLevels();
         Assert.Equal(64, panel.VolumePercent);
+        Assert.Equal(28, panel.MicrophonePercent);
     }
 
     [Theory]
@@ -126,27 +129,109 @@ public class SettingsPanelTests
 
         Assert.True(panel.HandlePointer(track.X + track.W - 1, track.Y, clock, 1920, 1080, pressed: true));
         Assert.Equal(100, panel.VolumePercent);
-        Assert.Equal(100, volume.LastSet);
+        Assert.Equal(100, volume.LastOutputSet);
         panel.PointerMoved(0, clock, 1920, 1080);
         Assert.Equal(0, panel.VolumePercent);
         panel.PointerReleased();
-        Assert.False(panel.IsDraggingVolume);
+        Assert.False(panel.IsDraggingSlider);
     }
 
-    private static SettingsPanel CreatePanel(FakeVolumeControl volume, ISystemActions? actions = null) =>
+    [Fact]
+    public void MicrophoneSlider_MapsPointerToTheSourceAndLeavesTheOutputAlone()
+    {
+        var volume = new FakeVolumeControl { Output = 70, Microphone = 30 };
+        var panel = CreatePanel(volume);
+        panel.Toggle();
+        panel.RefreshLevels();
+        var clock = new Rect(1700, 1020, 210, 36);
+        var bounds = panel.PanelRect(clock, 1920, 1080);
+        var track = panel.MicrophoneTrackRect(bounds);
+        Assert.Equal(30, panel.MicrophonePercent);
+
+        Assert.True(panel.HandlePointer(track.X + (track.W / 2), track.Y, clock, 1920, 1080, pressed: true));
+        Assert.InRange(panel.MicrophonePercent, 49, 51);
+        Assert.Equal(70, panel.VolumePercent);
+        Assert.Null(volume.LastOutputSet);
+
+        panel.PointerMoved(0, clock, 1920, 1080);
+        Assert.Equal(0, panel.MicrophonePercent);
+        Assert.Equal(0, volume.LastMicrophoneSet);
+        panel.PointerReleased();
+        Assert.False(panel.IsDraggingSlider);
+    }
+
+    [Fact]
+    public void AnInFlightRefresh_DoesNotOverwriteASliderMovedWhileItReads()
+    {
+        using var readStarted = new ManualResetEventSlim();
+        using var continueReading = new ManualResetEventSlim();
+        using var refreshed = new ManualResetEventSlim();
+        var volume = new BlockingVolumeControl(readStarted, continueReading);
+        var panel = CreatePanel(volume);
+        panel.Dirty = refreshed.Set;
+
+        panel.Toggle();
+        Assert.True(readStarted.Wait(TimeSpan.FromSeconds(5)), "the refresh never started");
+
+        var clock = new Rect(1700, 1020, 210, 36);
+        var bounds = panel.PanelRect(clock, 1920, 1080);
+        var track = panel.MicrophoneTrackRect(bounds);
+        Assert.True(panel.HandlePointer(track.X + track.W - 1, track.Y, clock, 1920, 1080, pressed: true));
+        Assert.Equal(100, panel.MicrophonePercent);
+
+        continueReading.Set();
+        Assert.True(refreshed.Wait(TimeSpan.FromSeconds(5)), "the refresh never completed");
+        Assert.Equal(100, panel.MicrophonePercent);
+    }
+
+    private static SettingsPanel CreatePanel(IVolumeControl volume, ISystemActions? actions = null) =>
         new(actions ?? new FakeSystemActions(), volume);
 
     private sealed class FakeVolumeControl : IVolumeControl
     {
-        public int? Current { get; set; }
-        public int LastSet { get; private set; }
-        public int? ReadPercent() => Current;
-        public bool SetPercent(int percent)
+        public int? Output { get; set; }
+
+        public int? Microphone { get; set; }
+
+        public int? LastOutputSet { get; private set; }
+
+        public int? LastMicrophoneSet { get; private set; }
+
+        public int? ReadPercent(AudioEndpoint endpoint) =>
+            endpoint == AudioEndpoint.Output ? Output : Microphone;
+
+        public bool SetPercent(AudioEndpoint endpoint, int percent)
         {
-            LastSet = percent;
-            Current = percent;
+            if (endpoint == AudioEndpoint.Output)
+            {
+                LastOutputSet = percent;
+                Output = percent;
+            }
+            else
+            {
+                LastMicrophoneSet = percent;
+                Microphone = percent;
+            }
+
             return true;
         }
+    }
+
+    private sealed class BlockingVolumeControl(ManualResetEventSlim readStarted, ManualResetEventSlim continueReading) : IVolumeControl
+    {
+        public int? ReadPercent(AudioEndpoint endpoint)
+        {
+            if (endpoint == AudioEndpoint.Output)
+            {
+                readStarted.Set();
+                continueReading.Wait(TimeSpan.FromSeconds(5));
+                return 70;
+            }
+
+            return 30;
+        }
+
+        public bool SetPercent(AudioEndpoint endpoint, int percent) => true;
     }
 
     private sealed class FakeSystemActions : ISystemActions

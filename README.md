@@ -92,10 +92,11 @@ configuration is where desktop environments go to die.
   its `delete_id`.
 - **M7 — shell**: done. The Windows 11 style shell chrome: a bottom
   taskbar (a reserved launcher slot, pinned app launchers centred on the
-  bar, task buttons with a focus accent, clock), a settings panel (volume
-  slider, Log Out, Restart, Shut Down) that opens from the clock, and an
-  Alt+Tab window switcher. The desktop picture is Bing's daily wallpaper
-  for Australia, with the dark gradient standing in until it loads.
+  bar, task buttons with a focus accent, clock), a settings panel (output
+  and microphone volume sliders, Log Out, Restart, Shut Down) that opens
+  from the clock, and an Alt+Tab window switcher. The desktop picture is
+  Bing's daily wallpaper for Australia, with the dark gradient standing in
+  until it loads.
 
 ## Layout
 
@@ -171,9 +172,10 @@ runs the freshly published build, logging to `/tmp/rosella.log`.
 
 The first connected output is driven at its preferred mode with the Windows
 11 style desktop: a bottom taskbar (a reserved launcher slot, pinned app
-launchers centred on the bar, task buttons, clock), a settings panel (volume
-slider; Log Out, Restart, Shut Down) opened from the clock, and Bing's daily
-wallpaper for Australia over a calm dark gradient — no workspaces, by design.
+launchers centred on the bar, task buttons, clock), a settings panel (output
+and microphone volume sliders; Log Out, Restart, Shut Down) opened from the
+clock, and Bing's daily wallpaper for Australia over a calm dark gradient —
+no workspaces, by design.
 Super on its own is unbound; Alt+F4 closes a window, Alt+Tab switches windows
 and Super+Esc quits.
 

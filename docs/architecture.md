@@ -166,11 +166,12 @@ Verified against libwayland's marshalling code and the protocol docs:
   app launchers centred on the bar (fixed entries resolved from XDG desktop
   files — GLib-style Exec parsing, icons decoded through gdk-pixbuf into
   premultiplied ARGB, click focuses the app's newest window or launches it
-  with the right WAYLAND_DISPLAY), a settings panel (a PipeWire volume
-  slider, then Log Out, Restart and Shut Down as GNOME-style circular icon
-  buttons — ISystemActions so tests can fake them) opened from the clock,
-  and an Alt+Tab switcher (windows in most-recently-used order, snapshotted
-  when it opens; Esc cancels and releasing Alt commits the selection). No
+  with the right WAYLAND_DISPLAY), a settings panel (PipeWire output and
+  microphone volume sliders, then Log Out, Restart and Shut Down as
+  GNOME-style circular icon buttons — ISystemActions so tests can fake
+  them) opened from the clock, and an Alt+Tab switcher (windows in
+  most-recently-used order, snapshotted when it opens; Esc cancels and
+  releasing Alt commits the selection). No
   workspaces — one desktop, by design. The desktop picture is Bing's daily
   wallpaper for Australia, cover-fitted, with a calm dark gradient standing
   in until it loads (the milestone-3 colour bars and moving stripe are gone:

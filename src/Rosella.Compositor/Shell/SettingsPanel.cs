@@ -3,9 +3,9 @@ using Rosella.Input;
 namespace Rosella.Compositor;
 
 /// <summary>
-/// Clock-anchored settings panel: a volume slider, then the three power
-/// actions as GNOME Quick Settings style circular icon buttons with quiet
-/// labels beneath them.
+/// Clock-anchored settings panel: output and microphone volume sliders, then
+/// the three power actions as GNOME Quick Settings style circular icon
+/// buttons with quiet labels beneath them.
 /// </summary>
 internal sealed class SettingsPanel
 {
@@ -18,7 +18,10 @@ internal sealed class SettingsPanel
     private const uint FillColour = 0xFF7B86E8;
     private const int PanelWidth = 300;
     private const int PanelPad = 10;
-    private const int VolumeSectionHeight = 76;
+    private const int SliderSectionHeight = 76;
+    private const int TrackTopOffset = 42;
+    private const int TrackHeight = 8;
+    private const int SliderCount = 2;
     private const int CornerRadius = 8;
 
     /// <summary>The action buttons' circle diameter, in logical pixels.</summary>
@@ -40,7 +43,9 @@ internal sealed class SettingsPanel
     private readonly IVolumeControl _volume;
     private readonly object _volumeGate = new();
     private int _volumePercent;
-    private bool _draggingVolume;
+    private int _microphonePercent;
+    private long _levelGeneration;
+    private AudioEndpoint? _dragging;
 
     internal Action? Dirty { get; set; }
 
@@ -49,6 +54,7 @@ internal sealed class SettingsPanel
         _systemActions = systemActions;
         _volume = volume;
         _volumePercent = 50;
+        _microphonePercent = 50;
     }
 
     internal bool IsOpen { get; private set; }
@@ -64,25 +70,55 @@ internal sealed class SettingsPanel
         }
     }
 
-    internal bool IsDraggingVolume
+    internal int MicrophonePercent
     {
         get
         {
             lock (_volumeGate)
             {
-                return _draggingVolume;
+                return _microphonePercent;
             }
         }
     }
 
-    internal void RefreshVolume()
+    internal bool IsDraggingSlider
     {
-        var volume = _volume.ReadPercent();
-        if (volume is { } percent)
+        get
         {
             lock (_volumeGate)
             {
-                _volumePercent = Math.Clamp(percent, 0, 150);
+                return _dragging is not null;
+            }
+        }
+    }
+
+    internal void RefreshLevels()
+    {
+        long generation;
+        lock (_volumeGate)
+        {
+            // A reading requested now must not overwrite a slider the user
+            // has moved while wpctl was running.
+            generation = ++_levelGeneration;
+        }
+
+        var volume = _volume.ReadPercent(AudioEndpoint.Output);
+        var microphone = _volume.ReadPercent(AudioEndpoint.Input);
+        lock (_volumeGate)
+        {
+            if (generation != _levelGeneration)
+            {
+                return;
+            }
+
+            if (volume is { } output)
+            {
+                _volumePercent = Math.Clamp(output, 0, 150);
+            }
+
+            if (microphone is { } input)
+            {
+                _microphonePercent = Math.Clamp(input, 0, 150);
             }
         }
     }
@@ -92,14 +128,14 @@ internal sealed class SettingsPanel
         IsOpen = !IsOpen;
         lock (_volumeGate)
         {
-            _draggingVolume = false;
+            _dragging = null;
         }
 
         if (IsOpen)
         {
             _ = Task.Run(() =>
             {
-                RefreshVolume();
+                RefreshLevels();
                 Dirty?.Invoke();
             });
         }
@@ -110,7 +146,7 @@ internal sealed class SettingsPanel
         IsOpen = false;
         lock (_volumeGate)
         {
-            _draggingVolume = false;
+            _dragging = null;
         }
     }
 
@@ -128,17 +164,27 @@ internal sealed class SettingsPanel
     internal Rect PanelRect(Rect clock, int outputWidth, int outputHeight)
     {
         var width = Math.Min(PanelWidth, outputWidth);
-        var height = (PanelPad * 2) + VolumeSectionHeight + ActionSectionHeight;
+        var height = (PanelPad * 2) + AudioSectionHeight + ActionSectionHeight;
         return new Rect(Math.Clamp(clock.X + clock.W - width, 0, Math.Max(0, outputWidth - width)),
             Math.Max(0, outputHeight - Shell.BarHeight - height), width, height);
     }
+
+    /// <summary>One slider section: its label, track and the gap below it.</summary>
+    private static int AudioSectionHeight => SliderSectionHeight * SliderCount;
 
     /// <summary>Circle, label and a little breathing room below it.</summary>
     private static int ActionSectionHeight =>
         CircleSize + LabelGap + ShellText.LineHeight(LabelEm) + ActionBottomPad;
 
-    internal Rect VolumeTrackRect(Rect panel) =>
-        new(panel.X + PanelPad + 8, panel.Y + PanelPad + 42, panel.W - (PanelPad * 2) - 16, 8);
+    internal Rect VolumeTrackRect(Rect panel) => SliderTrackRect(panel, 0);
+
+    internal Rect MicrophoneTrackRect(Rect panel) => SliderTrackRect(panel, 1);
+
+    private static Rect SliderTrackRect(Rect panel, int index) =>
+        new(panel.X + PanelPad + 8,
+            panel.Y + PanelPad + (index * SliderSectionHeight) + TrackTopOffset,
+            panel.W - (PanelPad * 2) - 16,
+            TrackHeight);
 
     /// <summary>
     /// One action button's circle bounds, hit-tested as a box. The three
@@ -150,7 +196,7 @@ internal sealed class SettingsPanel
         var innerWidth = Math.Max(0, panel.W - (PanelPad * 2));
         var centre = panel.X + PanelPad +
             (int)Math.Round(((index + 0.5) * innerWidth) / Actions.Length, MidpointRounding.AwayFromZero);
-        return new Rect(centre - (CircleSize / 2), panel.Y + PanelPad + VolumeSectionHeight, CircleSize, CircleSize);
+        return new Rect(centre - (CircleSize / 2), panel.Y + PanelPad + AudioSectionHeight, CircleSize, CircleSize);
     }
 
     /// <summary>Handles panel press and slider drag. True if the point was consumed.</summary>
@@ -164,7 +210,7 @@ internal sealed class SettingsPanel
         var panel = PanelRect(clock, outputWidth, outputHeight);
         if (!panel.Contains(x, y))
         {
-            if (pressed && !IsDraggingVolume)
+            if (pressed && !IsDraggingSlider)
             {
                 Close();
             }
@@ -172,21 +218,18 @@ internal sealed class SettingsPanel
             return false;
         }
 
-        if (!pressed && IsDraggingVolume)
+        if (!pressed && IsDraggingSlider)
         {
             return true;
         }
 
-        var track = VolumeTrackRect(panel);
-        var hitTrack = new Rect(track.X, track.Y - 8, track.W, track.H + 16);
-        if (pressed && hitTrack.Contains(x, y))
+        if (pressed && TryStartDrag(panel, AudioEndpoint.Output, x, y))
         {
-            lock (_volumeGate)
-            {
-                _draggingVolume = true;
-            }
+            return true;
+        }
 
-            SetVolumeFromX(x, track);
+        if (pressed && TryStartDrag(panel, AudioEndpoint.Input, x, y))
+        {
             return true;
         }
 
@@ -211,41 +254,35 @@ internal sealed class SettingsPanel
     {
         lock (_volumeGate)
         {
-            _draggingVolume = false;
+            _dragging = null;
         }
     }
 
     internal void PointerMoved(int x, Rect clock, int outputWidth, int outputHeight)
     {
-        if (IsDraggingVolume && IsOpen)
+        AudioEndpoint? dragging;
+        lock (_volumeGate)
         {
-            SetVolumeFromX(x, VolumeTrackRect(PanelRect(clock, outputWidth, outputHeight)));
+            dragging = _dragging;
+        }
+
+        if (dragging is { } endpoint && IsOpen)
+        {
+            var panel = PanelRect(clock, outputWidth, outputHeight);
+            SetSliderFromX(endpoint, x, SliderTrackRect(panel, SliderIndex(endpoint)));
         }
     }
 
     internal void Draw(Span<byte> pixels, int width, int height, int stride, int scale, Rect clock, (int X, int Y)? pointer)
     {
-        var panel = PanelRect(clock, width, height);
         var clipW = stride / 4;
         var clipH = pixels.Length / stride;
+        var panel = PanelRect(clock, width, height);
         Chrome.FillRoundedRect(pixels, clipW, clipH, stride, panel, CornerRadius, PanelBorder, scale);
         Chrome.FillRoundedRect(pixels, clipW, clipH, stride, new Rect(panel.X + 1, panel.Y + 1, panel.W - 2, panel.H - 2), CornerRadius, PanelBackground, scale);
 
-        ShellText.DrawText(pixels, clipW, clipH, stride, "Volume", (panel.X + PanelPad) * scale, (panel.Y + PanelPad) * scale, TextColour, ShellText.MenuEm, scale);
-        var volumePercent = VolumePercent;
-        var percentText = volumePercent > 100 ? "150%" : $"{volumePercent}%";
-        var percentWidth = ShellText.Measure(percentText, ShellText.MenuEm).Width;
-        ShellText.DrawText(pixels, clipW, clipH, stride, percentText, (panel.X + panel.W - PanelPad - percentWidth) * scale, (panel.Y + PanelPad) * scale, TextColour, ShellText.MenuEm, scale);
-        var track = VolumeTrackRect(panel);
-        Chrome.FillRoundedRect(pixels, clipW, clipH, stride, track, 4, TrackColour, scale);
-        var fillWidth = (track.W * Math.Clamp(volumePercent, 0, 100)) / 100;
-        if (fillWidth > 0)
-        {
-            Chrome.FillRoundedRect(pixels, clipW, clipH, stride, new Rect(track.X, track.Y, fillWidth, track.H), 4, FillColour, scale);
-        }
-
-        var thumbX = track.X + (track.W * Math.Clamp(volumePercent, 0, 100) / 100);
-        Chrome.FillRoundedRect(pixels, clipW, clipH, stride, new Rect(thumbX - 6, track.Y - 4, 12, 16), 6, TextColour, scale);
+        DrawSlider(pixels, clipW, clipH, stride, scale, panel, 0, "Volume", VolumePercent);
+        DrawSlider(pixels, clipW, clipH, stride, scale, panel, 1, "Mic volume", MicrophonePercent);
 
         for (var index = 0; index < Actions.Length; index++)
         {
@@ -272,15 +309,67 @@ internal sealed class SettingsPanel
         }
     }
 
-    private void SetVolumeFromX(int x, Rect track)
+    private static int SliderIndex(AudioEndpoint endpoint) =>
+        endpoint == AudioEndpoint.Output ? 0 : 1;
+
+    private void DrawSlider(Span<byte> pixels, int clipW, int clipH, int stride, int scale,
+        Rect panel, int index, string label, int percent)
+    {
+        var top = panel.Y + PanelPad + (index * SliderSectionHeight);
+        ShellText.DrawText(pixels, clipW, clipH, stride, label,
+            (panel.X + PanelPad) * scale, top * scale, TextColour, ShellText.MenuEm, scale);
+        var percentText = $"{percent}%";
+        var percentWidth = ShellText.Measure(percentText, ShellText.MenuEm).Width;
+        ShellText.DrawText(pixels, clipW, clipH, stride, percentText,
+            (panel.X + panel.W - PanelPad - percentWidth) * scale, top * scale, TextColour, ShellText.MenuEm, scale);
+
+        var track = SliderTrackRect(panel, index);
+        Chrome.FillRoundedRect(pixels, clipW, clipH, stride, track, 4, TrackColour, scale);
+        var fillWidth = (track.W * Math.Clamp(percent, 0, 100)) / 100;
+        if (fillWidth > 0)
+        {
+            Chrome.FillRoundedRect(pixels, clipW, clipH, stride, new Rect(track.X, track.Y, fillWidth, track.H), 4, FillColour, scale);
+        }
+
+        var thumbX = track.X + (track.W * Math.Clamp(percent, 0, 100) / 100);
+        Chrome.FillRoundedRect(pixels, clipW, clipH, stride, new Rect(thumbX - 6, track.Y - 4, 12, 16), 6, TextColour, scale);
+    }
+
+    private bool TryStartDrag(Rect panel, AudioEndpoint endpoint, int x, int y)
+    {
+        var track = SliderTrackRect(panel, SliderIndex(endpoint));
+        var hitTrack = new Rect(track.X, track.Y - 8, track.W, track.H + 16);
+        if (!hitTrack.Contains(x, y))
+        {
+            return false;
+        }
+
+        lock (_volumeGate)
+        {
+            _dragging = endpoint;
+        }
+
+        SetSliderFromX(endpoint, x, track);
+        return true;
+    }
+
+    private void SetSliderFromX(AudioEndpoint endpoint, int x, Rect track)
     {
         var percent = Math.Clamp((int)Math.Round((x - track.X) * 100d / Math.Max(1, track.W)), 0, 100);
         lock (_volumeGate)
         {
-            _volumePercent = percent;
+            _levelGeneration++;
+            if (endpoint == AudioEndpoint.Output)
+            {
+                _volumePercent = percent;
+            }
+            else
+            {
+                _microphonePercent = percent;
+            }
         }
 
-        _volume.SetPercent(percent);
+        _volume.SetPercent(endpoint, percent);
     }
 
     private void Activate(int index)

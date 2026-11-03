@@ -361,6 +361,24 @@ public class ShellTests
         Assert.False(harness.Shell.Settings.IsOpen);
     }
 
+    [Fact]
+    public void VTReset_ReleasesASettingsSliderDrag()
+    {
+        using var harness = new Harness();
+        var layout = Bar.ComputeLayout(1920, 1080, Bar.ClockString(), []);
+        harness.ClickAt(layout.Clock.X + (layout.Clock.W / 2), layout.Clock.Y + (layout.Clock.H / 2));
+        var panel = harness.Shell.Settings.PanelRect(layout.Clock, 1920, 1080);
+        var track = harness.Shell.Settings.MicrophoneTrackRect(panel);
+
+        harness.Router.PlaceCursor(track.X + (track.W / 2), track.Y);
+        harness.Press(InputConstants.ButtonLeft);
+        Assert.True(harness.Shell.Settings.IsDraggingSlider);
+
+        harness.Router.ResetInputState();
+
+        Assert.False(harness.Shell.Settings.IsDraggingSlider);
+    }
+
     // --- Pinned launchers: focus-or-launch and window claims ------------
 
     [Fact]

@@ -63,6 +63,19 @@ public class QuickSettingsTests
     }
 
     [Fact]
+    public void MicrophoneSlider_SitsBetweenTheVolumeSliderAndTheButtons()
+    {
+        var panel = OpenPanel();
+        var bounds = panel.PanelRect(Clock, OutputWidth, OutputHeight);
+        var volume = panel.VolumeTrackRect(bounds);
+        var microphone = panel.MicrophoneTrackRect(bounds);
+
+        Assert.True(microphone.Y > volume.Y + volume.H, "the microphone slider overlaps the volume slider");
+        Assert.True(SettingsPanel.ActionRect(bounds, 0).Y > microphone.Y + microphone.H, "the buttons overlap the microphone slider");
+        Assert.True(microphone.X >= bounds.X && microphone.X + microphone.W <= bounds.X + bounds.W, "the microphone slider escapes the panel");
+    }
+
+    [Fact]
     public void ClickingTheGapBetweenCircles_InvokesNothingAndLeavesThePanelOpen()
     {
         var actions = new FakeSystemActions();
@@ -82,6 +95,24 @@ public class QuickSettingsTests
         Assert.True(handled);
         Assert.True(panel.IsOpen);
         Assert.Empty(actions.Calls);
+    }
+
+    [Fact]
+    public void BothSliders_DrawTheirOwnLevel()
+    {
+        var panel = new SettingsPanel(new FakeSystemActions(), new FakeVolumeControl(output: 50, microphone: 25));
+        panel.Toggle();
+        panel.RefreshLevels();
+        var bounds = panel.PanelRect(Clock, OutputWidth, OutputHeight);
+        var pixels = DrawPanel(panel, pointer: null);
+        var volume = panel.VolumeTrackRect(bounds);
+        var microphone = panel.MicrophoneTrackRect(bounds);
+
+        // At 40% the output slider is still filled but the 25% microphone
+        // slider is not, so drawing one level in place of the other fails.
+        Assert.Equal(0xFF7B86E8, PixelAt(pixels, OutputWidth, volume.X + (volume.W * 2 / 5), volume.Y + (volume.H / 2)));
+        Assert.Equal(0xFF15161C, PixelAt(pixels, OutputWidth, microphone.X + (microphone.W * 2 / 5), microphone.Y + (microphone.H / 2)));
+        Assert.Equal(0xFF7B86E8, PixelAt(pixels, OutputWidth, microphone.X + (microphone.W / 10), microphone.Y + (microphone.H / 2)));
     }
 
     [Fact]
@@ -257,11 +288,12 @@ public class QuickSettingsTests
         return (darkest, lightest);
     }
 
-    private sealed class FakeVolumeControl : IVolumeControl
+    private sealed class FakeVolumeControl(int output = 50, int microphone = 50) : IVolumeControl
     {
-        public int? ReadPercent() => 50;
+        public int? ReadPercent(AudioEndpoint endpoint) =>
+            endpoint == AudioEndpoint.Output ? output : microphone;
 
-        public bool SetPercent(int percent) => true;
+        public bool SetPercent(AudioEndpoint endpoint, int percent) => true;
     }
 
     private sealed class FakeSystemActions : ISystemActions

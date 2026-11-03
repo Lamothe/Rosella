@@ -129,6 +129,7 @@ internal sealed class InputRouter
             _consumedKeys.Clear();
             _chromePressConsumedButtons.Clear();
             _settingsPressConsumedButtons.Clear();
+            _shell?.Settings.PointerReleased();
             _buttonPressTargets.Clear();
             _heldButtons.Clear();
             _shake.Reset();
@@ -470,14 +471,14 @@ internal sealed class InputRouter
         }
 
         // The settings panel is drawn over the taskbar and owns all presses
-        // in its bounds. Its volume slider may continue a drag outside it.
+        // in its bounds. Its sliders may continue a drag outside it.
         if (_shell is { Settings.IsOpen: true } settingsShell)
         {
             var (width, height) = _scene.OutputSize;
             var settingsLayout = settingsShell.LastBarLayout
                 ?? Bar.ComputeLayout(width, height, Bar.ClockString(), _scene.TaskWindows(), settingsShell.Pinned);
             var inPanel = settingsShell.Settings.PanelRect(settingsLayout.Clock, width, height).Contains(_cursorX, _cursorY);
-            if (inPanel || settingsShell.Settings.IsDraggingVolume)
+            if (inPanel || settingsShell.Settings.IsDraggingSlider)
             {
                 if (settingsShell.Settings.HandlePointer(_cursorX, _cursorY, settingsLayout.Clock, width, height, pressed))
                 {
@@ -487,7 +488,7 @@ internal sealed class InputRouter
                 }
             }
 
-            if (pressed && !settingsLayout.Clock.Contains(_cursorX, _cursorY) && !settingsShell.Settings.IsDraggingVolume)
+            if (pressed && !settingsLayout.Clock.Contains(_cursorX, _cursorY) && !settingsShell.Settings.IsDraggingSlider)
             {
                 settingsShell.Settings.Close();
                 _scene.MarkDirty();
