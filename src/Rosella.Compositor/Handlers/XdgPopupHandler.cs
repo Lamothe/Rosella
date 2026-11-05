@@ -5,11 +5,13 @@ namespace Rosella.Compositor;
 
 /// <summary>
 /// Handles <c>xdg_popup</c>: short-lived child windows (menus, tooltips)
-/// positioned by their positioner. Rosella's opinionated placement resolves
-/// the anchor rectangle (relative to the parent's window geometry) plus the
-/// offset; constraint adjustment (flipping/sliding to stay on screen) is
-/// parsed but not honoured. The placement is frozen at use time, as the
-/// spec requires.
+/// positioned by their positioner. The positioner's rules are resolved in
+/// full — anchor, gravity, offset and the flip/slide/resize constraint
+/// adjustments against the work area — so a menu asked to hang below a
+/// widget near the bottom edge comes back on screen. The rules are frozen
+/// into an <see cref="XdgPlacement"/> when the popup uses them, as the spec
+/// requires; the resulting position is re-resolved on every commit so
+/// xdg_popup.reposition moves a live popup.
 /// </summary>
 internal sealed class XdgPopupHandler : IRequestHandler, IXdgRoleObject
 {
@@ -97,15 +99,35 @@ internal sealed class XdgPopupHandler : IRequestHandler, IXdgRoleObject
     /// <summary>Sends xdg_popup.configure relative to the parent window geometry.</summary>
     public void SendRoleConfigure()
     {
-        var (x, y) = _placement.RelativeToParent;
-        _session!.SendEvent(_self!, "configure", WireArgument.Int32(x), WireArgument.Int32(y), WireArgument.Int32(_placement.Width), WireArgument.Int32(_placement.Height));
+        var (x, y, width, height) = ResolvePlacement();
+        var origin = _parent?.WindowPosition ?? (0, 0);
+        _session!.SendEvent(_self!, "configure", WireArgument.Int32(x - origin.X), WireArgument.Int32(y - origin.Y), WireArgument.Int32(width), WireArgument.Int32(height));
     }
 
-    /// <summary>Popups go where the placement says, not the window policy.</summary>
+    /// <summary>
+    /// The popup's window position on screen (and its size after constraint
+    /// adjustment), resolved from the parent's window geometry and the work
+    /// area. Both the configure and the actual placement use this, so the
+    /// client is told exactly what it gets.
+    /// </summary>
+    internal (int X, int Y, int Width, int Height) ResolvePlacement()
+    {
+        var origin = _parent?.WindowPosition ?? (0, 0);
+        var (scaleX, scaleY) = _parent?.WindowScale ?? (1, 1);
+        var anchor = _placement.AnchorRect;
+        var sceneAnchor = (
+            X: origin.X + (int)Math.Round(anchor.X * scaleX),
+            Y: origin.Y + (int)Math.Round(anchor.Y * scaleY),
+            Width: (int)Math.Round(anchor.Width * scaleX),
+            Height: (int)Math.Round(anchor.Height * scaleY));
+        return _placement.Resolve(sceneAnchor, _surface.Scene.WorkArea);
+    }
+
+    /// <summary>Popups go where the positioner says, not the window policy.</summary>
     public (int Width, int Height, (int X, int Y)? Corner) GetPlacement(SurfaceHandler surface, (int X, int Y, int Width, int Height) geometry)
     {
-        var corner = _placement.PlaceAt(_parent?.WindowPosition ?? (0, 0));
-        return (_placement.Width, _placement.Height, corner);
+        var (x, y, width, height) = ResolvePlacement();
+        return (width, height, (x, y));
     }
 
     private void Grab(uint serial)

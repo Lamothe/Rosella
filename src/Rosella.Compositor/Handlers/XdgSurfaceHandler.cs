@@ -15,12 +15,13 @@ internal interface IXdgRoleObject
 
 /// <summary>
 /// Handles <c>xdg_surface</c> and drives the mapping state machine:
-/// commit → configure → ack_configure → buffer commit = mapped. Content is
-/// placed once per map by the window policy (toplevels) or the positioner
-/// (popups); the window geometry shifts the content origin and is
-/// double-buffered. Unmapping (a null-buffer commit) resets the surface to
-/// its pre-initial-commit state, as the spec requires the mapping dance to
-/// be repeated.
+/// commit → configure → ack_configure → buffer commit = mapped. A toplevel is
+/// placed by the window policy when it maps; a popup is placed by its
+/// positioner, re-resolved on every commit so xdg_popup.reposition moves a
+/// live popup and a changed work area is picked up. The window geometry
+/// shifts the content origin and is double-buffered. Unmapping (a null-buffer
+/// commit) resets the surface to its pre-initial-commit state, as the spec
+/// requires the mapping dance to be repeated.
 /// </summary>
 internal sealed class XdgSurfaceHandler : IRequestHandler, ISurfaceRole, IDisposable
 {
@@ -78,6 +79,42 @@ internal sealed class XdgSurfaceHandler : IRequestHandler, ISurfaceRole, IDispos
 
     /// <summary>The window's visible corner sits at the work-area origin (maximised).</summary>
     internal (int X, int Y) WindowPosition => _windowPosition;
+
+    /// <summary>
+    /// How the client's window-geometry coordinates map onto the scene: the
+    /// compositor stretches a maximised window's geometry rect to the work
+    /// area, so a popup anchor rectangle expressed in that space has to be
+    /// scaled the same way. One in every ordinary case (the client was
+    /// configured with the size it declared).
+    /// </summary>
+    internal (double X, double Y) WindowScale
+    {
+        get
+        {
+            // Only a toplevel is stretched to the work area. A popup keeps its
+            // natural size, so its window geometry maps one-to-one — using the
+            // policy/geometry ratio there would feed a constraint resize back
+            // into the anchor rectangle of the popup's own children.
+            if (_roleObject is not XdgToplevelHandler || _policySize.Width <= 0 || _policySize.Height <= 0)
+            {
+                return (1, 1);
+            }
+
+            // Same fallback PlaceContent uses: a client that never called
+            // set_window_geometry has its content stretched instead, so the
+            // content size is the geometry its own coordinates refer to.
+            var geometryWidth = _geometry.Width > 0 ? _geometry.Width : _surface.ContentWidth;
+            var geometryHeight = _geometry.Height > 0 ? _geometry.Height : _surface.ContentHeight;
+            if (geometryWidth <= 0 || geometryHeight <= 0)
+            {
+                return (1, 1);
+            }
+
+            var scaleX = (double)_policySize.Width / geometryWidth;
+            var scaleY = (double)_policySize.Height / geometryHeight;
+            return (scaleX > 0 ? scaleX : 1, scaleY > 0 ? scaleY : 1);
+        }
+    }
 
     /// <summary>The work area of the output this surface is on (logical pixels).</summary>
     /// <summary>Marks the scene dirty (taskbar labels track title/app id).</summary>
@@ -502,6 +539,16 @@ internal sealed class XdgSurfaceHandler : IRequestHandler, ISurfaceRole, IDispos
             _geometry.Width > 0 ? _geometry : (0, 0, contentWidth, contentHeight);
         if (_roleObject is XdgPopupHandler)
         {
+            // Re-resolved on every commit, not frozen at map: xdg_popup.reposition
+            // must move a live popup, and the positioning boundary (the work
+            // area) changes when the shell bar appears or the output resizes.
+            var placement = _roleObject.GetPlacement(surface, geometry);
+            if (placement.Corner is { } corner)
+            {
+                _windowPosition = corner;
+                _policySize = (placement.Width, placement.Height);
+            }
+
             surface.Place(_windowPosition.X - geometry.X, _windowPosition.Y - geometry.Y, contentWidth, contentHeight);
             surface.SetVisible(_windowPosition.X, _windowPosition.Y, geometry.Width, geometry.Height);
             return;

@@ -125,8 +125,10 @@ Verified against libwayland's marshalling code and the protocol docs:
   serial and all older ones), window policy placement (centre + per-window
   cascade, placed once per map and raised), double-buffered window geometry
   shifting the content origin, popups placed from a frozen positioner
-  snapshot (anchor rect + offset, relative to the parent's window geometry
-  in the event), wm_capabilities before the first configure, and enforced
+  snapshot (anchor rectangle, anchor, gravity and offset, resolved against
+  the work area with flip, slide and resize, so a popup asked to hang below
+  a widget near the bottom edge comes back on screen), wm_capabilities
+  before the first configure, and enforced
   destroy order (wl_surface/xdg_surface/role object) with dead windows
   unmapped immediately. Reviewed once; 15 findings fixed with regression
   tests. Confirmed on screen (silver, 27/10/2026): the smoke client maps a
@@ -257,8 +259,12 @@ or hostile clients without touching the compositor.
   can still SIGBUS the compositor (the common lying-size case is checked up
   front); `get_xdg_surface` on a surface that already has content is not
   rejected (the spec names no error code); popup stacking rules
-  (`not_the_topmost_popup`, parent-mapped-first) and positioner constraint
-  adjustment (flip/slide to stay on screen) are unimplemented; a
+  (`not_the_topmost_popup`, parent-mapped-first) are unimplemented; a
+  `xdg_popup.reposition` emits the new configure at once but moves the
+  on-screen popup at the client's next commit rather than waiting for the ack
+  (the placement rules are frozen when the positioner is used; the divergence
+  lasts until the client redraws, and a popup resized by the constraint keeps
+  its old content size until then); a
   `xdg_toplevel` request for a state the policy does not grant (maximise,
   unmaximise, fullscreen) is acknowledged but not granted (see M7); the
   serial match

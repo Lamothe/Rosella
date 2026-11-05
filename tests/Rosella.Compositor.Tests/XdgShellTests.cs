@@ -192,13 +192,15 @@ public class XdgShellTests
     {
         using var harness = new Harness();
         harness.CreateToplevel(8, 11, 12);
-        var parent = harness.MapWindow(8, 11, 12);
+        var parent = harness.MapWindow(8, 11, 12, (1920, 1080));
 
         // Positioner: 50×40 at the parent's (10, 20) plus offset (3, 5).
         harness.Client.SendRequest(10, "xdg_wm_base", "create_positioner", WireArgument.NewId(14));
         harness.Client.RegisterObject(14, "xdg_positioner");
         harness.Client.SendRequest(14, "xdg_positioner", "set_size", WireArgument.Int32(50), WireArgument.Int32(40));
         harness.Client.SendRequest(14, "xdg_positioner", "set_anchor_rect", WireArgument.Int32(10), WireArgument.Int32(20), WireArgument.Int32(1), WireArgument.Int32(1));
+        harness.Client.SendRequest(14, "xdg_positioner", "set_anchor", WireArgument.UInt32(5));
+        harness.Client.SendRequest(14, "xdg_positioner", "set_gravity", WireArgument.UInt32(8));
         harness.Client.SendRequest(14, "xdg_positioner", "set_offset", WireArgument.Int32(3), WireArgument.Int32(5));
 
         harness.Client.SendRequest(4, "wl_compositor", "create_surface", WireArgument.NewId(15));
@@ -367,7 +369,7 @@ public class XdgShellTests
     {
         using var harness = new Harness();
         harness.CreatePopup(8, 11, 12, 13, 14, 15, 16);
-        harness.MapWindow(8, 11, 12);
+        harness.MapWindow(8, 11, 12, (1920, 1080));
 
         // Mutating the positioner after get_popup must change nothing.
         harness.Client.SendRequest(14, "xdg_positioner", "set_anchor_rect", WireArgument.Int32(100), WireArgument.Int32(100), WireArgument.Int32(1), WireArgument.Int32(1));
@@ -422,6 +424,12 @@ public class XdgShellTests
             Client.RegisterObject(positionerId, "xdg_positioner");
             Client.SendRequest(positionerId, "xdg_positioner", "set_size", WireArgument.Int32(50), WireArgument.Int32(40));
             Client.SendRequest(positionerId, "xdg_positioner", "set_anchor_rect", WireArgument.Int32(10), WireArgument.Int32(20), WireArgument.Int32(1), WireArgument.Int32(1));
+
+            // Anchor top_left with gravity bottom_right is the positioner
+            // idiom for "the popup's top-left corner at the anchor point".
+            // With both left at none the spec centres the popup instead.
+            Client.SendRequest(positionerId, "xdg_positioner", "set_anchor", WireArgument.UInt32(5));
+            Client.SendRequest(positionerId, "xdg_positioner", "set_gravity", WireArgument.UInt32(8));
             Client.SendRequest(positionerId, "xdg_positioner", "set_offset", WireArgument.Int32(3), WireArgument.Int32(5));
             Client.SendRequest(4, "wl_compositor", "create_surface", WireArgument.NewId(popupSurfaceId));
             Client.RegisterObject(popupSurfaceId, "wl_surface");
@@ -431,12 +439,23 @@ public class XdgShellTests
             Client.RegisterObject(popupId, "xdg_popup");
         }
 
-        /// <summary>Runs the full dance and returns the mapped window.</summary>
-        public SurfaceHandler MapWindow(uint surfaceId, uint xdgSurfaceId, uint toplevelId)
+        /// <summary>
+        /// Runs the full dance and returns the mapped window. Pass a window
+        /// geometry to act like a client that declares one (a maximised
+        /// window declares the size it was configured with); otherwise the
+        /// content is stretched to the work area and the client's own
+        /// coordinates are the content's.
+        /// </summary>
+        public SurfaceHandler MapWindow(uint surfaceId, uint xdgSurfaceId, uint toplevelId, (int Width, int Height)? geometry = null)
         {
             Client.SendRequest(surfaceId, "wl_surface", "commit");
             Client.ReadUntil(toplevelId, "configure");
             var configure = Client.ReadUntil(xdgSurfaceId, "configure");
+            if (geometry is { } declared)
+            {
+                Client.SendRequest(xdgSurfaceId, "xdg_surface", "set_window_geometry", WireArgument.Int32(0), WireArgument.Int32(0), WireArgument.Int32(declared.Width), WireArgument.Int32(declared.Height));
+            }
+
             Client.SendRequest(xdgSurfaceId, "xdg_surface", "ack_configure", WireArgument.UInt32(configure.Arguments[0].AsUInt32()));
             CommitBuffer(surfaceId);
 

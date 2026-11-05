@@ -55,7 +55,9 @@ configuration is where desktop environments go to die.
   (v7), the full commit → configure → ack_configure → map dance with strict
   serial consumption, window policy placement (centre + small cascade,
   raised on map), double-buffered window geometry, popups positioned by a
-  frozen positioner snapshot relative to the parent window, and correct
+  frozen positioner snapshot relative to the parent window (anchor, gravity,
+  offset and flip/slide/resize constraint adjustment, so a menu at the
+  bottom or right edge stays on screen), and correct
   unmap/teardown semantics (role destroy unmaps; destroy order is enforced).
   The smoke client now opens a genuine xdg-shell window.
 - **M6 — input**: done (confirmed on hardware: keyboard, mouse, multitouch
