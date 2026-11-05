@@ -57,6 +57,9 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
     private int _height;
     private uint _format = ShmFormats.Xrgb8888;
     private int _bufferScale = 1;
+    private RegionSnapshot? _opaqueRegion;
+    private RegionSnapshot? _pendingOpaque;
+    private bool _hasPendingOpaque;
     private int _pendingBufferScale = 1;
     private ISurfaceRole? _role;
 
@@ -188,6 +191,34 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
     }
 
     private bool _hidden;
+
+    /// <summary>
+    /// The surface's whole area is declared opaque, in surface-local
+    /// coordinates: either it is an XRGB buffer, or the client set an opaque
+    /// region that covers it (wl_surface.set_opaque_region). Such a window
+    /// hides the desktop behind it and copies without blending; anything
+    /// less certain keeps the blending path.
+    /// </summary>
+    internal bool IsOpaqueContent
+    {
+        get
+        {
+            lock (_state)
+            {
+                if (_content is null)
+                {
+                    return false;
+                }
+
+                if (_format == ShmFormats.Xrgb8888)
+                {
+                    return true;
+                }
+
+                return _opaqueRegion is { } region && region.Covers(_width, _height, _bufferScale);
+            }
+        }
+    }
 
     /// <summary>The surface's logical width: the placed rect, else the content's own.</summary>
     internal int Width
@@ -400,13 +431,36 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
 
                 break;
 
+            case "set_opaque_region":
+            {
+                // Double-buffered: the surface takes the region at its next
+                // commit. The region is copied, not referenced — clients
+                // destroy it immediately (Chrome does), so a snapshot is the
+                // only honest reading. A region that cannot be resolved
+                // promises nothing: opacity is a hint, and a bad hint must
+                // not take the client down (wl_surface has no error for it).
+                var regionId = request.Arguments[0].AsObject();
+                var snapshot = regionId != 0
+                    && session.TryGetObject(regionId, out var regionObject)
+                    && regionObject.Handler is RegionHandler region
+                        ? region.Snapshot()
+                        : (RegionSnapshot?)null;
+
+                lock (_state)
+                {
+                    _pendingOpaque = snapshot;
+                    _hasPendingOpaque = true;
+                }
+
+                break;
+            }
+
             case "damage":
             case "damage_buffer":
-            case "set_opaque_region":
             case "set_input_region":
             case "offset":
-                // Parsed and ignored: full repaints and inert regions until
-                // the later milestones need them.
+                // Parsed and ignored: full repaints and inert input regions
+                // until the later milestones need them.
                 break;
 
             default:
@@ -462,6 +516,11 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
                 return;
             }
 
+            // A surface that declared its whole opaque region is opaque: the
+            // client promised every pixel covers, so the alpha channel is not
+            // consulted and the copy takes the no-blend path. Chrome sends
+            // ARGB8888 buffers with a full-surface opaque region, which is
+            // most of a video frame's cost.
             Blitter.Blit(
                 pixels,
                 width,
@@ -471,7 +530,7 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
                 _width,
                 _height,
                 _width * 4,
-                _format,
+                IsOpaqueContent ? ShmFormats.Xrgb8888 : _format,
                 Position.X * outputScale,
                 Position.Y * outputScale,
                 Width * outputScale,
@@ -643,6 +702,11 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
             // Applied on every commit, buffer or not — double-buffered
             // state is committed, not attached.
             _bufferScale = newBufferScale;
+            if (_hasPendingOpaque)
+            {
+                _opaqueRegion = _pendingOpaque;
+                _hasPendingOpaque = false;
+            }
 
             _activeCallbacks.AddRange(_pendingCallbacks);
             _pendingCallbacks.Clear();

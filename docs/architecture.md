@@ -268,7 +268,13 @@ or hostile clients without touching the compositor.
   hotspot in `set_cursor`); evicted configure serials stay ackable but never
   count as mapping consent; the 96-DPI placeholder guard cannot distinguish a
   fabricated size from a genuine 96-DPI ≥2560×1600 panel (the rare real panel
-  would get 2× instead of 1×). M6 additions: seat sends hold the seat gate
+  would get 2× instead of 1×); `wl_surface.damage` and `damage_buffer` are
+  parsed but ignored, so any client commit repaints that client's whole
+  window — a 34×34 Chrome update costs a 4.9M-pixel window repaint, which is
+  why an animated page can keep the compositor at most of a core. The opaque
+  region is honoured: a client that declares its whole surface opaque (Chrome
+  does, on an ARGB8888 buffer) takes the unblended copy path and hides the
+  desktop behind it. M6 additions: seat sends hold the seat gate
   during socket writes, so one stalled client can briefly delay input
   delivery to others (accepted on a single-seat desktop); kernel autorepeat
   is dropped (clients repeat via repeat_info); no touch support; a keyboard

@@ -231,29 +231,6 @@ internal sealed class RectList
         }
     }
 
-    /// <summary>
-    /// Whether any part of the rect is still in the set (or the set overflowed
-    /// and must be read as "all of it"). Used to tell whether the desktop has
-    /// already been painted under a window's rect.
-    /// </summary>
-    internal bool Touches(in DamageRect rect)
-    {
-        if (Overflowed)
-        {
-            return true;
-        }
-
-        for (var index = 0; index < _count; index++)
-        {
-            if (_rects[index].Intersects(rect))
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
     /// <summary>Starts again from a single rectangle.</summary>
     internal void Reset(in DamageRect rect)
     {

@@ -516,13 +516,22 @@ public sealed class Scene
         // wallpaper behind a maximised window is most of the memcpy the
         // damage path exists to remove.
         _uncovered.Reset(region);
+
+        // The desktop is skipped under opaque windows, so remember exactly
+        // which rectangle each one excluded: a window that turns translucent
+        // before the blit pass has to be compensated over that rectangle,
+        // not over whatever geometry it has by then (it may have moved).
+        // Reused between frames: this is the render hot path.
+        _opaqueRects.Clear();
         lock (_gate)
         {
             foreach (var surface in _surfaces)
             {
                 if (IsOpaqueWindow(surface))
                 {
-                    _uncovered.Subtract(WindowRect(surface, scale));
+                    var rect = WindowRect(surface, scale);
+                    _opaqueRects.Add((surface, rect));
+                    _uncovered.Subtract(rect);
                     if (_uncovered.Overflowed)
                     {
                         break;
@@ -561,13 +570,20 @@ public sealed class Scene
                 var rect = WindowRect(surface, scale).Intersect(region);
 
                 // The desktop was painted on the assumption that opaque
-                // windows hide it. A window that is translucent *now* — it
-                // committed a different format, or lost its content, since
-                // the pass above — must blend against the desktop, not
-                // against the frame it is replacing.
-                if (!IsOpaqueWindow(surface) && !_uncovered.Touches(rect))
+                // windows hide it. A window that was opaque in the pass
+                // above and is translucent *now* — it committed a different
+                // buffer since — has no desktop under it and must not blend
+                // against the frame it is replacing. A window that was never
+                // counted opaque already has the desktop under it, even when
+                // its whole rect lies over another opaque window: painting
+                // the background there would erase that window.
+                if (!IsOpaqueWindow(surface) && WasOpaqueUnder(surface, out var wasOpaqueRect))
                 {
-                    backgroundPixels += Background.RenderRegion(pixels, width, height, stride, rect);
+                    var under = wasOpaqueRect.Intersect(region);
+                    if (!under.IsEmpty)
+                    {
+                        backgroundPixels += Background.RenderRegion(pixels, width, height, stride, under);
+                    }
                 }
 
                 surface.BlitInto(pixels, width, height, stride, scale, region);
@@ -726,12 +742,30 @@ public sealed class Scene
     }
 
     /// <summary>Whether the surface is a mapped opaque (xrgb) window: nothing shows through it.</summary>
+    /// <summary>The rectangle the desktop pass skipped for this surface, if any.</summary>
+    private bool WasOpaqueUnder(SurfaceHandler surface, out DamageRect rect)
+    {
+        foreach (var (candidate, skipped) in _opaqueRects)
+        {
+            if (ReferenceEquals(candidate, surface))
+            {
+                rect = skipped;
+                return true;
+            }
+        }
+
+        rect = default;
+        return false;
+    }
+
+    private readonly List<(SurfaceHandler Surface, DamageRect Rect)> _opaqueRects = [];
+
     private static bool IsOpaqueWindow(SurfaceHandler surface) =>
         surface.IsMapped
         && !surface.Gone
         && !surface.IsCursorSurface
         && !surface.Hidden
-        && surface.Format == ShmFormats.Xrgb8888
+        && surface.IsOpaqueContent
         && surface.ContentWidth > 0
         && surface.ContentHeight > 0;
 
