@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# Rosella login session: run by the display manager when "Rosella" is chosen.
+#
+# The user's own build wins when present — updating the session is then
+# just `dotnet publish` plus a restart, with no sudo and no dialog. The
+# system copy in /usr/local/lib is the fallback for a machine where the
+# source tree is gone.
+set -euo pipefail
+
+# Keep the GNOME compatibility token for toolkits. The compositor installs
+# Rosella's own portal preferences for GTK and the keyring backend.
+export XDG_CURRENT_DESKTOP=Rosella:GNOME
+export XDG_SESSION_DESKTOP=rosella
+export XDG_SESSION_TYPE=wayland
+
+user_build="$HOME/Projects/Rosella/build/publish/Rosella.Compositor"
+if [ -x "$user_build" ] && [ -f "$(dirname "$user_build")/libcoreclr.so" ]; then
+    # Self-contained check (libcoreclr.so beside the binary): a bare
+    # framework-dependent publish would die on start with no SDK installed.
+    binary="$user_build"
+else
+    binary="/usr/local/lib/rosella/Rosella.Compositor"
+fi
+
+# User services use Rosella's portal backends. Keep the GNOME compatibility
+# token in the compositor's environment for the toolkits it launches.
+# On a cold login the compositor also pulls in the graphical session target.
+XDG_CURRENT_DESKTOP=Rosella systemctl --user import-environment XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE 2>/dev/null || true
+systemctl --user start graphical-session.target 2>/dev/null || true
+
+# evdev nodes are root:input 660. If this login predates the seat user's
+# input-group grant (getty logins cache credentials from first login), the
+# group is missing even though /etc/group is correct. `sg` re-resolves
+# membership from the group database and adds it, no password needed for
+# an existing member. No args are passed to the session; the display manager
+# passes none.
+if id -nG | tr ' ' '\n' | grep -qx input; then
+    exec "$binary" "$@"
+fi
+exec sg input -c "$binary"

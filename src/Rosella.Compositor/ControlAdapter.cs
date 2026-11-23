@@ -1,0 +1,113 @@
+using Rosella.Control;
+using Rosella.Input;
+
+namespace Rosella.Compositor;
+
+/// <summary>
+/// The control socket's hands and eyes on a live session. Everything here
+/// is the real thing: frames come from the render loop's buffers, and
+/// injected input becomes ordinary evdev-shaped events in the same router
+/// a trackpad feeds. What the driver sees is what a person at the machine
+/// would see and do.
+/// </summary>
+internal sealed class ControlAdapter : IControlTarget
+{
+    internal ControlAdapter(
+        Func<DesktopSession> desktop,
+        Func<InputThread> input,
+        Func<(int Number, bool Active)?> vtState)
+    {
+        _desktop = desktop;
+        _input = input;
+        _vtState = vtState;
+    }
+
+    private readonly Func<DesktopSession> _desktop;
+    private readonly Func<InputThread> _input;
+    private readonly Func<(int Number, bool Active)?> _vtState;
+
+    public byte[] CaptureFrame()
+    {
+        // Never call this from the render loop (it is the loop's
+        // counterpart). A wedged loop must not wedge the driver forever.
+        return _desktop().Scanout.CaptureFrame().WaitAsync(TimeSpan.FromSeconds(5)).GetAwaiter().GetResult();
+    }
+
+    public string SetBlanked(bool blank)
+    {
+        // The policy flips here and the render loop performs the DPMS change
+        // on its next turn, so wake it first — otherwise a blank could sit
+        // unapplied for the length of a long idle wait.
+        var desktop = _desktop();
+        var action = desktop.Power.Force(blank);
+        desktop.Scene.MarkDirty();
+        return action switch
+        {
+            ScreenPowerAction.Blank => "blanked",
+            ScreenPowerAction.Unblank => "awake",
+            _ => "unchanged",
+        };
+    }
+
+    public string SurfaceTable() => string.Join('\n', _desktop().Scene.DescribeSurfaces());
+
+    public string ReloadTaskbar() => _input().Router.ReloadTaskbar();
+
+    public string Modules() => _input().Router.DescribeModules();
+
+    public string State()
+    {
+        var desktop = _desktop();
+        var cursor = desktop.Scene.Cursor;
+        var lines = new List<string>
+        {
+            $"output {desktop.Scene.OutputSize.Width}x{desktop.Scene.OutputSize.Height} logical",
+            $"screen {(desktop.Power.IsBlanked ? "blanked" : "awake")}",
+            $"idle inhibition {(desktop.Scene.IdleInhibited() ? "active" : "inactive")}",
+            $"cursor {cursor.X},{cursor.Y}",
+        };
+
+        // Where this session shows and whether it is the one on screen:
+        // the askpass helper routes prompts to the session the person is
+        // actually looking at.
+        if (SessionRoute.DisplayLine(desktop.Display) is { } displayLine)
+        {
+            lines.Add(displayLine);
+        }
+
+        if (SessionRoute.VtLine(_vtState()) is { } vtLine)
+        {
+            lines.Add(vtLine);
+        }
+
+        lines.Add("surfaces:");
+        lines.AddRange(desktop.Scene.DescribeSurfaces().Select(line => "  " + line));
+        return string.Join('\n', lines) + "\n";
+    }
+
+    public void RelativeMotion(int dx, int dy)
+    {
+        var (sec, usec) = Now();
+        var input = _input();
+        input.ProcessEvent(new InputEvent(sec, usec, InputConstants.EventRelative, InputConstants.RelativeX, dx));
+        input.ProcessEvent(new InputEvent(sec, usec, InputConstants.EventRelative, InputConstants.RelativeY, dy));
+    }
+
+    public void WarpCursor(int x, int y) => _input().Router.PlaceCursor(x, y);
+
+    public void Button(ushort code, int value) => InjectKey(code, value);
+
+    public void Key(ushort code, int value) => InjectKey(code, value);
+
+    private void InjectKey(ushort code, int value)
+    {
+        var (sec, usec) = Now();
+        _input().ProcessEvent(new InputEvent(sec, usec, InputConstants.EventKey, code, value));
+    }
+
+    private static (long Sec, long Usec) Now()
+    {
+        var now = DateTimeOffset.UtcNow;
+        return (now.ToUnixTimeSeconds(), (long)now.TimeOfDay.TotalMicroseconds % 1_000_000);
+    }
+}

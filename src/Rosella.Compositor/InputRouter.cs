@@ -1,0 +1,1323 @@
+using Rosella.Input;
+
+namespace Rosella.Compositor;
+
+/// <summary>
+/// The input policy, and deliberately the only policy there is: the cursor
+/// moves and hit-tests windows, a click focuses and raises, keys go to the
+/// keyboard focus, and the keybindings are fixed: Alt+F4 closes the focused
+/// window, Alt+Tab switches windows, Super+Esc quits. The Super key by itself
+/// is unbound. On the
+/// touchpad, one finger moves the pointer, a quick tap clicks (left, right or
+/// middle by finger count), two or more fingers scroll and a tap then a quick
+/// second touch drags; a physical click always beats a pending tap. Anything
+/// else typed or clicked is ordinary input. Nothing is configurable.
+/// </summary>
+internal sealed class InputRouter
+{
+    private readonly Scene _scene;
+    private readonly SeatState _seat;
+    private readonly Action _quit;
+    private readonly Action<int>? _switchVt;
+    private readonly Shell? _shell;
+    private readonly ScreenPower? _screenPower;
+    private readonly Action<ushort, int>? _greeterKey;
+    private readonly object _gate = new();
+    private readonly HashSet<int> _pressedKeys = new();
+    private readonly HashSet<int> _consumedKeys = new();
+    private int _cursorX;
+    private int _cursorY;
+
+    /// <summary>Button codes pressed over the shell chrome and consumed there.</summary>
+    private readonly HashSet<int> _chromePressConsumedButtons = new();
+    private readonly HashSet<int> _settingsPressConsumedButtons = new();
+
+    /// <summary>
+    /// Where each button's press landed (the implicit grab, lite): its
+    /// release goes back there and nowhere else. Per-button, so a tap-drag
+    /// and a physical click cannot steal each other's releases.
+    /// </summary>
+    private readonly Dictionary<int, SurfaceHandler> _buttonPressTargets = new();
+    private int _moveRemainderX;
+    private int _moveRemainderY;
+
+    /// <summary>The shake-to-find gesture, per axis of pointer motion.</summary>
+    private readonly CursorShake _shake = new();
+
+    /// <summary>Buttons currently held, so a drag never reads as a shake.</summary>
+    private readonly HashSet<int> _heldButtons = new();
+
+    // Touchpad gestures own the multitouch slot state (tap-to-click, scroll,
+    // tap-drag); the router supplies the pointer, axis and button plumbing.
+    private readonly TouchpadGestures _gestures;
+    private bool _numLocked;
+    private int _lastDepressed = -1;
+    private int _lastLocked = -1;
+    private bool _desktopActive = true;
+    private SurfaceHandler? _desktopFocus;
+
+    internal InputRouter(Scene scene, SeatState seat, Action quit, Shell? shell = null, ScreenPower? screenPower = null, Action<int>? switchVt = null, Action<ushort, int>? greeterKey = null)
+    {
+        _scene = scene;
+        _seat = seat;
+        _quit = quit;
+        _shell = shell;
+        _screenPower = screenPower;
+        _switchVt = switchVt;
+        _greeterKey = greeterKey;
+        _gestures = new TouchpadGestures(
+            move: (dx, dy, time) => MoveCursor(
+                dx == 0 ? 0 : ScaleTouchpadX(dx),
+                dy == 0 ? 0 : ScaleTouchpadY(dy),
+                time),
+            scroll: SendTouchpadScroll,
+            button: (code, pressed, time) =>
+            {
+                HandleButton(code, pressed, time);
+                _scene.MarkDirty();
+            },
+            isTyping: IsTyping);
+    }
+
+    /// <summary>Where the arrow's hotspot sits.</summary>
+    internal (int X, int Y) Cursor
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return (_cursorX, _cursorY);
+            }
+        }
+    }
+
+    internal void FocusNewWindow(SurfaceHandler surface)
+    {
+        lock (_gate)
+        {
+            if (!Suspended && surface.Scene == _scene && surface.IsInputVisible && surface.XdgRole?.Toplevel is not null)
+            {
+                if (!_desktopActive)
+                {
+                    _desktopFocus = surface;
+                    return;
+                }
+
+                _scene.DismissPopupGrabs();
+                _seat.SetKeyboardFocus(surface, _pressedKeys);
+            }
+        }
+    }
+
+    internal void SetDesktopActive(bool active)
+    {
+        lock (_gate)
+        {
+            if (_desktopActive == active)
+            {
+                return;
+            }
+
+            _desktopActive = active;
+            _scene.SetDesktopActive(active);
+            if (active)
+            {
+                var focus = _desktopFocus is { IsInputVisible: true } remembered && remembered.Scene == _scene
+                    ? remembered : _scene.TopmostVisible();
+                _desktopFocus = null;
+                _seat.SetKeyboardFocus(focus, _pressedKeys);
+                var pointer = PointerOverShell() ? null : _scene.HitTest(_cursorX, _cursorY);
+                _seat.SetPointerFocus(pointer, LocalX(pointer), LocalY(pointer));
+                if (pointer is not null)
+                {
+                    _seat.SendPointerFrame(pointer);
+                }
+                if (_screenPower?.MarkActivity() == ScreenPowerAction.Unblank)
+                {
+                    _scene.MarkDirty();
+                }
+            }
+            else
+            {
+                var focus = _seat.KeyboardFocus;
+                _desktopFocus = focus?.XdgRole?.RootToplevelSurface ?? focus;
+                ResetInputState();
+                _scene.DismissPopupGrabs();
+                _shell?.Switcher.Cancel();
+                if (_shell is { } shell)
+                {
+                    shell.DockMenu = null;
+                }
+                var previousPointer = _seat.PointerFocus;
+                _seat.SetPointerFocus(null, 0, 0);
+                if (previousPointer is not null)
+                {
+                    _seat.SendPointerFrame(previousPointer);
+                }
+                _seat.SetKeyboardFocus(null, _pressedKeys);
+            }
+        }
+    }
+
+    /// <summary>Places the cursor outright (startup centring).</summary>
+    internal void PlaceCursor(int x, int y)
+    {
+        if (Suspended)
+        {
+            return;
+        }
+
+        lock (_gate)
+        {
+            _cursorX = x;
+            _cursorY = y;
+            _scene.Cursor = (x, y);
+        }
+    }
+
+    /// <summary>
+    /// While another VT owns the display, injected events are dropped: the
+    /// session is invisible and must not move windows nobody can see.
+    /// </summary>
+    internal volatile bool Suspended;
+
+    /// <summary>
+    /// The VT-switch reset: everything pressed or consumed right now is
+    /// gone — the matching releases arrive while the devices belong to
+    /// another session and are dropped. Without this, the chord that
+    /// triggered the switch (Ctrl+Alt) would read as still held on return.
+    /// </summary>
+    internal void ResetInputState()
+    {
+        lock (_gate)
+        {
+            if (_seat.ResetPointerDrag() is { } dragButton)
+            {
+                _buttonPressTargets.Remove(dragButton);
+            }
+            // Gestures first: a tap-drag's release must route through the
+            // still-set press target before the fields below are cleared.
+            _gestures.Reset();
+            foreach (var (button, target) in _buttonPressTargets)
+            {
+                if (!target.Gone)
+                {
+                    _seat.SendButton(target, (ushort)button, pressed: false, time: 0);
+                    _seat.SendPointerFrame(target);
+                }
+            }
+            _seat.ReleaseAllHeld();
+            _pressedKeys.Clear();
+            _consumedKeys.Clear();
+            _chromePressConsumedButtons.Clear();
+            _settingsPressConsumedButtons.Clear();
+            _shell?.Settings.PointerReleased();
+            if (_shell?.Screenshot.Cancel() == true)
+            {
+                _scene.MarkDirty();
+            }
+            if (_shell is { DockMenu: not null } shell)
+            {
+                shell.DockMenu = null;
+                _scene.MarkDirty();
+            }
+            _buttonPressTargets.Clear();
+            _heldButtons.Clear();
+            _shake.Reset();
+            _lastDepressed = -1;
+            _lastLocked = -1;
+            _seat.Drag.SetModifiers(shift: false, control: false);
+        }
+    }
+
+    /// <summary>Processes one evdev event (thread-safe; called by device readers).</summary>
+    internal void ProcessEvent(InputEvent e)
+    {
+        if (Suspended)
+        {
+            return;
+        }
+
+        lock (_gate)
+        {
+            if (!_desktopActive || Suspended)
+            {
+                return;
+            }
+
+            // Only activity delivered to this desktop resets its idle timer.
+            // Device synchronization packets and touchpad slot selection carry no activity on their own.
+            if (_screenPower is not null && IsUserActivity(e) && _screenPower.MarkActivity() == ScreenPowerAction.Unblank)
+            {
+                _scene.MarkDirty();
+            }
+
+            // A greeter has no clients and no pointer policy: its keyboard
+            // belongs to the login form. Everything else (motion, buttons,
+            // touchpad) is deliberately swallowed, so the pointer cannot
+            // drag a cursor across the card.
+            if (_greeterKey is { } greeterKey)
+            {
+                RouteGreeterKey(greeterKey, e);
+                return;
+            }
+
+            switch (e.Type)
+            {
+                case InputConstants.EventRelative when e.Code == InputConstants.RelativeX:
+                    MoveCursor(e.Value, 0, e.TimeMs);
+                    break;
+
+                case InputConstants.EventRelative when e.Code == InputConstants.RelativeY:
+                    MoveCursor(0, e.Value, e.TimeMs);
+                    break;
+
+                case InputConstants.EventRelative when e.Code == InputConstants.RelativeWheel:
+                    SendAxis(axis: 0, value: -e.Value * WheelAxisPerNotch, e.TimeMs);
+                    break;
+
+                case InputConstants.EventRelative when e.Code == InputConstants.RelativeHWheel:
+                    SendAxis(axis: 1, value: e.Value * WheelAxisPerNotch, e.TimeMs);
+                    break;
+
+                case InputConstants.EventAbsolute:
+                    HandleTouchpadAbs(e);
+                    break;
+
+                case InputConstants.EventKey when e.Code is InputConstants.ButtonLeft
+                    or InputConstants.ButtonRight
+                    or InputConstants.ButtonMiddle:
+                    // The hardware button beats any pending tap: a physical
+                    // click during a touch must never double as one.
+                    _gestures.NotePhysicalButton(e.Code, e.Value != InputConstants.KeyReleased, e.TimeMs);
+                    HandleButton(e.Code, e.Value != InputConstants.KeyReleased, e.TimeMs);
+                    _scene.MarkDirty();
+                    break;
+
+                case InputConstants.EventKey when _shell is { } shell && e.Code is
+                    InputConstants.KeyVolumeUp or InputConstants.KeyVolumeDown or InputConstants.KeyMute:
+                    shell.Settings.HandleVolumeKey(e.Code, e.Value);
+                    break;
+
+                case InputConstants.EventKey when e.Code >= 0x100:
+                    // Other BTN_* codes (BTN_TOOL_FINGER, BTN_TOUCH, ...) are
+                    // touch state, not keys or buttons: ignored.
+                    break;
+
+                case InputConstants.EventKey:
+                    _lastKeyMs = e.TimeMs;
+                    _keySeen = true;
+                    HandleKey(e);
+                    _scene.MarkDirty();
+                    break;
+            }
+        }
+    }
+
+    private static bool IsUserActivity(InputEvent e) => e.Type switch
+    {
+        InputConstants.EventKey => e.Code is < 0x100 or >= InputConstants.ButtonLeft and <= InputConstants.ButtonBack,
+        InputConstants.EventRelative => e.Value != 0 && e.Code is InputConstants.RelativeX or InputConstants.RelativeY
+            or InputConstants.RelativeWheel or InputConstants.RelativeHWheel,
+        InputConstants.EventAbsolute => e.Code is InputConstants.AbsMtTrackingId or InputConstants.AbsMtPositionX or InputConstants.AbsMtPositionY,
+        _ => false,
+    };
+
+    /// <summary>
+    /// Multitouch (protocol B) trackpad events feed the gesture engine: one
+    /// finger moves the pointer, a quick tap clicks (left/right/middle by
+    /// finger count), two or more fingers scroll, and a tap followed by a
+    /// quick second touch drags with the button held.
+    /// </summary>
+    private void HandleTouchpadAbs(InputEvent e)
+    {
+        switch (e.Code)
+        {
+            case InputConstants.AbsMtSlot:
+                _gestures.Slot(e.Value);
+                return;
+
+            case InputConstants.AbsMtTrackingId:
+                _gestures.TrackingId(e.Value, e.TimeMs);
+                return;
+
+            case InputConstants.AbsMtPositionX:
+                _gestures.PositionX(e.Value, e.TimeMs);
+                return;
+
+            case InputConstants.AbsMtPositionY:
+                _gestures.PositionY(e.Value, e.TimeMs);
+                return;
+        }
+    }
+
+    /// <summary>
+    /// Disable-while-typing window: the trackpad stays inert this long after
+    /// the last keyboard event, so a hand reaching for the keys (or a palm
+    /// resting on the pad) cannot move the cursor, scroll or click.
+    /// </summary>
+    internal const uint TypingSuppressMs = 500;
+
+    private uint _lastKeyMs;
+    private bool _keySeen;
+
+    /// <summary>True while a key was pressed within the typing window.</summary>
+    private bool IsTyping(uint timeMs) => _keySeen && unchecked(timeMs - _lastKeyMs) < TypingSuppressMs;
+
+    /// <summary>
+    /// Trackpad sensitivity. The bcm5974 reports its resolution as 94 (X)
+    /// and 92 (Y) device units per millimetre; one figure keeps the policy
+    /// readable. Pointer motion is expressed in logical pixels per
+    /// millimetre of finger travel, so the feel is the same on any output,
+    /// and scrolling in axis units per millimetre (a wheel notch is 10).
+    /// </summary>
+    private const int TouchpadUnitsPerMm = 93;
+
+    /// <summary>Pointer: logical pixels per millimetre of finger travel (≈1:1).</summary>
+    private const int PointerPixelsPerMm = 6;
+
+    /// <summary>Scroll: axis units per millimetre, about a notch per 3 mm.</summary>
+    private const int ScrollAxisPerMm = 3;
+
+    /// <summary>
+    /// A wheel detent is one notch, and wl_pointer.axis counts 10 per notch
+    /// (the unit the trackpad scroll policy uses too). Sending more per
+    /// detent makes the wheel feel like several notches per click.
+    /// </summary>
+    private const int WheelAxisPerNotch = 10;
+
+    private int _touchpadRemainderX;
+    private int _touchpadRemainderY;
+    private int _scrollRemainderX;
+    private int _scrollRemainderY;
+
+    private int ScaleTouchpadX(int raw) => ScalePointer(raw, ref _touchpadRemainderX);
+
+    private int ScaleTouchpadY(int raw) => ScalePointer(raw, ref _touchpadRemainderY);
+
+    /// <summary>
+    /// Finger travel to pointer pixels. MoveCursor divides by the output
+    /// scale to keep the cursor's path across the screen constant; the
+    /// multiply here cancels that, so the policy stays in logical pixels.
+    /// The remainder carries, so slow drags still move.
+    /// </summary>
+    private int ScalePointer(int raw, ref int remainder)
+    {
+        var total = (raw * PointerPixelsPerMm * Math.Max(1, _scene.Scale)) + remainder;
+        remainder = total % TouchpadUnitsPerMm;
+        return total / TouchpadUnitsPerMm;
+    }
+
+    private int ScaleScrollX(int raw) => ScaleScroll(raw, ref _scrollRemainderX);
+
+    private int ScaleScrollY(int raw) => ScaleScroll(raw, ref _scrollRemainderY);
+
+    private int ScaleScroll(int raw, ref int remainder)
+    {
+        var total = (raw * ScrollAxisPerMm) + remainder;
+        remainder = total % TouchpadUnitsPerMm;
+        return total / TouchpadUnitsPerMm;
+    }
+
+    private void MoveCursor(int dx, int dy, uint time)
+    {
+        // Device deltas are physical pixels; the scene is logical (physical /
+        // output scale). Dividing keeps the tuned pointer feel identical at
+        // every scale — the cursor crosses the same fraction of the screen
+        // per swipe. The remainder carries, so slow motion still moves.
+        var scale = Math.Max(1, _scene.Scale);
+        var moveX = (dx + _moveRemainderX) / scale;
+        _moveRemainderX = (dx + _moveRemainderX) % scale;
+        var moveY = (dy + _moveRemainderY) / scale;
+        _moveRemainderY = (dy + _moveRemainderY) % scale;
+
+        var previous = (X: _cursorX, Y: _cursorY);
+        var (outputWidth, outputHeight) = _scene.OutputSize;
+        _cursorX = Math.Clamp(_cursorX + moveX, 0, Math.Max(0, outputWidth - 1));
+        _cursorY = Math.Clamp(_cursorY + moveY, 0, Math.Max(0, outputHeight - 1));
+        _scene.Cursor = (_cursorX, _cursorY);
+
+        if (_shell?.Screenshot.IsSelecting == true)
+        {
+            return;
+        }
+
+        // Shake to find the pointer: a few fast strokes grow it for a
+        // moment. Never while dragging — swiping a selection back and forth
+        // is not a search for the cursor.
+        if (_heldButtons.Count == 0 && _shake.Add(moveX, moveY, time))
+        {
+            _scene.MagnifyCursor();
+        }
+
+        if (_shell is { Settings.IsOpen: true } settingsShell)
+        {
+            var settingsLayout = settingsShell.LastBarLayout
+                ?? settingsShell.ComputeBarLayout(outputWidth, outputHeight, _scene.TaskWindows());
+            settingsShell.Settings.PointerMoved(_cursorX, settingsLayout.Clock, outputWidth, outputHeight);
+            var panel = settingsShell.Settings.PanelRect(settingsLayout.Clock, outputWidth, outputHeight);
+            if (panel.Contains(previous.X, previous.Y) || panel.Contains(_cursorX, _cursorY)
+                || settingsShell.Settings.IsDraggingSlider)
+            {
+                var physical = panel.Scaled(scale);
+                _scene.MarkDirty(new DamageRect(physical.X, physical.Y, physical.W, physical.H));
+            }
+        }
+
+        var hovered = PointerOverShell() ? null : _scene.HitTest(_cursorX, _cursorY);
+        if (_seat.RouteDragMotion(hovered, LocalX(hovered), LocalY(hovered), time))
+        {
+            return;
+        }
+
+        // Until a client starts a data drag, pointer motion stays with the
+        // surface that received the original press, even across its edge.
+        var target = _buttonPressTargets.Values.FirstOrDefault(surface => surface.IsInputVisible) ?? hovered;
+        _seat.SetPointerFocus(target, LocalX(target), LocalY(target));
+        if (target is not null)
+        {
+            _seat.SendMotion(target, LocalX(target), LocalY(target), time);
+            _seat.SendPointerFrame(target);
+        }
+    }
+
+    private bool PointerOverShell()
+    {
+        if (_shell is not { } shell || _scene.TopmostPopupGrab is not null)
+        {
+            return false;
+        }
+
+        var (width, height) = _scene.OutputSize;
+        if (shell.Notifications.Hit(width, _cursorX, _cursorY))
+        {
+            return true;
+        }
+        if (!shell.DockVisible)
+        {
+            return false;
+        }
+
+        var layout = shell.LastBarLayout
+            ?? shell.ComputeBarLayout(width, height, _scene.TaskWindows());
+        return layout.Bounds.Contains(_cursorX, _cursorY)
+            || shell.DockMenu?.Bounds.Contains(_cursorX, _cursorY) == true
+            || (shell.Settings.IsOpen && shell.Settings.PanelRect(layout.Clock, width, height).Contains(_cursorX, _cursorY));
+    }
+
+    /// <summary>
+    /// Keyboard focus target for a press, which is the window and never an
+    /// ungrabbed popup: the keyboard leave that would follow reaches the
+    /// toplevel, clients such as Chrome read that as the window losing focus,
+    /// and they close the menu on the press before the click's release
+    /// arrives. A grabbed popup takes focus elsewhere; that is what a grab is
+    /// for. A parentless popup has no window to hold focus, so this reports
+    /// false and the caller leaves focus untouched rather than moving it onto
+    /// the popup.
+    /// </summary>
+    private static bool TryGetPressFocusTarget(SurfaceHandler hit, out SurfaceHandler? focus)
+    {
+        hit = hit.MainSurface;
+        if (hit.XdgRole is { PopupRole: not null } popupSurface)
+        {
+            focus = popupSurface.RootToplevelSurface;
+            return focus is not null;
+        }
+
+        focus = hit.XdgRole?.RootToplevelSurface ?? hit;
+        return true;
+    }
+
+    private void HandleButton(int code, bool pressed, uint time)
+    {
+        // Any physical button suppresses the shake gesture while it is held,
+        // and a press ends any stroke sequence: clicking must never add up to
+        // a shake. A set, not a flag, so releasing one button of a chording
+        // drag cannot re-arm the gesture with another still down.
+        if (pressed)
+        {
+            _heldButtons.Add(code);
+            _shake.Reset();
+        }
+        else
+        {
+            _heldButtons.Remove(code);
+        }
+
+        var dragTarget = PointerOverShell() ? null : _scene.HitTest(_cursorX, _cursorY);
+        if (_seat.RouteDragButton(code, pressed, dragTarget, LocalX(dragTarget), LocalY(dragTarget)))
+        {
+            if (!pressed)
+            {
+                _buttonPressTargets.Remove(code);
+                _scene.MarkDirty();
+            }
+            return;
+        }
+
+        if (_shell?.Screenshot is { IsSelecting: true } screenshot)
+        {
+            if (pressed)
+            {
+                _chromePressConsumedButtons.Add(code);
+                if (code == InputConstants.ButtonLeft)
+                {
+                    screenshot.BeginDrag((_cursorX, _cursorY));
+                }
+                else if (code == InputConstants.ButtonRight)
+                {
+                    screenshot.Cancel();
+                }
+            }
+            else if (_chromePressConsumedButtons.Remove(code) && code == InputConstants.ButtonLeft)
+            {
+                screenshot.EndDrag((_cursorX, _cursorY));
+            }
+
+            _scene.MarkDirty();
+            return;
+        }
+
+        // A press eaten by the shell chrome swallows its own release: no
+        // client may see a release for a press it never received, and no
+        // press may lose the release it is owed. Consumed buttons are a set
+        // of codes, so a second chrome press with another button cannot
+        // orphan the first button's release.
+        if (!pressed)
+        {
+            if (_settingsPressConsumedButtons.Remove(code))
+            {
+                if (_shell is { } settingsOwner)
+                {
+                    settingsOwner.Settings.PointerReleased();
+                }
+
+                return;
+            }
+
+            if (_shell is { } openShell)
+            {
+                openShell.PressedPin = -1;
+            }
+
+            if (_chromePressConsumedButtons.Remove(code))
+            {
+                return;
+            }
+        }
+
+        // An explicit xdg_popup grab takes precedence over shell chrome.
+        // Owner surfaces remain interactive; outside presses dismiss the grab
+        // and are consumed rather than leaking to an unrelated client.
+        if (_scene.TopmostPopupGrab is { } grabbedPopup)
+        {
+            if (pressed)
+            {
+                var target = _scene.HitTest(_cursorX, _cursorY);
+                if (target is null)
+                {
+                    _scene.DismissPopupGrabs();
+                    _chromePressConsumedButtons.Add(code);
+                    if (_scene.TopmostPopupGrab is null)
+                    {
+                        var hit = _scene.HitTest(_cursorX, _cursorY);
+                        if (hit is null)
+                        {
+                            _seat.SetKeyboardFocus(null, _pressedKeys);
+                        }
+                        else if (TryGetPressFocusTarget(hit, out var dismissedFocus))
+                        {
+                            _seat.SetKeyboardFocus(dismissedFocus, _pressedKeys);
+                        }
+                    }
+
+                    return;
+                }
+
+                _seat.SetPointerFocus(target, LocalX(target), LocalY(target));
+                _buttonPressTargets[code] = target;
+                if (!ReferenceEquals(target, grabbedPopup.Surface))
+                {
+                    _scene.Raise(target);
+                }
+
+                _seat.SetKeyboardFocus(grabbedPopup.Surface, _pressedKeys);
+                _seat.SendButton(target, code, pressed: true, time);
+                _seat.SendPointerFrame(target);
+                return;
+            }
+
+            if (_buttonPressTargets.Remove(code, out var popupPressTarget))
+            {
+                _seat.SetPointerFocus(popupPressTarget, LocalX(popupPressTarget), LocalY(popupPressTarget));
+                _seat.SendButton(popupPressTarget, code, pressed: false, time);
+                _seat.SendPointerFrame(popupPressTarget);
+            }
+
+            return;
+        }
+
+        if (pressed && _shell?.Notifications.Hit(_scene.OutputSize.Width, _cursorX, _cursorY,
+            dismiss: code == InputConstants.ButtonLeft) == true)
+        {
+            _chromePressConsumedButtons.Add(code);
+            return;
+        }
+
+        if (pressed && _shell is { DockMenu: { } menu } menuShell)
+        {
+            menuShell.DockMenu = null;
+            if (code == InputConstants.ButtonLeft && menu.ReloadTaskbar && menu.Bounds.Contains(_cursorX, _cursorY))
+            {
+                try
+                {
+                    var result = ReloadTaskbar();
+                    menuShell.Notifications.Show(default, "Rosella", result, "", 2200);
+                }
+                catch (InvalidOperationException error)
+                {
+                    menuShell.Notifications.Show(default, "Rosella", "Taskbar reload failed", error.Message, 6000);
+                }
+            }
+            else if (code == InputConstants.ButtonLeft && menu.HitMove(_cursorX, _cursorY) &&
+                menu.MoveWindow is { } windowToMove && _scene.TryMoveWindowHere(windowToMove))
+            {
+                FocusNewWindow(windowToMove);
+            }
+            else if (code == InputConstants.ButtonLeft && menu.HitStartup(_cursorX, _cursorY) &&
+                menu.StartupId is { } startupId)
+            {
+                menuShell.StartupApps?.Toggle(startupId);
+            }
+            else if (code == InputConstants.ButtonLeft && menu.HitClose(_cursorX, _cursorY))
+            {
+                foreach (var window in menu.CloseWindows)
+                {
+                    if (window.Scene == _scene && window.IsMapped && !window.Gone)
+                    {
+                        window.XdgRole?.Close();
+                    }
+                }
+            }
+
+            _scene.MarkDirty();
+            _chromePressConsumedButtons.Add(code);
+            return;
+        }
+
+        // The settings panel is drawn over the taskbar and owns all presses
+        // in its bounds. Its sliders may continue a drag outside it.
+        if (_shell is { Settings.IsOpen: true } settingsShell)
+        {
+            var (width, height) = _scene.OutputSize;
+            var settingsLayout = settingsShell.LastBarLayout
+                ?? settingsShell.ComputeBarLayout(width, height, _scene.TaskWindows());
+            var inPanel = settingsShell.Settings.PanelRect(settingsLayout.Clock, width, height).Contains(_cursorX, _cursorY);
+            if (inPanel || settingsShell.Settings.IsDraggingSlider)
+            {
+                if (code != InputConstants.ButtonLeft ||
+                    settingsShell.Settings.HandlePointer(_cursorX, _cursorY, settingsLayout.Clock, width, height, pressed))
+                {
+                    _settingsPressConsumedButtons.Add(code);
+                    _scene.MarkDirty();
+                    return;
+                }
+            }
+
+            if (pressed && !settingsLayout.Clock.Contains(_cursorX, _cursorY) && !settingsShell.Settings.IsDraggingSlider)
+            {
+                settingsShell.Settings.Close();
+                _scene.MarkDirty();
+            }
+        }
+
+        // Shell chrome eats clicks first: the settings panel, floating taskbar,
+        // then click-outside dismissal. None may leak into client windows underneath.
+        if (pressed && _shell is { } shell)
+        {
+            var (outputWidth, outputHeight) = _scene.OutputSize;
+            var layout = shell.LastBarLayout
+                ?? shell.ComputeBarLayout(outputWidth, outputHeight, _scene.TaskWindows());
+            if (shell.DockVisible && layout.Bounds.Contains(_cursorX, _cursorY))
+            {
+                if (code == InputConstants.ButtonRight)
+                {
+                    OpenDockMenu(shell, layout, outputWidth);
+                }
+                else if (code == InputConstants.ButtonLeft)
+                {
+                    HandleTaskbarClick(shell, layout, _cursorX, _cursorY);
+                }
+
+                _chromePressConsumedButtons.Add(code);
+                return;
+            }
+
+            if (shell.Settings.IsOpen)
+            {
+                shell.Settings.Close();
+                _scene.MarkDirty();
+                _chromePressConsumedButtons.Add(code);
+                return;
+            }
+        }
+
+        // The window under the cursor is authoritative for a press (click-to-
+        // focus, raise on press). Its release is owed back to the surface
+        // that received the press — an implicit grab, lite — wherever the
+        // cursor wandered to since; a release whose press never reached a
+        // surface is dropped (no client may see a release without a press).
+        if (pressed)
+        {
+            var target = dragTarget;
+            _seat.SetPointerFocus(target, LocalX(target), LocalY(target));
+            if (target is not null)
+            {
+                _buttonPressTargets[code] = target;
+                _scene.Raise(target);
+
+                if (TryGetPressFocusTarget(target, out var pressFocus))
+                {
+                    _seat.SetKeyboardFocus(pressFocus, _pressedKeys);
+                }
+            }
+        }
+        else if (_buttonPressTargets.Remove(code, out var pressedTarget))
+        {
+            _seat.SetPointerFocus(pressedTarget, LocalX(pressedTarget), LocalY(pressedTarget));
+            if (_seat.PointerFocus is { } pointerTarget)
+            {
+                _seat.SendButton(pointerTarget, code, pressed: false, time);
+                _seat.SendPointerFrame(pointerTarget);
+            }
+
+            return;
+        }
+        else
+        {
+            return; // release with no press behind it
+        }
+
+        if (_seat.PointerFocus is { } target2)
+        {
+            _seat.SendButton(target2, code, pressed, time);
+            _seat.SendPointerFrame(target2);
+        }
+    }
+
+    /// <summary>
+    /// The greeter's keyboard path: keys (and autorepeat) go to the login
+    /// form, and Ctrl+Alt+Fn still switches VTs when this process owns one.
+    /// Under greetd the switch callback is absent — greetd owns the VT — so
+    /// the chord falls through to the form and is harmless there.
+    /// </summary>
+    private void RouteGreeterKey(Action<ushort, int> greeterKey, InputEvent e)
+    {
+        // BTN_* codes are pointer buttons, not characters.
+        if (e.Type != InputConstants.EventKey || e.Code >= 0x100)
+        {
+            return;
+        }
+
+        var pressed = e.Value != InputConstants.KeyReleased;
+        if (pressed)
+        {
+            _pressedKeys.Add(e.Code);
+        }
+        else
+        {
+            _pressedKeys.Remove(e.Code);
+        }
+
+        // The release of a consumed chord key is swallowed with its press.
+        if (!pressed && _consumedKeys.Remove(e.Code))
+        {
+            return;
+        }
+
+        if (e.Value == InputConstants.KeyPressed
+            && CtrlDown
+            && AltDown
+            && VtForKey(e.Code) is { } vt
+            && _switchVt is { } switchVt)
+        {
+            _consumedKeys.Add(e.Code);
+            switchVt(vt);
+            return;
+        }
+
+        if (!_consumedKeys.Contains(e.Code))
+        {
+            greeterKey(e.Code, e.Value);
+        }
+    }
+
+    private void HandleKey(InputEvent e)
+    {
+        // Kernel autorepeat is not forwarded: clients repeat on their own
+        // schedule via repeat_info, and re-sending press would violate the
+        // "no release without a press" rule for focused-mid-type clients.
+        // The open switcher is the one exception: a held Tab walks its rows,
+        // and the repeats still reach no client.
+        if (e.Value == InputConstants.KeyRepeated)
+        {
+            if (e.Code == InputConstants.KeyTab
+                && AltDown
+                && _shell is { Switcher.IsOpen: true } repeatShell)
+            {
+                repeatShell.Switcher.Next(backwards: ShiftDown, _scene.TaskWindows());
+                _scene.MarkDirty();
+            }
+
+            return;
+        }
+
+        var pressed = e.Value != InputConstants.KeyReleased;
+
+        // The release of a binding-consumed key is swallowed with its press,
+        // so a consumed key never appears in enter frames or at a client.
+        if (!pressed && _consumedKeys.Remove(e.Code))
+        {
+            SendModifiers(_seat.KeyboardFocus);
+            return;
+        }
+
+        if (pressed && e.Code == InputConstants.KeyEsc && _seat.Drag.Cancel())
+        {
+            _consumedKeys.Add(e.Code);
+            _scene.MarkDirty();
+            return;
+        }
+
+        // The Alt+Tab switcher's keys come before every other consumer: Tab
+        // is consumed outright (its release with it), and Esc cancels the
+        // switch rather than reaching a client or closing the settings panel.
+        if (_shell is { } switcherShell && HandleTaskSwitcher(switcherShell, e, pressed))
+        {
+            return;
+        }
+
+        // Bindings see the raw key before it joins the pressed set, so the
+        // key that triggered one is never part of a later enter frame.
+        if (e.Value == InputConstants.KeyPressed && TryHandleBinding(e.Code))
+        {
+            _consumedKeys.Add(e.Code);
+            SendModifiers(_seat.KeyboardFocus);
+            return;
+        }
+
+        if (pressed && _shell?.Screenshot.IsSelecting == true)
+        {
+            _consumedKeys.Add(e.Code);
+            return;
+        }
+
+        // The topmost grabbed popup retains keyboard focus and Esc dismisses
+        // the full grab stack instead of leaking the key to another client.
+        if (pressed && e.Code == InputConstants.KeyEsc && _scene.TopmostPopupGrab is not null)
+        {
+            _scene.DismissPopupGrabs();
+            _consumedKeys.Add(e.Code);
+            SendModifiers(_seat.KeyboardFocus);
+            return;
+        }
+
+        if (pressed && e.Code == InputConstants.KeyEsc && _shell is { DockMenu: not null } menuShell)
+        {
+            menuShell.DockMenu = null;
+            _scene.MarkDirty();
+            _consumedKeys.Add(e.Code);
+            return;
+        }
+
+        // The settings panel, when open, eats Esc: it closes the panel, and
+        // the key never reaches a client (press and release alike).
+        if (pressed && _shell is { Settings.IsOpen: true } settingsShell && settingsShell.Settings.HandleKey(e.Code))
+        {
+            _consumedKeys.Add(e.Code);
+            SendModifiers(_seat.KeyboardFocus);
+            return;
+        }
+
+        if (pressed)
+        {
+            _pressedKeys.Add(e.Code);
+        }
+        else
+        {
+            _pressedKeys.Remove(e.Code);
+        }
+
+        if (pressed && e.Code == InputConstants.KeyNumLock)
+        {
+            _numLocked = !_numLocked;
+        }
+
+        if (_seat.KeyboardFocus is { } focus)
+        {
+            _seat.SendKey(focus, e.Code, pressed, e.TimeMs);
+        }
+
+        // The mask is tracked even unfocused; sent when there is a focus.
+        SendModifiers(_seat.KeyboardFocus);
+    }
+
+    /// <summary>The fixed keybindings. True = the key is consumed outright.</summary>
+    private bool TryHandleBinding(int code)
+    {
+        // Ctrl+Alt+Fn switches VT — the kernel's own handling never fires
+        // because this session owns the input devices exclusively, so the
+        // display server performs the switch itself.
+        if (CtrlDown && AltDown && VtForKey(code) is { } vt && _switchVt is { } switchVt)
+        {
+            switchVt(vt);
+            return true;
+        }
+
+        if (_shell?.Screenshot is { } screenshot)
+        {
+            if (code == InputConstants.KeyPrintScreen)
+            {
+                if (ShiftDown)
+                {
+                    var (width, height) = _scene.OutputSize;
+                    screenshot.CaptureOutput(width, height);
+                }
+                else if (_heldButtons.Count == 0)
+                {
+                    screenshot.Start();
+                    _seat.SetPointerFocus(null, 0, 0);
+                }
+
+                _scene.MarkDirty();
+                return true;
+            }
+
+            if (code == InputConstants.KeyEsc && !SuperDown && screenshot.Cancel())
+            {
+                _scene.MarkDirty();
+                return true;
+            }
+        }
+
+        if (code == InputConstants.KeyF4 && AltDown)
+        {
+            _seat.KeyboardFocus?.XdgRole?.Close();
+            return true;
+        }
+
+        if (code == InputConstants.KeyEsc && SuperDown)
+        {
+            _quit();
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// The Alt+Tab switcher's keys: Alt+Tab opens over the scene's windows
+    /// (selecting the previous window) and steps on later presses, Shift
+    /// reversing the direction; Esc cancels without focusing. An Alt release
+    /// first goes to the outgoing window, then commits the selection with
+    /// the resulting modifier state. True = the key is consumed.
+    /// </summary>
+    private bool HandleTaskSwitcher(Shell shell, InputEvent e, bool pressed)
+    {
+        var switcher = shell.Switcher;
+        var isAlt = e.Code is InputConstants.KeyLeftAlt or InputConstants.KeyRightAlt;
+
+        // A switch always runs with Alt held. If the pressed set lost it —
+        // a VT switch resets the state and the releases go to the other
+        // session — close the stale overlay now, rather than let a later
+        // chord commit a snapshot nobody is looking at.
+        if (switcher.IsOpen && !AltDown)
+        {
+            switcher.Cancel();
+            _scene.MarkDirty();
+        }
+
+        if (!pressed)
+        {
+            if (!isAlt || !switcher.IsOpen)
+            {
+                return false;
+            }
+
+            // Finish the chord on the outgoing window before sending enter.
+            // A bare Alt release in the incoming window can activate its menu.
+            _pressedKeys.Remove(e.Code);
+            var outgoing = _seat.KeyboardFocus;
+            if (outgoing is not null)
+            {
+                _seat.SendKey(outgoing, e.Code, pressed: false, e.TimeMs);
+            }
+
+            SendModifiers(outgoing);
+            if (switcher.Commit() is { } surface && shell.Windows is { } windows && switcher.CanSelect(surface))
+            {
+                // A popup grab otherwise keeps intercepting pointer presses
+                // and can put keyboard focus back on the old window. End it
+                // before handing focus to the selection, including when the
+                // selection is the popup's own parent window.
+                _scene.DismissPopupGrabs();
+                windows.RaiseAndFocus(surface, [.. _pressedKeys]);
+            }
+
+            _scene.MarkDirty();
+            return true;
+        }
+
+        if (e.Code == InputConstants.KeyEsc && switcher.IsOpen)
+        {
+            switcher.Cancel();
+            _consumedKeys.Add(e.Code);
+            _scene.MarkDirty();
+            SendModifiers(_seat.KeyboardFocus);
+            return true;
+        }
+
+        if (e.Code != InputConstants.KeyTab || !AltDown)
+        {
+            return false;
+        }
+
+        if (switcher.IsOpen)
+        {
+            switcher.Next(backwards: ShiftDown, _scene.TaskWindows());
+        }
+        else
+        {
+            var focus = _seat.KeyboardFocus;
+            var focusedWindow = focus?.XdgRole?.RootToplevelSurface ?? focus;
+            switcher.Open(_scene.TaskWindows(), focusedWindow, backwards: ShiftDown);
+        }
+
+        _consumedKeys.Add(e.Code);
+        _scene.MarkDirty();
+        SendModifiers(_seat.KeyboardFocus);
+        return true;
+    }
+
+    /// <summary>The VT number a function key selects (F1..F12 → VT 1..12).</summary>
+    internal static int? VtForKey(int code) => code switch
+    {
+        >= InputConstants.KeyF1 and <= InputConstants.KeyF10 => code - InputConstants.KeyF1 + 1,
+        InputConstants.KeyF11 => 11,
+        InputConstants.KeyF12 => 12,
+        _ => null,
+    };
+
+    private void OpenDockMenu(Shell shell, BarLayout layout, int outputWidth)
+    {
+        if (shell.CanReloadTaskbar && layout.Clock.Contains(_cursorX, _cursorY))
+        {
+            shell.DockMenu = DockMenu.CreateTaskbarMenu(layout.Clock, outputWidth);
+            _scene.MarkDirty();
+            return;
+        }
+
+        var remoteTasks = _scene.OtherDesktop?.TaskWindows() ?? [];
+        var pin = layout.Pinned.FirstOrDefault(button => button.Rect.Contains(_cursorX, _cursorY));
+        if (pin is not null)
+        {
+            var windows = _scene.TaskWindows()
+                .Where(task => PinnedMatch.Matches(task.AppId, pin.Launcher.MatchKeys))
+                .Select(task => task.Surface).ToArray();
+            var remote = remoteTasks.LastOrDefault(task =>
+                PinnedMatch.Matches(task.AppId, pin.Launcher.MatchKeys))?.Surface;
+            var startupId = shell.StartupApps is null ? null : pin.Launcher.DesktopId;
+            if (windows.Length > 0 || remote is not null || startupId is not null)
+            {
+                shell.DockMenu = DockMenu.Create(pin.Rect, outputWidth, windows, remote, startupId,
+                    startupId is not null && shell.StartupApps!.Contains(startupId));
+                _scene.MarkDirty();
+            }
+
+            return;
+        }
+
+        foreach (var (rect, task) in layout.Tasks)
+        {
+            if (rect.Contains(_cursorX, _cursorY) && task.Surface.IsMapped && !task.Surface.Gone)
+            {
+                var remote = string.IsNullOrEmpty(task.AppId) ? null : remoteTasks.LastOrDefault(candidate =>
+                    string.Equals(candidate.AppId, task.AppId, StringComparison.OrdinalIgnoreCase))?.Surface;
+                shell.DockMenu = DockMenu.Create(rect, outputWidth, [task.Surface], remote);
+                _scene.MarkDirty();
+                return;
+            }
+        }
+    }
+
+    internal string ReloadTaskbar()
+    {
+        lock (_gate)
+        {
+            var shell = _shell ?? throw new InvalidOperationException("Taskbar is unavailable");
+            return shell.ReloadTaskbar();
+        }
+    }
+
+    internal string DescribeModules()
+    {
+        lock (_gate)
+        {
+            var shell = _shell ?? throw new InvalidOperationException("Modules are unavailable");
+            return shell.DescribeModules();
+        }
+    }
+
+    private void HandleTaskbarClick(Shell shell, BarLayout layout, int x, int y)
+    {
+        if (shell.Settings.IsOpen && !layout.Clock.Contains(x, y))
+        {
+            shell.Settings.Close();
+        }
+
+        if (layout.Clock.Contains(x, y))
+        {
+            shell.Settings.Toggle();
+            _scene.MarkDirty();
+            return;
+        }
+
+        for (var i = 0; i < layout.Pinned.Length; i++)
+        {
+            if (layout.Pinned[i].Rect.Contains(x, y))
+            {
+                shell.PressedPin = i;
+                if (shell.Windows is { } windows)
+                {
+                    var launcher = layout.Pinned[i].Launcher;
+                    if (shell.Spinner.IsSpinning(launcher) && (launcher.IsChatGpt || ChromeProfile.IsKnownChrome(launcher.Argv)))
+                    {
+                        return;
+                    }
+
+                    // A click that actually spawns gets the busy cursor;
+                    // a focus-only click does not need one.
+                    shell.Spinner.Start(launcher, launcher.Click(windows, [.. _pressedKeys],
+                        recovered: pid => shell.Spinner.Start(launcher, pid),
+                        recoveryFailed: () => shell.Notifications.Show(default, "Rosella",
+                            "ChatGPT could not be reopened", "Its previous process is still running. Try again.", 6000)));
+                }
+
+                return;
+            }
+        }
+
+        foreach (var (rect, task) in layout.Tasks)
+        {
+            if (rect.Contains(x, y))
+            {
+                // The layout is a snapshot: the window may be gone since it
+                // was drawn. Ghosts get no focus.
+                if (task.Surface is { IsMapped: true, Gone: false } target)
+                {
+                    // A minimised window comes back before it takes the
+                    // keyboard: the taskbar is the only way back a
+                    // set_minimized window has.
+                    _scene.Restore(target);
+                    _scene.Raise(target);
+                    _seat.SetKeyboardFocus(target, _pressedKeys);
+                }
+
+                return;
+            }
+        }
+    }
+
+    private bool AltDown => _pressedKeys.Contains(InputConstants.KeyLeftAlt) || _pressedKeys.Contains(InputConstants.KeyRightAlt);
+
+    private bool CtrlDown => _pressedKeys.Contains(InputConstants.KeyLeftCtrl) || _pressedKeys.Contains(InputConstants.KeyRightCtrl);
+
+    private bool SuperDown => _pressedKeys.Contains(InputConstants.KeyLeftMeta) || _pressedKeys.Contains(InputConstants.KeyRightMeta);
+
+    private bool ShiftDown => _pressedKeys.Contains(InputConstants.KeyLeftShift) || _pressedKeys.Contains(InputConstants.KeyRightShift);
+
+
+    /// <summary>Sends wl_keyboard.modifiers when the mask changed.</summary>
+    private void SendModifiers(SurfaceHandler? target)
+    {
+        var depressed = 0;
+        if (ShiftDown)
+        {
+            depressed |= 1 << 0;
+        }
+
+        if (_pressedKeys.Contains(InputConstants.KeyLeftCtrl) || _pressedKeys.Contains(InputConstants.KeyRightCtrl))
+        {
+            depressed |= 1 << 2;
+        }
+
+        if (AltDown)
+        {
+            depressed |= 1 << 3;
+        }
+
+        if (SuperDown)
+        {
+            depressed |= 1 << 6;
+        }
+
+        // No caps-lock bit: the keymap maps the key to nothing (caps:none),
+        // so no client ever computes Lock from it. Num Lock stays.
+        var locked = 0;
+        if (_numLocked)
+        {
+            locked |= 1 << 4;
+        }
+
+        if (depressed == _lastDepressed && locked == _lastLocked)
+        {
+            return;
+        }
+
+        _lastDepressed = depressed;
+        _lastLocked = locked;
+        _seat.Drag.SetModifiers(ShiftDown, CtrlDown);
+        _seat.SendModifiers(target, depressed, locked);
+    }
+
+    private void SendAxis(int axis, int value, uint time)
+    {
+        if (_shell?.Screenshot.IsSelecting != true && !PointerOverShell() && _seat.PointerFocus is { } target)
+        {
+            _seat.SendAxis(target, axis, value, time);
+            _seat.SendPointerFrame(target);
+        }
+    }
+
+    /// <summary>
+    /// Two-finger scroll: mean finger travel becomes axis deltas at the same
+    /// rate the pointer moves. Signs follow the wheel mapping (fingers down
+    /// or right scroll down or right), and the pointer stays exactly put.
+    /// </summary>
+    private void SendTouchpadScroll(int dx, int dy, uint time)
+    {
+        if (_shell?.Screenshot.IsSelecting == true)
+        {
+            return;
+        }
+
+        // Scrolling needs a focus too, and the cursor may never have moved
+        // (a first gesture can be a scroll): hit-test here like motion does.
+        var target = PointerOverShell() ? null : _scene.HitTest(_cursorX, _cursorY);
+        _seat.SetPointerFocus(target, LocalX(target), LocalY(target));
+
+        if (dy != 0)
+        {
+            SendAxis(axis: 0, ScaleScrollY(dy), time);
+        }
+
+        if (dx != 0)
+        {
+            SendAxis(axis: 1, ScaleScrollX(dx), time);
+        }
+    }
+
+    private int LocalX(SurfaceHandler? target) => target is null ? 0 : target.LocalX(_cursorX);
+
+    private int LocalY(SurfaceHandler? target) => target is null ? 0 : target.LocalY(_cursorY);
+}

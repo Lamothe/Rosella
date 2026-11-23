@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../Rosella.Server/Rosella.Server.csproj" />
+    <ProjectReference Include="../Rosella.Drm/Rosella.Drm.csproj" />
+    <ProjectReference Include="../Rosella.Input/Rosella.Input.csproj" />
+    <ProjectReference Include="../Rosella.Control/Rosella.Control.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Rosella.Compositor.Tests" />
+    <InternalsVisibleTo Include="Rosella.Taskbar" />
+    <None Update="private-app-bus.conf" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <None Update="rosella-portals.conf" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

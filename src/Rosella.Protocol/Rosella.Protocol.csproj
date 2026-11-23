@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Resources/wayland.xml" />
+    <EmbeddedResource Include="Resources/xdg-shell.xml" />
+    <EmbeddedResource Include="Resources/linux-dmabuf-v1.xml" />
+    <EmbeddedResource Include="Resources/idle-inhibit-unstable-v1.xml" />
+  </ItemGroup>
+
+</Project>
