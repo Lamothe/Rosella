@@ -120,7 +120,10 @@ internal static class PinnedApps
                 icon,
                 isChrome ? argv => ChromeProfile.Prepare(argv, display, secondary) : desktopId switch
                 {
-                    "org.gnome.Nautilus.desktop" or "nautilus.desktop" or "com.lamothe.Commander.desktop" => PreparePrivateBus,
+                    // The shared bus activates file handlers on the primary
+                    // desktop. Keep secondary Files windows on their own display.
+                    "org.gnome.Nautilus.desktop" or "nautilus.desktop" when secondary => PreparePrivateBus,
+                    "com.lamothe.Commander.desktop" => PreparePrivateBus,
                     _ => null,
                 }));
         }

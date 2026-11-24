@@ -29,11 +29,13 @@ internal sealed class DesktopSession : IDisposable
         };
 
         var taskbarPath = TaskbarGeneration.PublishedPath(AppContext.BaseDirectory);
+        PinnedLauncher[] ResolvePinned() => PinnedApps.Resolve(Bar.IconSize * scale, Display, secondary);
         Shell = new Shell(new SystemActions(quit), taskbarPath: taskbarPath)
         {
             SocketName = Display,
             Windows = new SceneWindowRegistry(Scene, Seat, Display),
-            Pinned = PinnedApps.Resolve(Bar.IconSize * scale, Display, secondary),
+            Pinned = ResolvePinned(),
+            ResolvePinned = ResolvePinned,
         };
         Scene.Shell = Shell;
         if (output.Connector.Modes.Select(mode => (mode.HDisplay, mode.VDisplay)).Distinct().Skip(1).Any())

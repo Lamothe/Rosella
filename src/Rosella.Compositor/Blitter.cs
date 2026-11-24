@@ -518,7 +518,7 @@ internal static class Blitter
     /// it at all — the common case for a window body is a store with no load.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void Blend(ref uint destination, uint source)
+    internal static void Blend(ref uint destination, uint source)
     {
         var alpha = source >> 24;
         if (alpha == 0)

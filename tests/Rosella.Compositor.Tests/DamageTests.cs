@@ -379,6 +379,48 @@ public class DamageTests
         Assert.Equal(new DamageRect(0, 0, 400, 300), damage[0]);
     }
 
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public void Scene_RepaintsBothDockTilesWhenHoverMoves(int scale)
+    {
+        const int width = 640, height = 400;
+        var scene = new Scene { OutputSize = (width, height), Scale = scale };
+        var shell = new Shell
+        {
+            Pinned =
+            [
+                new("First", "first.desktop", ["first"], ["first"], null, null),
+                new("Second", "second.desktop", ["second"], ["second"], null, null),
+            ],
+        };
+        scene.Shell = shell;
+        scene.Cursor = (0, height - 1);
+        var outputWidth = width * scale;
+        var outputHeight = height * scale;
+        Frame(scene, outputWidth, outputHeight);
+        var first = shell.LastBarLayout!.Pinned[0].Rect;
+        var second = shell.LastBarLayout.Pinned[1].Rect;
+        Span<DamageRect> damage = stackalloc DamageRect[DamageTracker.Capacity];
+        scene.TakeDamage(outputWidth, outputHeight, damage);
+
+        // Enter at the bottom right: the cursor itself covers almost none of the tile.
+        scene.Cursor = (first.X + first.W - 1, first.Y + first.H - 1);
+        var count = scene.TakeDamage(outputWidth, outputHeight, damage);
+        Assert.Contains(damage[..count].ToArray(), rect => rect.Contains(first.ToDamage(scale)));
+
+        scene.Cursor = (second.X + second.W - 1, second.Y + second.H - 1);
+        count = scene.TakeDamage(outputWidth, outputHeight, damage);
+        Assert.Contains(damage[..count].ToArray(), rect => rect.Contains(first.ToDamage(scale)));
+        Assert.Contains(damage[..count].ToArray(), rect => rect.Contains(second.ToDamage(scale)));
+
+        // Leave the tile while the dock stays visible.
+        scene.Cursor = (0, height - 1);
+        count = scene.TakeDamage(outputWidth, outputHeight, damage);
+        Assert.Contains(damage[..count].ToArray(), rect => rect.Contains(second.ToDamage(scale)));
+        Assert.DoesNotContain(DamageRect.For(outputWidth, outputHeight), damage[..count].ToArray());
+    }
+
     [Fact]
     public void Scene_DamageRenderMatchesFullRender()
     {

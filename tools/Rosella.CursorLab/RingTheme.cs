@@ -1,14 +1,9 @@
 using System.Buffers.Binary;
 
-// Rosella cursor lab: writes the Rosella-Ring Xcursor theme. The ordinary
-// pointer is a hollow ring — black outside, white inside, a grey dot on the
-// exact click point — so it reads over light and dark windows without
-// looking like any other desktop's arrow. The shapes that exist to say
-// "drag this edge" or "type here" keep that palette but carry their
-// conventional glyph: a double-headed arrow, a four-way arrow or an
-// I-beam. Everything else (links, waits, forbidden actions) stays a ring,
-// so the desktop keeps one identity.
-//
+// Rosella cursor lab: writes the Rosella-Ring-Glass Xcursor theme. The
+// ordinary pointer is a translucent disc with a light inner rim, a dark
+// outline and a grey dot on the click point. Resize and text cursors keep
+// their conventional shapes.
 // No external tools: the Xcursor container, the raster and the preview
 // PNGs are all produced here.
 //
@@ -17,13 +12,15 @@ using System.Buffers.Binary;
 // Verify the result with the independent libXcursor loader:
 //
 //   cc -O2 -o /tmp/cursor-check tools/Rosella.CursorLab/check.c -ldl
-//   /tmp/cursor-check ~/.local/share/icons/Rosella-Ring
+//   /tmp/cursor-check ~/.local/share/icons/Rosella-Ring-Glass
+
+const string ThemeName = "Rosella Ring Glass";
 
 var root = args.Length > 0
     ? Path.GetFullPath(args[0])
     : Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-        ".local", "share", "icons", "Rosella-Ring");
+        ".local", "share", "icons", "Rosella-Ring-Glass");
 
 // 3x of a nominal size must exist natively, or the shake-to-find
 // enlargement has to ask for the nearest image instead of the exact one:
@@ -137,9 +134,9 @@ var aliases = new (string Name, string Target)[]
 var marker = Path.Combine(root, "index.theme");
 if (Directory.Exists(root)
     && Directory.EnumerateFileSystemEntries(root).Any()
-    && (!File.Exists(marker) || !File.ReadAllText(marker).Contains("Name=Rosella Ring", StringComparison.Ordinal)))
+    && (!File.Exists(marker) || !File.ReadLines(marker).Contains($"Name={ThemeName}", StringComparer.Ordinal)))
 {
-    Console.Error.WriteLine($"rosella: {root} holds something other than the Rosella Ring theme; pick an empty directory");
+    Console.Error.WriteLine($"rosella: {root} holds something other than the {ThemeName} theme; pick an empty directory");
     return 1;
 }
 
@@ -226,8 +223,8 @@ foreach (var path in Directory.EnumerateFiles(cursors))
 File.WriteAllText(Path.Combine(root, "index.theme"),
     $"""
     [Icon Theme]
-    Name=Rosella Ring
-    Comment=Hollow ring pointer with directional resize and text shapes
+    Name={ThemeName}
+    Comment=Translucent ring pointer with directional resize and text shapes
     Inherits=Adwaita
 
     """);
@@ -242,7 +239,7 @@ static uint[] Render(int size, Shape shape)
     // The click point: whole pixels around the hotspot, so the dot is crisp
     // at every nominal size instead of antialiasing away (1 px at 24). A
     // neutral grey reads on both light and dark backgrounds, and on the
-    // white fill of a glyph as well as in the ring's hollow centre.
+    // white fill of a glyph as well as in the ring's translucent centre.
     var side = Math.Max(1, (int)Math.Round(size / 24.0));
     var start = (size / 2) - (side / 2);
     for (var y = start; y < start + side && y < size; y++)
@@ -258,23 +255,19 @@ static uint[] Render(int size, Shape shape)
 
 static uint[] RenderRing(int size)
 {
-    // An annulus of outer radius 0.40 and width 0.12 of the nominal size,
-    // split at its midline into a black outer half and a white inner half
-    // so the pointer reads on light and dark backgrounds alike.
     const int Samples = 8;
     var pixels = new uint[size * size];
     var centre = size / 2.0;
-    var outer = size * 0.40;
-    var thickness = Math.Max(2.6, size * 0.12);
-    var inner = outer - thickness;
-    var mid = (outer + inner) / 2.0;
+    var radius = size * 0.40;
+    var outline = Math.Max(0.60, size * 0.025);
+    var rim = Math.Max(0.85, size * 0.040);
     var samples = Samples * Samples;
 
     for (var y = 0; y < size; y++)
     {
         for (var x = 0; x < size; x++)
         {
-            var white = 0;
+            var premultiplied = 0;
             var covered = 0;
             for (var sy = 0; sy < Samples; sy++)
             {
@@ -282,20 +275,26 @@ static uint[] RenderRing(int size)
                 {
                     var px = (x + ((sx + 0.5) / Samples)) - centre;
                     var py = (y + ((sy + 0.5) / Samples)) - centre;
-                    var distance = Math.Sqrt((px * px) + (py * py));
-                    if (distance < inner || distance > outer)
+                    var depth = radius - Math.Sqrt((px * px) + (py * py));
+                    if (depth < 0)
                     {
                         continue;
                     }
 
-                    covered += 255;
-                    white += distance > mid ? 0 : 255;
+                    var (shade, opacity) = depth switch
+                    {
+                        _ when depth < outline => (54, 127),
+                        _ when depth < outline + rim => (238, 120),
+                        _ => (228, 14),
+                    };
+                    covered += opacity;
+                    premultiplied += (shade * opacity) / 255;
                 }
             }
 
-            var alpha = (byte)(covered / samples);
-            var value = (byte)(white / samples);
-            pixels[(y * size) + x] = (uint)((alpha << 24) | (value << 16) | (value << 8) | value);
+            var alpha = (uint)(covered / samples);
+            var value = (uint)(premultiplied / samples);
+            pixels[(y * size) + x] = (alpha << 24) | (value << 16) | (value << 8) | value;
         }
     }
 

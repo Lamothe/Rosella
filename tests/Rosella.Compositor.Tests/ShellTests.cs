@@ -422,7 +422,10 @@ public class ShellTests
     [Fact]
     public void ReloadTaskbarFromClock_ReplacesCodeAndKeepsWindowAndFocus()
     {
-        using var harness = new Harness(taskbarPath: Path.Combine(AppContext.BaseDirectory, TaskbarGeneration.AssemblyFile));
+        var homeTheatre = Pin("Home Theatre", ["home-theatre"]);
+        using var harness = new Harness(
+            taskbarPath: Path.Combine(AppContext.BaseDirectory, TaskbarGeneration.AssemblyFile),
+            resolvePinned: () => [homeTheatre]);
         harness.MapWindow(8, 11, 12);
         harness.ClickAt(500, 500);
         var window = harness.MappedSurface(8);
@@ -445,6 +448,7 @@ public class ShellTests
         Assert.Equal(first.BuildId, current.BuildId);
         Assert.NotSame(first.Context, current.Context);
         Assert.NotSame(first.Module.GetType().Assembly, current.Module.GetType().Assembly);
+        Assert.Same(homeTheatre, Assert.Single(harness.Shell.ComputeBarLayout(1920, 1080, []).Pinned).Launcher);
         Assert.Same(window, harness.Scene.TaskWindows().Single().Surface);
         Assert.Same(window, harness.Seat.KeyboardFocus);
         Assert.Contains("Same build reloaded", harness.Shell.DescribeModules());
@@ -731,12 +735,16 @@ public class ShellTests
         private readonly DisplayServer _server;
         private readonly string _poolFile;
 
-        public Harness(SeatState? seat = null, string? taskbarPath = null)
+        public Harness(SeatState? seat = null, string? taskbarPath = null, Func<PinnedLauncher[]>? resolvePinned = null)
         {
             Scene = new Scene();
             Seat = seat ?? new SeatState { HasKeyboardDevice = true, HasPointerDevice = true };
             Actions = new FakeSystemActions();
-            Shell = new Shell(Actions, taskbarPath: taskbarPath) { SocketName = "wayland-test" };
+            Shell = new Shell(Actions, taskbarPath: taskbarPath)
+            {
+                SocketName = "wayland-test",
+                ResolvePinned = resolvePinned,
+            };
             Shell.Windows = new SceneWindowRegistry(Scene, Seat, "wayland-test");
             Scene.Shell = Shell;
             Router = new InputRouter(Scene, Seat, () => Quit = true, Shell);

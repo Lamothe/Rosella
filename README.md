@@ -274,19 +274,16 @@ dotnet run --project tools/Rosella.SmokeClient -- wayland-1
 
 ## Cursor theme
 
-`tools/Rosella.CursorLab` writes the `Rosella-Ring` Xcursor theme the session
-uses. The ordinary pointer is a hollow ring — black outside, white inside, a
-grey dot on the exact click point — because one pointer shape is a design,
-not a default to inherit. The shapes that exist to say *drag this edge* or
-*type here* keep that palette but carry the conventional glyph: horizontal,
-vertical and diagonal double-headed arrows for edges, splitters and corners,
-a four-way arrow for move, and an I-beam for text, upright and sideways.
-Everything else (links, waits, forbidden actions) stays a ring.
+`tools/Rosella.CursorLab` writes the `Rosella-Ring-Glass` Xcursor theme.
+The pointer has a translucent centre, a dark outline, a highlighted inner
+rim and a grey dot at the hotspot. Resize and text cursors use their
+conventional arrows and I-beams. Select `Rosella-Ring` to switch back to the
+original ring theme if it is installed.
 
 ```sh
-dotnet run --project tools/Rosella.CursorLab            # ~/.local/share/icons/Rosella-Ring
-dotnet run --project tools/Rosella.CursorLab -- /tmp/x  # somewhere to look first
-gsettings set org.gnome.desktop.interface cursor-theme Rosella-Ring
+dotnet run --project tools/Rosella.CursorLab
+dotnet run --project tools/Rosella.CursorLab -- /tmp/rosella-ring-glass
+gsettings set org.gnome.desktop.interface cursor-theme Rosella-Ring-Glass
 ```
 
 Previews of every shape at 48 px land in the theme's `previews/`. The
@@ -295,6 +292,6 @@ bad container or a shape aliased back to the ring fails without a desktop:
 
 ```sh
 cc -O2 -o /tmp/cursor-check tools/Rosella.CursorLab/check.c -ldl
-/tmp/cursor-check ~/.local/share/icons/Rosella-Ring
+/tmp/cursor-check ~/.local/share/icons/Rosella-Ring-Glass
 ```
 

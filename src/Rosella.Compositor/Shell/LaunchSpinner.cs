@@ -1,3 +1,5 @@
+using System.Runtime.InteropServices;
+
 namespace Rosella.Compositor;
 
 /// <summary>
@@ -23,8 +25,10 @@ namespace Rosella.Compositor;
 /// </summary>
 internal sealed class LaunchSpinner
 {
-    /// <summary>One rotation step per this interval; twelve steps per turn.</summary>
-    internal const int TickMilliseconds = 100;
+    /// <summary>One rotation step per this interval, matching the scanout idle floor.</summary>
+    internal const int TickMilliseconds = 50;
+
+    private const int StepsPerTurn = 24;
 
     /// <summary>How long a launch may spin before we stop claiming to load.</summary>
     internal const int MaximumLiveMilliseconds = 30_000;
@@ -117,7 +121,7 @@ internal sealed class LaunchSpinner
                 }
             }
 
-            // Steady rotation changes the picture too: the head dot moved.
+            // Steady rotation changes the picture too: the arc moved.
             var step = StepLocked();
             if (_pending.Count > 0 && step != _lastStep)
             {
@@ -141,7 +145,7 @@ internal sealed class LaunchSpinner
         }
     }
 
-    /// <summary>The current rotation step (0..11), constant while nothing spins.</summary>
+    /// <summary>The current rotation step.</summary>
     internal int Step
     {
         get
@@ -153,48 +157,57 @@ internal sealed class LaunchSpinner
         }
     }
 
-    /// <summary>
-    /// Twelve phase positions on the unit circle (int×1000), index 0 at the
-    /// top and advancing clockwise — the classic Mac spinning-wait dots.
-    /// </summary>
-    internal static readonly (int X, int Y)[] PhaseOffsets =
-    [
-        (0, -1000), (500, -866), (866, -500), (1000, 0),
-        (866, 500), (500, 866), (0, 1000), (-500, 866),
-        (-866, 500), (-1000, 0), (-866, -500), (-500, -866),
-    ];
-
-    /// <summary>
-    /// The dot diameter for one phase (0 = leading head). The chrome
-    /// primitives have no alpha, so the tail's fade is carried by size:
-    /// head five, a short ramp of three, then single pixels.
-    /// </summary>
-    internal static int DotDiameter(int phase) => phase == 0 ? 5 : phase <= 3 ? 3 : 1;
-
     internal const int CursorRadius = 12;
 
-    /// <summary>Draws the busy pointer into the damaged viewport.</summary>
+    /// <summary>Draws a translucent ring and a rotating, antialiased arc in the damaged viewport.</summary>
     internal void DrawCursor(Span<byte> pixels, int width, int height, int stride, int x, int y, int scale)
     {
-        var step = Step;
-        var rim = CursorRadius * scale;
-        Chrome.FillEllipse(pixels, width, height, stride, x, y, rim, rim, 0xFFF0F1F5);
-        Chrome.FillEllipse(pixels, width, height, stride, x, y, rim - scale, rim - scale, 0xFF24252C);
-        for (var phase = 0; phase < PhaseOffsets.Length; phase++)
+        var radius = 9.6 * scale;
+        var trace = 8.2 * scale;
+        var thickness = 0.9 * scale;
+        var start = ((Step * Math.Tau) / StepsPerTurn) - (Math.PI / 2);
+        const double Sweep = Math.PI * 0.65;
+        var end = start + Sweep;
+        var startX = Math.Cos(start) * trace;
+        var startY = Math.Sin(start) * trace;
+        var endX = Math.Cos(end) * trace;
+        var endY = Math.Sin(end) * trace;
+        var bounds = CursorRadius * scale;
+        var target = MemoryMarshal.Cast<byte, uint>(pixels);
+
+        for (var row = Math.Max(0, y - bounds); row < Math.Min(height, y + bounds + 1); row++)
         {
-            var (offsetX, offsetY) = PhaseOffsets[(phase + step) % PhaseOffsets.Length];
-            var dotX = x + (offsetX * 7 * scale / 1000);
-            var dotY = y + (offsetY * 7 * scale / 1000);
-            var radius = DotDiameter(phase) * scale / 2;
-            if (radius == 0)
+            for (var column = Math.Max(0, x - bounds); column < Math.Min(width, x + bounds + 1); column++)
             {
-                Chrome.FillRect(pixels, width, height, stride, new Rect(dotX, dotY, 1, 1), 0xFF9CA5BA);
-            }
-            else
-            {
-                Chrome.FillEllipse(pixels, width, height, stride, dotX, dotY, radius, radius, 0xFFF0F1F5);
+                var dx = column - x + 0.5;
+                var dy = row - y + 0.5;
+                var distance = Math.Sqrt((dx * dx) + (dy * dy));
+                ref var destination = ref target[(row * (stride / 4)) + column];
+                var disc = Coverage(radius - distance);
+                var rim = Coverage(radius - (0.65 * scale) - distance);
+                var centre = Coverage(radius - (1.55 * scale) - distance);
+                BlendShade(ref destination, 54, 127 * (disc - rim));
+                BlendShade(ref destination, 238, 120 * (rim - centre));
+                BlendShade(ref destination, 228, 14 * centre);
+
+                var angle = (Math.Atan2(dy, dx) - start + (2 * Math.Tau)) % Math.Tau;
+                var arcDistance = angle <= Sweep
+                    ? Math.Abs(distance - trace)
+                    : Math.Sqrt(Math.Min(
+                        ((dx - startX) * (dx - startX)) + ((dy - startY) * (dy - startY)),
+                        ((dx - endX) * (dx - endX)) + ((dy - endY) * (dy - endY))));
+                BlendShade(ref destination, 248, 235 * Coverage(thickness - arcDistance));
             }
         }
+    }
+
+    private static double Coverage(double signedDistance) => Math.Clamp(signedDistance + 0.5, 0, 1);
+
+    private static void BlendShade(ref uint destination, uint shade, double opacity)
+    {
+        var alpha = (uint)Math.Round(opacity);
+        var value = shade * alpha / 255;
+        Blitter.Blend(ref destination, (alpha << 24) | (value << 16) | (value << 8) | value);
     }
 
     private readonly object _gate = new();
@@ -223,8 +236,8 @@ internal sealed class LaunchSpinner
 
     private int StepLocked()
     {
-        var steps = unchecked(Now() / TickMilliseconds) % 12;
-        return (int)(steps < 0 ? steps + 12 : steps);
+        var steps = unchecked(Now() / TickMilliseconds) % StepsPerTurn;
+        return (int)(steps < 0 ? steps + StepsPerTurn : steps);
     }
 
     private static bool ProcessAlive(int pid)

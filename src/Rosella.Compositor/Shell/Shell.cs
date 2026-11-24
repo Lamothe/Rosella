@@ -101,9 +101,11 @@ internal sealed class Shell
             throw new InvalidOperationException("Taskbar reload is unavailable in this build");
         }
 
+        PinnedLauncher[] pinned;
         TaskbarGeneration next;
         try
         {
+            pinned = ResolvePinned?.Invoke() ?? Pinned;
             next = TaskbarGeneration.Load(_taskbarPath, _systemActions, _volume);
         }
         catch (Exception error)
@@ -124,6 +126,7 @@ internal sealed class Shell
         next.Settings.Modules = _moduleControls;
         DockMenu = null;
         PressedPin = -1;
+        Pinned = pinned;
         _taskbar = next;
         _lastReload = next.BuildId == previous.BuildId ? "Same build reloaded" : "New build loaded";
         if (reopenModules)
@@ -162,15 +165,17 @@ internal sealed class Shell
     internal TaskSwitcher Switcher { get; }
 
     /// <summary>
-    /// The launch spinner: dots turning over a pinned launcher's icon from
+    /// The launch spinner: an animated pointer shown from
     /// the click that spawns an app until its window appears. The scene
     /// wires its clock, live-app check and dirty callback.
     /// </summary>
     internal LaunchSpinner Spinner { get; }
 
-    /// <summary>The pinned taskbar launchers that resolved at startup.</summary>
     internal StartupApps? StartupApps { get; set; }
 
+    internal Func<PinnedLauncher[]>? ResolvePinned { get; init; }
+
+    /// <summary>The pinned taskbar launchers resolved at startup or on reload.</summary>
     internal PinnedLauncher[] Pinned { get; set; } = [];
 
     /// <summary>The socket name launched apps should connect to.</summary>
@@ -279,7 +284,13 @@ internal sealed record DockMenu(Rect Bounds, SurfaceHandler[] CloseWindows, Surf
         }
         if (StartupId is not null)
         {
-            DrawRow(pixels, stride, scale, Row(StartupRow), StartsAtLogin ? "Remove from Startup" : "Start at Login", pointer);
+            var row = Row(StartupRow);
+            DrawRow(pixels, stride, scale, row, "Start at Login", pointer);
+            if (StartsAtLogin)
+            {
+                PowerIcons.Draw(pixels, clipW, clipH, stride, PowerGlyph.Check,
+                    row.X + row.W - 16, row.Y + row.H / 2, 0xFF7BB7FF, scale, 16);
+            }
         }
     }
 

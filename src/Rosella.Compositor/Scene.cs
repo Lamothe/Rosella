@@ -751,6 +751,17 @@ public sealed class Scene
                     {
                         _damage.MarkFull();
                     }
+                    else if (_desktopActive && Shell is { DockVisible: true, LastBarLayout: { } layout })
+                    {
+                        var oldHover = layout.HoverBounds(previous);
+                        var newHover = layout.HoverBounds(value);
+                        if (oldHover != newHover)
+                        {
+                            var scale = Math.Max(1, Scale);
+                            _damage.Add(oldHover.ToDamage(scale));
+                            _damage.Add(newHover.ToDamage(scale));
+                        }
+                    }
 
                     _damage.Add(CursorDamage(previous, footprint));
                     _damage.Add(CursorDamage(value, footprint));

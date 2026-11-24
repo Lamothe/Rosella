@@ -157,17 +157,30 @@ public class LaunchSpinnerTests
         Assert.Equal(TimeSpan.FromMilliseconds(50), Scanout.IdleWait(now, null, null, TimeSpan.Zero));
     }
 
-    [Fact]
-    public void DotGeometry_HeadIsLargest_AndTailNeverVanishes()
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public void DrawCursor_UsesPartialCoverageAndClipsToDamage(int scale)
     {
-        Assert.Equal(5, LaunchSpinner.DotDiameter(0));
-        for (var phase = 1; phase < 12; phase++)
-        {
-            Assert.True(LaunchSpinner.DotDiameter(phase) <= LaunchSpinner.DotDiameter(phase - 1));
-            Assert.True(LaunchSpinner.DotDiameter(phase) >= 1);
-        }
+        const int width = 80, height = 80, stride = width * 4;
+        var spinner = MakeSpinner(() => 0, _ => true);
+        var pixels = new byte[stride * height];
+        MemoryMarshal.Cast<byte, uint>(pixels.AsSpan()).Fill(0xFF000000u);
+        var clipped = (byte[])pixels.Clone();
 
-        Assert.Equal(12, LaunchSpinner.PhaseOffsets.Length);
+        spinner.DrawCursor(pixels, width, height, stride, 40, 40, scale);
+        spinner.DrawCursor(clipped.AsSpan((40 * stride) + (40 * 4)), 12, 12, stride, 0, 0, scale);
+
+        Assert.InRange(PixelAt(pixels, stride, 40, 40) & 0xFF, 1u, 20u);
+        Assert.Contains(MemoryMarshal.Cast<byte, uint>(pixels.AsSpan()).ToArray(),
+            pixel => (pixel & 0xFF) is > 25 and < 100);
+        for (var y = 40; y < 52; y++)
+        {
+            Assert.Equal(pixels.AsSpan((y * stride) + (40 * 4), 12 * 4).ToArray(),
+                clipped.AsSpan((y * stride) + (40 * 4), 12 * 4).ToArray());
+        }
+        Assert.Equal(0xFF000000u, PixelAt(clipped, stride, 39, 40));
+        Assert.Equal(0xFF000000u, PixelAt(clipped, stride, 52, 40));
     }
 
     [Fact]
@@ -188,7 +201,7 @@ public class LaunchSpinnerTests
         var busy = new byte[stride * height];
         scene.Render(busy, width, height, stride, 1);
 
-        Assert.Equal(0xFFF0F1F5u, PixelAt(busy, stride, 80, 40 - LaunchSpinner.CursorRadius));
+        Assert.NotEqual(PixelAt(idle, stride, 83, 32), PixelAt(busy, stride, 83, 32));
         Assert.Equal(PixelAt(idle, stride, 0, 0), PixelAt(busy, stride, 0, 0));
 
         now += LaunchSpinner.TickMilliseconds;
