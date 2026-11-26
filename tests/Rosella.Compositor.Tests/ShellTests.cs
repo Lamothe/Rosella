@@ -287,6 +287,125 @@ public class ShellTests
     }
 
     [Fact]
+    public void DockMenu_RemovesLauncherOnBothDisplaysAndKeepsItsWindow()
+    {
+        var app = Pin("Test App", ["org.example.Test"]);
+        var kept = Pin("Files", ["files"]);
+        var saved = new List<string>();
+        using var primary = new Harness(savePinRemoval: saved.Add);
+        using var secondary = new Harness(primary.Seat);
+        primary.Scene.OtherDesktop = secondary.Scene;
+        secondary.Scene.OtherDesktop = primary.Scene;
+        primary.Shell.Pinned = [app, kept];
+        secondary.Shell.Pinned = [app, kept];
+        primary.MapWindow(8, 11, 12, appId: "org.example.Test");
+        var window = primary.MappedSurface(8);
+
+        primary.RevealDock();
+        primary.RenderFrame();
+        var icon = primary.Shell.LastBarLayout!.Pinned[0].Rect;
+        primary.Router.PlaceCursor(icon.X + 2, icon.Y + 2);
+        primary.Press(InputConstants.ButtonRight);
+        primary.Release(InputConstants.ButtonRight);
+        var menu = Assert.IsType<DockMenu>(primary.Shell.DockMenu);
+        Assert.Same(window, Assert.Single(menu.CloseWindows));
+        primary.ClickAt(menu.Bounds.X + menu.Bounds.W / 2, menu.Bounds.Y + menu.Bounds.H - 8);
+        primary.RevealDock();
+        primary.RenderFrame();
+
+        Assert.Equal(app.DesktopId, Assert.Single(saved));
+        Assert.Null(primary.Shell.DockMenu);
+        Assert.Same(kept, Assert.Single(primary.Shell.LastBarLayout!.Pinned).Launcher);
+        Assert.Same(kept, Assert.Single(secondary.Shell.Pinned));
+        Assert.Same(window, Assert.Single(primary.Shell.LastBarLayout.Tasks).Task.Surface);
+    }
+
+    [Fact]
+    public void DockMenu_PinsARunningAppAndReplacesItsRunningButton()
+    {
+        var app = Pin("Test App", ["org.example.Test"]);
+        var saved = new List<string>();
+        using var primary = new Harness(resolvePin: _ => app, findPinDesktopId: _ => app.DesktopId, savePinAddition: saved.Add);
+        using var secondary = new Harness(primary.Seat, resolvePin: _ => app with { Name = "Other display" });
+        primary.Scene.OtherDesktop = secondary.Scene;
+        secondary.Scene.OtherDesktop = primary.Scene;
+        primary.MapWindow(8, 11, 12, appId: "org.example.Test");
+        primary.RevealDock();
+        primary.RenderFrame();
+        var icon = Assert.Single(primary.Shell.LastBarLayout!.Tasks).Rect;
+        primary.Router.PlaceCursor(icon.X + 2, icon.Y + 2);
+        primary.Press(InputConstants.ButtonRight);
+        primary.Release(InputConstants.ButtonRight);
+        var menu = Assert.IsType<DockMenu>(primary.Shell.DockMenu);
+        Assert.Equal(app.DesktopId, menu.AddPinId);
+        Assert.Null(menu.RemovePinId);
+        primary.ClickAt(menu.Bounds.X + menu.Bounds.W / 2, menu.Bounds.Y + menu.Bounds.H - 8);
+        primary.RevealDock();
+        primary.RenderFrame();
+
+        Assert.Equal(app.DesktopId, Assert.Single(saved));
+        Assert.Empty(primary.Shell.LastBarLayout!.Tasks);
+        Assert.True(Assert.Single(primary.Shell.LastBarLayout.Pinned).Running);
+        Assert.Equal("Other display", Assert.Single(secondary.Shell.Pinned).Name);
+    }
+
+    [Fact]
+    public void DockDrag_SavesPinOrderAcrossDisplaysWithoutLaunching()
+    {
+        var pins = new[] { Pin("One", ["one"]), Pin("Two", ["two"]), Pin("Three", ["three"]) };
+        var saved = new List<(string, string, bool)>();
+        using var primary = new Harness(savePinMove: (id, anchor, after) => saved.Add((id, anchor, after)));
+        using var secondary = new Harness(primary.Seat);
+        primary.Scene.OtherDesktop = secondary.Scene;
+        secondary.Scene.OtherDesktop = primary.Scene;
+        var windows = new FakeWindowRegistry();
+        primary.Shell.Windows = windows;
+        primary.Shell.Pinned = pins;
+        secondary.Shell.Pinned = pins;
+        primary.RevealDock();
+        primary.RenderFrame();
+        var layout = primary.Shell.LastBarLayout!;
+        var first = layout.Pinned[0].Rect;
+        var last = layout.Pinned[^1].Rect;
+        primary.Router.PlaceCursor(first.X + first.W / 2, first.Y + first.H / 2);
+        primary.Press(InputConstants.ButtonLeft);
+        primary.MovePointer(last.X - first.X, 0);
+        var press = Assert.IsType<DockPress>(primary.Shell.TaskbarPress);
+        Assert.True(press.Dragging);
+        var drop = Assert.IsType<DockDrop>(press.DropAt(layout, primary.Router.Cursor));
+        var frame = primary.RenderFrame();
+        Assert.Equal(Chrome.AccentBlue, PixelAt(frame, 1920 * 4, drop.Marker.X, drop.Marker.Y + 3));
+        Assert.Equal(pins, primary.Shell.Pinned);
+        primary.Release(InputConstants.ButtonLeft);
+
+        Assert.Equal((pins[0].DesktopId, pins[2].DesktopId, true), Assert.Single(saved));
+        Assert.Equal(new[] { pins[1], pins[2], pins[0] }, primary.Shell.Pinned);
+        Assert.Equal(primary.Shell.Pinned, secondary.Shell.Pinned);
+        Assert.Empty(windows.Launched);
+        Assert.Null(primary.Shell.TaskbarPress);
+    }
+
+    [Fact]
+    public void DockDrag_MovesAnUnpinnedWindowWithoutChangingFocus()
+    {
+        using var harness = new Harness();
+        harness.MapWindow(8, 11, 12, title: "One");
+        harness.MapWindow(30, 31, 32, title: "Two");
+        harness.RevealDock();
+        harness.RenderFrame();
+        var first = harness.Shell.LastBarLayout!.Tasks[0].Rect;
+        var second = harness.Shell.LastBarLayout.Tasks[1].Rect;
+        harness.Router.PlaceCursor(second.X + second.W / 2, second.Y + second.H / 2);
+        harness.Press(InputConstants.ButtonLeft);
+        harness.MovePointer(first.X - second.X, 0);
+        harness.Release(InputConstants.ButtonLeft);
+        harness.RenderFrame();
+
+        Assert.Null(harness.Seat.KeyboardFocus);
+        Assert.Equal(new uint[] { 30, 8 }, harness.Shell.LastBarLayout!.Tasks.Select(button => button.Task.Surface.Id));
+    }
+
+    [Fact]
     public void DockMenu_MovesAnExistingWindowBetweenDisplaysAndKeepsItsConnection()
     {
         using var source = new Harness();
@@ -359,8 +478,8 @@ public class ShellTests
         var scene = new Scene { Shell = new Shell() };
         scene.OutputSize = (800, 600);
 
-        // Every toplevel opens maximised to the work area: the policy
-        // position is the work-area origin whatever the window size.
+        // Ordinary toplevels open maximised to the work area, regardless of
+        // the client buffer's size.
         var surface = new SurfaceHandler(scene);
         var (x, y) = scene.PlaceWindow(surface, 700, 300);
         Assert.Equal((0, 0), (x, y));
@@ -735,7 +854,10 @@ public class ShellTests
         private readonly DisplayServer _server;
         private readonly string _poolFile;
 
-        public Harness(SeatState? seat = null, string? taskbarPath = null, Func<PinnedLauncher[]>? resolvePinned = null)
+        public Harness(SeatState? seat = null, string? taskbarPath = null, Func<PinnedLauncher[]>? resolvePinned = null,
+            Action<string>? savePinRemoval = null, Func<string, PinnedLauncher?>? resolvePin = null,
+            Func<string, string?>? findPinDesktopId = null, Action<string>? savePinAddition = null,
+            Action<string, string, bool>? savePinMove = null)
         {
             Scene = new Scene();
             Seat = seat ?? new SeatState { HasKeyboardDevice = true, HasPointerDevice = true };
@@ -744,6 +866,11 @@ public class ShellTests
             {
                 SocketName = "wayland-test",
                 ResolvePinned = resolvePinned,
+                SavePinRemoval = savePinRemoval,
+                ResolvePin = resolvePin,
+                FindPinDesktopId = findPinDesktopId ?? (_ => null),
+                SavePinAddition = savePinAddition,
+                SavePinMove = savePinMove,
             };
             Shell.Windows = new SceneWindowRegistry(Scene, Seat, "wayland-test");
             Scene.Shell = Shell;
@@ -830,6 +957,12 @@ public class ShellTests
 
         public void Release(ushort code) =>
             Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventKey, code, InputConstants.KeyReleased));
+
+        public void MovePointer(int dx, int dy)
+        {
+            Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventRelative, InputConstants.RelativeX, dx));
+            Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventRelative, InputConstants.RelativeY, dy));
+        }
 
         /// <summary>Moves the cursor to the point and clicks there (full click).</summary>
         public void RevealDock() =>

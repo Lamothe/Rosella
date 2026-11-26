@@ -624,9 +624,30 @@ public sealed class Scene
 
     private IEnumerable<SurfaceHandler> OrderedSurfaces()
     {
+        // Clients can reuse a popup surface after its parent has been raised.
+        // Keep popups above their parent and below unrelated higher windows.
+        var popups = _surfaces
+            .Where(surface => surface.IsMapped)
+            .Select(surface => (Surface: surface, Parent: surface.XdgRole?.PopupParent?.Surface))
+            .Where(popup => popup.Parent is not null)
+            .ToLookup(popup => popup.Parent!, popup => popup.Surface);
         foreach (var surface in _surfaces)
         {
-            if (surface.Subsurface is null) { foreach (var item in OrderedTree(surface)) { yield return item; } }
+            if (surface.Subsurface is null && surface.XdgRole?.PopupParent is null)
+            {
+                foreach (var item in OrderedWindow(surface, popups)) { yield return item; }
+            }
+        }
+    }
+
+    private static IEnumerable<SurfaceHandler> OrderedWindow(
+        SurfaceHandler surface, ILookup<SurfaceHandler, SurfaceHandler> popups)
+    {
+        if (surface.Gone || !surface.IsMapped || surface.Hidden) { yield break; }
+        foreach (var item in OrderedTree(surface)) { yield return item; }
+        foreach (var popup in popups[surface])
+        {
+            foreach (var item in OrderedWindow(popup, popups)) { yield return item; }
         }
     }
 
@@ -744,22 +765,24 @@ public sealed class Scene
                 _cursor = value;
                 _dirty = true;
 
+                var shell = Shell;
+                var scale = Math.Max(1, Scale);
                 // The screenshot has its own damage while the live scene is hidden.
-                if (Shell?.Screenshot.PointerMoved(previous, value, Math.Max(1, Scale)) != true)
+                if (shell?.Screenshot.PointerMoved(previous, value, scale) != true)
                 {
-                    if (Shell?.UpdateDockReveal(value.Y, OutputSize.Height) == true)
+                    if (shell?.UpdateDockReveal(value.Y, OutputSize.Height) == true)
                     {
                         _damage.MarkFull();
                     }
-                    else if (_desktopActive && Shell is { DockVisible: true, LastBarLayout: { } layout })
+                    else if (_desktopActive && shell is not null)
                     {
-                        var oldHover = layout.HoverBounds(previous);
-                        var newHover = layout.HoverBounds(value);
-                        if (oldHover != newHover)
+                        if (shell is { DockVisible: true, LastBarLayout: { } layout })
                         {
-                            var scale = Math.Max(1, Scale);
-                            _damage.Add(oldHover.ToDamage(scale));
-                            _damage.Add(newHover.ToDamage(scale));
+                            DamageHoverChange(layout.HoverBounds(previous), layout.HoverBounds(value), scale);
+                        }
+                        if (shell.DockMenu is { } menu)
+                        {
+                            DamageHoverChange(menu.HoverBounds(previous), menu.HoverBounds(value), scale);
                         }
                     }
 
@@ -774,6 +797,16 @@ public sealed class Scene
 
     private (int X, int Y) _cursor;
     private volatile bool _desktopActive = true;
+
+    // A hover transition changes the whole highlight, outside the cursor footprint.
+    private void DamageHoverChange(Rect previous, Rect current, int scale)
+    {
+        if (previous != current)
+        {
+            _damage.Add(previous.ToDamage(scale));
+            _damage.Add(current.ToDamage(scale));
+        }
+    }
 
     internal void SetDesktopActive(bool active)
     {
@@ -1007,10 +1040,7 @@ public sealed class Scene
     }
 
     /// <summary>
-    /// The window policy: every mapped toplevel opens maximised to the work
-    /// area, always (opinionated — there is no floating). Popups place
-    /// themselves via their positioner corner. Whatever the path, a freshly
-    /// mapped surface is raised to the top.
+    /// Places an ordinary toplevel at the work-area origin and raises it.
     /// </summary>
     internal (int X, int Y) PlaceWindow(SurfaceHandler surface, int windowWidth, int windowHeight)
     {
@@ -1093,7 +1123,7 @@ public sealed class Scene
             var taskbar = shell.Taskbar;
             var clock = taskbar.Module.ClockString();
             var tasks = TaskWindows();
-            var layout = taskbar.Module.ComputeLayout(width / scale, height / scale, clock, tasks, shell.Pinned);
+            var layout = taskbar.Module.ComputeLayout(width / scale, height / scale, clock, shell.OrderTasks(tasks), shell.Pinned);
             var panel = taskbar.Settings.IsOpen ? taskbar.Settings.PanelRect(layout.Clock, width / scale, height / scale) : (Rect?)null;
             var dockVisible = shell.DockVisible || panel.HasValue;
 

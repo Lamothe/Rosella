@@ -82,9 +82,12 @@ Console.CancelKeyPress += (_, eventArgs) =>
     cancellation.Cancel();
 };
 
-using var dmaBuf = Environment.GetEnvironmentVariable("ROSELLA_DMABUF") == "1"
+var xWaylandHelper = XWaylandSession.FindHelper();
+var nativeDmaBuf = Environment.GetEnvironmentVariable("ROSELLA_DMABUF") == "1";
+using var renderReader = nativeDmaBuf || xWaylandHelper is not null
     ? DmaBufReader.TryOpen(DmaBufReader.FindRenderNode(device.Path))
     : null;
+var dmaBuf = nativeDmaBuf ? renderReader : null;
 using var flips = displays.Outputs.Length > 1 ? new DrmFlipQueue(device) : null;
 using var primary = new DesktopSession(device, ResolutionPicker.Select(displays.Outputs[0]), socketPath, cancellation.Cancel, dmaBuf, flips);
 
@@ -206,8 +209,8 @@ void Repaint()
 }
 
 LiveReload.Repaint = Repaint;
-primary.Start();
-secondary?.Start();
+primary.Start(xWaylandHelper, renderReader);
+secondary?.Start(xWaylandHelper, renderReader);
 using var portalSession = PortalSession.Start(primary.Display);
 using var notifications = new DesktopNotifications(primary.Shell.Notifications);
 var startupApps = StartupApps.ForMachine();

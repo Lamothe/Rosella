@@ -77,7 +77,7 @@ internal sealed class XdgSurfaceHandler : IRequestHandler, ISurfaceRole, IDispos
         _onEnded = onEnded;
     }
 
-    /// <summary>The window's visible corner sits at the work-area origin (maximised).</summary>
+    /// <summary>The window's visible corner in logical output coordinates.</summary>
     internal (int X, int Y) WindowPosition => _windowPosition;
 
     /// <summary>
@@ -552,7 +552,7 @@ internal sealed class XdgSurfaceHandler : IRequestHandler, ISurfaceRole, IDispos
             var geometry = _geometry.Width > 0 ? _geometry : (0, 0, contentWidth, contentHeight);
             var (width, height, corner) = _roleObject!.GetPlacement(surface, geometry);
             _windowPosition = corner ?? Scene.PlaceWindow(surface, width, height);
-            if (corner is not null && _toplevel is { IsKeyringPrompt: true })
+            if (corner is not null && _toplevel is not null)
             {
                 Scene.Raise(surface);
             }
@@ -565,16 +565,13 @@ internal sealed class XdgSurfaceHandler : IRequestHandler, ISurfaceRole, IDispos
 
     internal void Reflow()
     {
-        var area = Scene.WorkArea;
-        _windowPosition = (area.X, area.Y);
-        _policySize = (area.W, area.H);
         PlaceContent(_surface, _surface.ContentWidth, _surface.ContentHeight);
     }
 
     /// <summary>
     /// Places content and client-side shadows using the committed geometry.
-    /// Popups keep their natural size at the positioner corner, the keyring
-    /// prompt is centered, and ordinary toplevels fill the work area.
+    /// Popups keep their positioner placement, dialogs stay centered, and
+    /// ordinary toplevels fill the work area.
     /// </summary>
     private void PlaceContent(SurfaceHandler surface, int contentWidth, int contentHeight)
     {
@@ -597,11 +594,12 @@ internal sealed class XdgSurfaceHandler : IRequestHandler, ISurfaceRole, IDispos
             return;
         }
 
-        if (_toplevel is { IsKeyringPrompt: true } prompt)
+        if (_toplevel is { } toplevel)
         {
-            var placement = prompt.GetPlacement(surface, geometry);
+            var placement = toplevel.GetPlacement(surface, geometry);
             _policySize = (placement.Width, placement.Height);
-            _windowPosition = placement.Corner.GetValueOrDefault();
+            var area = Scene.WorkArea;
+            _windowPosition = placement.Corner ?? (area.X, area.Y);
         }
 
         // Map the geometry and any client-side shadows into the window's

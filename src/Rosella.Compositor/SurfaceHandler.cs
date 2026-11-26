@@ -64,6 +64,11 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
     private int _height;
     private uint _format = ShmFormats.Xrgb8888;
     private int _bufferScale = 1;
+    private ViewportState _viewport;
+    internal uint ViewportId { get; set; }
+    internal DrmSyncobjSurface? DrmSyncobj { get; set; }
+    internal ViewportState PendingViewport { get; set; }
+    internal volatile PointerConstraint? PointerConstraint;
     private RegionSnapshot? _opaqueRegion;
     private RegionSnapshot? _pendingOpaque;
     private bool _hasPendingOpaque;
@@ -317,7 +322,9 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
                     return true;
                 }
 
-                return _opaqueRegion is { } region && region.Covers(_width, _height, _bufferScale);
+                return _opaqueRegion is { } region && (_viewport == default
+                    ? region.Covers(_width, _height, _bufferScale)
+                    : region.Covers(ContentWidth, ContentHeight, 1));
             }
         }
     }
@@ -329,7 +336,7 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
         {
             lock (_state)
             {
-                var width = _placeWidth > 0 ? _placeWidth : _width / _bufferScale;
+                var width = _placeWidth > 0 ? _placeWidth : _viewport.Width(_width, _bufferScale);
                 return Subsurface?.Parent is { } parent ? ScaleOffset(width, parent.Width, parent.ContentWidth) : width;
             }
         }
@@ -342,7 +349,7 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
         {
             lock (_state)
             {
-                var height = _placeHeight > 0 ? _placeHeight : _height / _bufferScale;
+                var height = _placeHeight > 0 ? _placeHeight : _viewport.Height(_height, _bufferScale);
                 return Subsurface?.Parent is { } parent ? ScaleOffset(height, parent.Height, parent.ContentHeight) : height;
             }
         }
@@ -355,7 +362,7 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
         {
             lock (_state)
             {
-                return _width / _bufferScale;
+                return _viewport.Width(_width, _bufferScale);
             }
         }
     }
@@ -367,7 +374,7 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
         {
             lock (_state)
             {
-                return _height / _bufferScale;
+                return _viewport.Height(_height, _bufferScale);
             }
         }
     }
@@ -393,7 +400,7 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
         lock (_state)
         {
             var width = Width;
-            return width > 0 ? (int)(((long)(sceneX - Position.X) * (_width / _bufferScale)) / width) : 0;
+            return width > 0 ? (int)(((long)(sceneX - Position.X) * ContentWidth) / width) : 0;
         }
     }
 
@@ -403,7 +410,7 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
         lock (_state)
         {
             var height = Height;
-            return height > 0 ? (int)(((long)(sceneY - Position.Y) * (_height / _bufferScale)) / height) : 0;
+            return height > 0 ? (int)(((long)(sceneY - Position.Y) * ContentHeight) / height) : 0;
         }
     }
 
@@ -594,6 +601,10 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
                 {
                     (Scene.Seat?.PointerFocus?.Scene ?? Scene).MarkCursorDirty(this);
                 }
+                if (PointerConstraint is not null)
+                {
+                    Scene.Seat?.RefreshPointerConstraint();
+                }
 
                 break;
             }
@@ -691,6 +702,15 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
         }
     }
 
+    internal bool AcceptsLocalInput(int x, int y)
+    {
+        lock (_state)
+        {
+            return x >= 0 && x < ContentWidth && y >= 0 && y < ContentHeight &&
+                (_inputRegion?.Contains(x, y) ?? true);
+        }
+    }
+
     /// <summary>Fires the frame callbacks queued for the frame just composited.</summary>
     internal void CompleteFrame()
     {
@@ -744,15 +764,11 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
             // consulted and the copy takes the no-blend path. Chrome sends
             // ARGB8888 buffers with a full-surface opaque region, which is
             // most of a video frame's cost.
-            Blitter.Blit(
+            BlitContent(
                 pixels,
                 width,
                 height,
                 stride,
-                _content,
-                _width,
-                _height,
-                _width * 4,
                 IsOpaqueContent ? ShmFormats.Xrgb8888 : _format,
                 Position.X * outputScale,
                 Position.Y * outputScale,
@@ -779,7 +795,7 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
                 return false;
             }
 
-            Blitter.Blit(pixels, width, height, stride, _content, _width, _height, _width * 4,
+            BlitContent(pixels, width, height, stride,
                 ShmFormats.Xrgb8888, bounds.X, bounds.Y, bounds.W, bounds.H, region);
             return true;
         }
@@ -801,15 +817,11 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
                 return;
             }
 
-            Blitter.Blit(
+            BlitContent(
                 pixels,
                 width,
                 height,
                 stride,
-                _content,
-                _width,
-                _height,
-                _width * 4,
                 _format,
                 x,
                 y,
@@ -817,6 +829,19 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
                 destinationHeight,
                 clip);
         }
+    }
+
+    private void BlitContent(Span<byte> pixels, int width, int height, int stride, uint format,
+        int x, int y, int destinationWidth, int destinationHeight, in DamageRect clip)
+    {
+        ViewportSource? crop = null;
+        if (_viewport.Source is { } source)
+        {
+            crop = new ViewportSource(source.X * _bufferScale, source.Y * _bufferScale,
+                source.Width * _bufferScale, source.Height * _bufferScale);
+        }
+        Blitter.Blit(pixels, width, height, stride, _content, _width, _height, _width * 4, format,
+            x, y, destinationWidth, destinationHeight, clip, crop);
     }
 
     /// <summary>Session end: leave the scene and drop state without sending.</summary>
@@ -900,9 +925,13 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
         var newHeight = 0;
         uint newFormat;
         int newBufferScale;
+        var viewport = PendingViewport;
+        var viewportId = ViewportId;
         BufferHandler? attachedBuffer = null;
         byte[]? dmaBufDestination = null;
         ServerObject[] releaseCallbacks = [];
+        DrmTimelinePoint? acquire;
+        DrmTimelinePoint? release;
         lock (_state)
         {
             // get_release requires a non-null buffer in this content update.
@@ -911,6 +940,7 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
                 throw new ProtocolErrorException(_self!.Id, SurfaceErrors.NoBuffer, "get_release without a committed buffer");
             }
 
+            (acquire, release) = DrmSyncobj?.Take(_pendingAttach ? _pendingBuffer?.Buffer : null) ?? default;
             damage = _pendingDamage.ToArray();
             _pendingDamage.Clear();
             damageOverflow = _damageOverflow;
@@ -937,7 +967,7 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
                     newHeight = buffer.Buffer.Height;
                     newFormat = buffer.Buffer.Format;
                     if (buffer.Buffer is ShmBuffer shared && _content is not null && XdgRole?.Toplevel is not null && !IsCursorSurface
-                        && !damageOverflow && damage.Length == 1
+                        && viewport == default && _viewport == default && !damageOverflow && damage.Length == 1
                         && newWidth == _width && newHeight == _height && newFormat == _format && newBufferScale == _bufferScale
                         && SmallBufferDamage(damage[0], newWidth, newHeight, newBufferScale) is { } region)
                     {
@@ -979,12 +1009,21 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
                 {
                     // A producer fence or readback may block. The renderer
                     // can keep showing the previous snapshot while we wait.
-                    newContent = attachedBuffer.Buffer.ReadPixels(dmaBufDestination);
+                    if (acquire is null || acquire.Wait())
+                    {
+                        newContent = attachedBuffer.Buffer.ReadPixels(dmaBufDestination);
+                    }
                     contentChanged = newContent is not null;
                 }
             }
             finally
             {
+                acquire?.Dispose();
+                if (release is not null)
+                {
+                    release.Signal();
+                    release.Dispose();
+                }
                 attachedBuffer.ReleaseReference();
                 attachedBuffer.MarkReleased(releaseCallbacks);
             }
@@ -1021,8 +1060,15 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
                 }
             }
         }
+        var constraint = PointerConstraint;
+        var constraintRegion = constraint?.PendingRegion;
         return new CachedSurfaceCommit(
-            () => ApplyCommit(contentChanged, newContent, patch, newWidth, newHeight, newFormat, newBufferScale, hasOpaque, opaque, hasInputRegion, inputRegion, callbacks, damage, damageOverflow), Cancel,
+            () =>
+            {
+                ApplyCommit(contentChanged, newContent, patch, newWidth, newHeight, newFormat, newBufferScale, viewport, viewportId,
+                    hasOpaque, opaque, hasInputRegion, inputRegion, callbacks, damage, damageOverflow);
+                constraint?.ApplyRegion(constraintRegion);
+            }, Cancel,
             contentChanged ? (patch?.Pixels.LongLength ?? newContent?.LongLength ?? 0) : 0);
     }
 
@@ -1039,7 +1085,7 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
     }
 
     private void ApplyCommit(bool contentChanged, byte[]? newContent, PixelPatch? patch, int newWidth, int newHeight, uint newFormat,
-        int newBufferScale, bool hasOpaque, RegionSnapshot? opaque, bool hasInputRegion, RegionSnapshot? inputRegion,
+        int newBufferScale, ViewportState viewport, uint viewportId, bool hasOpaque, RegionSnapshot? opaque, bool hasInputRegion, RegionSnapshot? inputRegion,
         List<ServerObject> callbacks,
         (long X, long Y, long Right, long Bottom, bool Buffer)[] damage, bool damageOverflow)
     {
@@ -1051,6 +1097,7 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
         var oldContentWidth = ContentWidth;
         var oldContentHeight = ContentHeight;
         var oldBufferScale = BufferScale;
+        var viewportChanged = _viewport != viewport;
         if (!contentChanged)
         {
             lock (_state)
@@ -1062,6 +1109,7 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
             }
         }
 
+        viewport.Validate(viewportId, newWidth, newHeight, newBufferScale);
         // The role hook runs outside the state lock (lock order: scene ->
         // surface state) and BEFORE the content becomes visible, so a mapped
         // window is at its final position the moment its pixels appear.
@@ -1071,8 +1119,8 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
             this,
             contentChanged,
             newContent is not null,
-            newWidth / newBufferScale,
-            newHeight / newBufferScale);
+            viewport.Width(newWidth, newBufferScale),
+            viewport.Height(newHeight, newBufferScale));
 
         var unmapped = false;
         lock (_state)
@@ -1107,6 +1155,7 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
             // Applied on every commit, buffer or not — double-buffered
             // state is committed, not attached.
             _bufferScale = newBufferScale;
+            _viewport = viewport;
             if (hasOpaque)
             {
                 _opaqueRegion = opaque;
@@ -1128,7 +1177,7 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
             Scene.OnSurfaceHidden(this, canSendLeave: true);
         }
 
-        if (unmapped || oldMapped != IsMapped || oldPosition != Position || oldWidth != Width || oldHeight != Height
+        if (unmapped || viewportChanged || oldMapped != IsMapped || oldPosition != Position || oldWidth != Width || oldHeight != Height
             || oldContentWidth != ContentWidth || oldContentHeight != ContentHeight || oldBufferScale != BufferScale
             || (!IsCursorSurface && oldOpaque != IsOpaqueContent))
         {
@@ -1137,7 +1186,13 @@ internal sealed class SurfaceHandler : IRequestHandler, IDisposable
         }
         else if (!IsCursorSurface && !Hidden && IsMapped)
         {
-            if (damageOverflow || (contentChanged && damage.Length == 0))
+            if (_viewport != default && (contentChanged || damage.Length > 0 || damageOverflow))
+            {
+                var position = Position;
+                var scale = Scene.Scale;
+                Scene.MarkDirty(new DamageRect(position.X * scale, position.Y * scale, Width * scale, Height * scale));
+            }
+            else if (damageOverflow || (contentChanged && damage.Length == 0))
             {
                 MarkContentDamage(0, 0, _width, _height, buffer: true);
             }

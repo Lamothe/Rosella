@@ -29,6 +29,7 @@ different installed applications.
 - Quick Settings for audio, display resolution, and session controls.
 - Maximised windows by default, fullscreen support, and an Alt+Tab switcher.
 - Wayland clipboard and drag and drop, region screenshots, and notifications.
+- X11 app support through rootless XWayland, including Steam, when the helper is installed.
 
 ## Layout
 
@@ -83,6 +84,11 @@ build.
 
 With GDM, pick **Rosella** from the session menu. A greetd setup can use
 [Rosella's greeter](docs/login-and-pin.md) with a PIN or password.
+
+For X11 apps such as Steam, install `xwayland-satellite` 0.8.3 or later and
+Xwayland. On Fedora, `sudo dnf install xwayland-satellite` installs both.
+Rosella starts the bridge on login and gives apps launched from Rosella the
+credentials for that desktop. The bridge uses GPU rendering when available.
 
 ### From a VT, alongside a running session (the dev way)
 
@@ -150,6 +156,10 @@ and Super+Esc quits.
 
 ### Customising pinned launchers
 
+Drag an icon to reorder it within the pinned or running group. Right-click a
+running app with a desktop entry and choose **Pin to taskbar**. Rosella saves
+pin changes and the pinned order to the machine's launcher list.
+
 Create `~/.config/rosella/launchers.json` (or `$XDG_CONFIG_HOME/rosella/launchers.json`
 if `XDG_CONFIG_HOME` is absolute) with an ordered JSON array of desktop-file IDs:
 
@@ -164,7 +174,7 @@ if `XDG_CONFIG_HOME` is absolute) with an ordered JSON array of desktop-file IDs
 An inner array lists alternatives for one launcher. Rosella searches user and
 system application directories in priority order, choosing the first existing
 candidate within each directory; missing or unusable apps are skipped. IDs are
-`.desktop` basenames, not commands or paths. Chrome retains its Wayland and
+`.desktop` basenames, not commands or paths. Chrome retains its display and
 profile handling. An empty array removes all pins. Without a file, Rosella uses
 its built-in launchers; an invalid file is logged and also falls back to those
 defaults. At most 32 launchers and 16 alternatives per launcher are accepted.
@@ -189,7 +199,8 @@ On two screens, right-click a dock icon on the destination screen and choose
 **Move to This Screen**. Rosella moves the most recently raised matching window
 from the other screen and gives it keyboard focus. Related dialogs follow it.
 
-The pinned Chrome launcher checks profile ownership before each launch. Chrome
+The pinned Chrome launcher uses XWayland when Rosella's bridge is available and
+native Wayland otherwise. It checks profile ownership before each launch. Chrome
 uses the regular profile on the primary screen when it is available. Flatpak
 Chrome uses the persistent `rosella-user-data` profile on the second screen.
 The profiles retain their own sign-ins and bookmarks. Rosella matches Flatpak's

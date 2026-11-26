@@ -221,6 +221,29 @@ public class ShellChromeTests
         Assert.InRange(rightmost, textEnd - 4, textEnd - 1);
     }
 
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public void ClockTextIsVerticallyCentred(int scale)
+    {
+        const int width = 600;
+        const int height = 100;
+        const string clock = "Nov 24 22:27";
+        var stride = width * scale * 4;
+        var pixels = new byte[stride * height * scale];
+        var layout = Bar.ComputeLayout(width, height, clock, []);
+        var button = layout.Clock.Scaled(scale);
+        Bar.Draw(pixels, width, height, stride, scale, layout, clock, null);
+
+        var inkRows = Enumerable.Range(button.Y, button.H)
+            .Where(y => Enumerable.Range(button.X, button.W)
+                .Any(x => PixelAt(pixels, stride, x, y) > 0xFF2A2C36u))
+            .ToArray();
+        var topPadding = inkRows.First() - button.Y;
+        var bottomPadding = button.Y + button.H - 1 - inkRows.Last();
+        Assert.InRange(topPadding - bottomPadding, -1, 1);
+    }
+
     // --- The pinned launcher group: centring, gaps, padding -------------
 
     private static PinnedLauncher Pin(string name) =>

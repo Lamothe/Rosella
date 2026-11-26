@@ -15,8 +15,7 @@ public class XdgShellTests
 
     // Object ids: surface 8, xdg_surface 11, toplevel 12, popup 13,
     // positioner 14, popup surface 15, popup xdg_surface 16.
-    // Policy: every toplevel opens maximised to the work area (the full
-    // output here — this harness runs bare, without a shell).
+    // Ordinary toplevels open maximised to the work area (the full output here).
 
     [Fact]
     public void Toplevel_FollowsTheConfigureAckMapDance()
@@ -25,8 +24,7 @@ public class XdgShellTests
         harness.CreateToplevel(8, 11, 12);
 
         // Initial commit: the role's configure first, then the serial. The
-        // configure carries the work-area size and the maximized state —
-        // windows open fullscreen, always.
+        // configure carries the work-area size and the maximized state.
         harness.Client.SendRequest(8, "wl_surface", "commit");
         var roleConfigure = harness.Client.ReadUntil(12, "configure");
         Assert.Equal(1920, roleConfigure.Arguments[0].AsInt32());
@@ -44,6 +42,29 @@ public class XdgShellTests
         Assert.Equal(1920, surface.Width);
         Assert.Equal(1080, surface.Height);
         Assert.Equal(harness.Content, surface.Content);
+    }
+
+    [Fact]
+    public void Resize_AcceptsAValidEdgeWithAnInputSerialOutsideTheEdgeEnum()
+    {
+        using var harness = new Harness();
+        harness.CreateToplevel(8, 11, 12);
+        harness.MapWindow(8, 11, 12);
+        harness.Client.SendRequest(2, "wl_registry", "bind", WireArgument.UInt32(4),
+            WireArgument.String("wl_seat"), WireArgument.UInt32(1), WireArgument.NewId(17));
+        harness.Client.RegisterObject(17, "wl_seat");
+
+        harness.Client.SendRequest(12, "xdg_toplevel", "resize",
+            WireArgument.Object(17), WireArgument.UInt32(60), WireArgument.UInt32(10));
+        harness.Client.SendRequest(1, "wl_display", "sync", WireArgument.NewId(18));
+        harness.Client.RegisterObject(18, "wl_callback");
+        harness.Client.ReadUntil(18, "done");
+
+        harness.Client.SendRequest(12, "xdg_toplevel", "resize",
+            WireArgument.Object(17), WireArgument.UInt32(10), WireArgument.UInt32(60));
+        var error = harness.Client.ReadUntil(1, "error");
+        Assert.Equal(12u, error.Arguments[0].AsObject());
+        Assert.Equal(XdgErrors.InvalidResizeEdge, error.Arguments[1].AsUInt32());
     }
 
     [Fact]
@@ -122,12 +143,15 @@ public class XdgShellTests
         Assert.Equal((32 * 96, 32 * 54), (surface.Width, surface.Height));
     }
 
-    [Fact]
-    public void KeyringPrompt_UsesItsNaturalSizeAndCentersAfterGeometryChanges()
+    [Theory]
+    [InlineData("gcr-prompter")]
+    [InlineData("zenity")]
+    [InlineData("org.gnome.Zenity")]
+    public void StandalonePrompt_UsesItsNaturalSizeAndCentersAfterGeometryChanges(string appId)
     {
         using var harness = new Harness();
         harness.CreateToplevel(8, 11, 12);
-        harness.Client.SendRequest(12, "xdg_toplevel", "set_app_id", WireArgument.String("gcr-prompter"));
+        harness.Client.SendRequest(12, "xdg_toplevel", "set_app_id", WireArgument.String(appId));
         harness.Client.SendRequest(8, "wl_surface", "commit");
         var configure = harness.Client.ReadUntil(12, "configure");
         Assert.Equal(0, configure.Arguments[0].AsInt32());
@@ -149,6 +173,33 @@ public class XdgShellTests
         Assert.Equal((948, 534, 24, 12), prompt.Visible);
         Assert.Equal((946, 533), prompt.Position);
         Assert.Equal((32, 32), (prompt.Width, prompt.Height));
+    }
+
+    [Fact]
+    public void ParentedDialog_UsesNaturalSizeAndReflowsWithTheOutput()
+    {
+        using var harness = new Harness();
+        harness.CreateToplevel(8, 11, 12);
+        var parent = harness.MapWindow(8, 11, 12);
+        harness.CreateToplevel(20, 21, 22);
+        harness.Client.SendRequest(22, "xdg_toplevel", "set_parent", WireArgument.Object(12));
+        harness.Client.SendRequest(20, "wl_surface", "commit");
+
+        var configure = harness.Client.ReadUntil(22, "configure");
+        Assert.Equal(0, configure.Arguments[0].AsInt32());
+        Assert.Equal(0, configure.Arguments[1].AsInt32());
+        Assert.True(configure.Arguments[2].AsArray().IsEmpty);
+        var serial = harness.Client.ReadUntil(21, "configure").Arguments[0].AsUInt32();
+        harness.Client.SendRequest(21, "xdg_surface", "ack_configure", WireArgument.UInt32(serial));
+        harness.CommitBuffer(20);
+        harness.RoundTrip();
+
+        var dialog = Assert.Single(harness.Scene.Surfaces, surface => surface.Id == 20);
+        Assert.Equal((944, 524, 32, 32), dialog.Visible);
+        Assert.Equal((0, 0, 1920, 1080), parent.Visible);
+        harness.Scene.OutputSize = (800, 600);
+        dialog.XdgRole!.Reflow();
+        Assert.Equal((384, 284, 32, 32), dialog.Visible);
     }
 
     [Fact]
@@ -255,6 +306,29 @@ public class XdgShellTests
 
         // Screen placement: parent window corner + anchor + offset.
         Assert.Equal((parent.Position.X + 10 + 3, parent.Position.Y + 20 + 5), popup.Position);
+    }
+
+    [Fact]
+    public void ReusedPopup_StacksWithParentAfterRaise()
+    {
+        using var harness = new Harness();
+        harness.CreatePopup(8, 11, 12, 13, 14, 15, 16);
+        var parent = harness.MapWindow(8, 11, 12, (1920, 1080));
+        var popup = harness.MapWindow(15, 16, 13);
+        harness.Client.SendRequest(15, "wl_surface", "attach",
+            WireArgument.Object(0), WireArgument.Int32(0), WireArgument.Int32(0));
+        harness.Client.SendRequest(15, "wl_surface", "commit");
+        harness.RoundTrip();
+        Assert.False(popup.IsMapped);
+
+        harness.Scene.Raise(parent);
+        harness.MapWindow(15, 16, 13);
+        var (x, y) = popup.Position;
+        Assert.Same(popup, harness.Scene.HitTest(x + 1, y + 1));
+
+        harness.CreateToplevel(17, 18, 19);
+        var other = harness.MapWindow(17, 18, 19);
+        Assert.Same(other, harness.Scene.HitTest(x + 1, y + 1));
     }
 
     [Fact]

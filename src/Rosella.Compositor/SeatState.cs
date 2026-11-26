@@ -11,7 +11,7 @@ namespace Rosella.Compositor;
 /// death, so no event ever names an object after its delete_id. One dead
 /// client's socket error never stops delivery to the rest.
 /// </summary>
-internal sealed class SeatState
+internal sealed partial class SeatState
 {
     private readonly object _gate = new();
     private readonly List<(ClientSession Session, ServerObject Object)> _keyboards = new();
@@ -158,6 +158,10 @@ internal sealed class SeatState
     {
         lock (_gate)
         {
+            if (_activeConstraint is { Locked: true })
+            {
+                return new CursorImage(null, 0, 0, true);
+            }
             if (_cursorOwner is null || !ReferenceEquals(_pointerFocus?.Session, _cursorOwner))
             {
                 return new CursorImage(null, 0, 0, false);
@@ -301,10 +305,24 @@ internal sealed class SeatState
 
     internal void UnregisterPointer(ClientSession session, ServerObject pointer)
     {
+        bool changed;
         lock (_gate)
         {
             _pointers.RemoveAll(entry => entry.Session == session && entry.Object == pointer);
             _pointerEnterSerials.Remove(pointer);
+            _relativePointers.RemoveAll(entry => entry.Pointer == pointer);
+            foreach (var constraint in _constraints)
+            {
+                if (constraint.Pointer == pointer)
+                {
+                    constraint.Finished = true;
+                }
+            }
+            changed = UpdateConstraint();
+        }
+        if (changed)
+        {
+            Dirty?.Invoke();
         }
     }
 
@@ -315,6 +333,7 @@ internal sealed class SeatState
     /// </summary>
     internal void SetKeyboardFocus(SurfaceHandler? focus, IEnumerable<int> heldKeys)
     {
+        bool constraintChanged;
         lock (_gate)
         {
             if (focus is not null && !focus.IsInputVisible)
@@ -368,12 +387,18 @@ internal sealed class SeatState
 
                 focus.XdgRole?.SetActivated(true);
             }
+            constraintChanged = UpdateConstraint();
+        }
+        if (constraintChanged)
+        {
+            Dirty?.Invoke();
         }
     }
 
     /// <summary>Moves pointer focus: leave/enter with surface-local coordinates.</summary>
     internal void SetPointerFocus(SurfaceHandler? focus, int surfaceX, int surfaceY)
     {
+        bool constraintChanged;
         lock (_gate)
         {
             _pointerX = surfaceX;
@@ -385,37 +410,40 @@ internal sealed class SeatState
             }
 
             var previous = _pointerFocus;
-            if (ReferenceEquals(previous, focus))
+            constraintChanged = false;
+            if (!ReferenceEquals(previous, focus))
             {
-                return;
-            }
+                _pointerFocus = null;
+                constraintChanged = UpdateConstraint();
+                _pointerFocus = focus;
 
-            _pointerFocus = focus;
-
-            // The client cursor is scoped to its owner's focus (spec: the
-            // cursor applies only when this device's pointer focus is one of
-            // the requesting client's surfaces). Focus left that client:
-            // back to the built-in arrow.
-            if (_cursorOwner is not null && !ReferenceEquals(focus?.Session, _cursorOwner))
-            {
-                ResetCursor();
-            }
-
-            if (previous is not null)
-            {
-                foreach (var (session, pointer) in Of(_pointers, previous))
+                // The client cursor applies only to its own focused surfaces.
+                if (_cursorOwner is not null && !ReferenceEquals(focus?.Session, _cursorOwner))
                 {
-                    TrySend(session, pointer, "leave", WireArgument.UInt32(session.NextSerial()), WireArgument.Object(previous.Id));
+                    ResetCursor();
+                }
+
+                if (previous is not null)
+                {
+                    foreach (var (session, pointer) in Of(_pointers, previous))
+                    {
+                        TrySend(session, pointer, "leave", WireArgument.UInt32(session.NextSerial()), WireArgument.Object(previous.Id));
+                    }
+                }
+
+                if (focus is not null)
+                {
+                    foreach (var (session, pointer) in Of(_pointers, focus))
+                    {
+                        SendEnterOn(session, pointer, focus);
+                    }
                 }
             }
-
-            if (focus is not null)
-            {
-                foreach (var (session, pointer) in Of(_pointers, focus))
-                {
-                    SendEnterOn(session, pointer, focus);
-                }
-            }
+            constraintChanged |= UpdateConstraint();
+        }
+        if (constraintChanged)
+        {
+            Dirty?.Invoke();
         }
     }
 
@@ -506,10 +534,15 @@ internal sealed class SeatState
     }
 
     /// <summary>Sends wl_pointer.motion to the focus surface's pointers.</summary>
-    internal void SendMotion(SurfaceHandler target, int surfaceX, int surfaceY, uint time)
+    internal void SendMotion(SurfaceHandler target, int surfaceX, int surfaceY, uint time, double dx, double dy)
     {
         lock (_gate)
         {
+            SendRelativeMotionLocked(target, dx, dy);
+            if (_activeConstraint is { Locked: true })
+            {
+                return;
+            }
             foreach (var (session, pointer) in Of(_pointers, target))
             {
                 TrySend(
@@ -726,6 +759,7 @@ internal sealed class SeatState
     internal void OnSurfaceHidden(SurfaceHandler surface, bool canSendLeave)
     {
         bool cursorCleared;
+        bool constraintChanged;
         lock (_gate)
         {
             Drag.SurfaceHidden(surface);
@@ -750,6 +784,7 @@ internal sealed class SeatState
             {
                 _pointerFocus = null;
             }
+            constraintChanged = UpdateConstraint();
 
             if (canSendLeave && keyboardHadFocus && keyboardFocus is not null)
             {
@@ -769,7 +804,7 @@ internal sealed class SeatState
                 }
             }
         }
-        if (cursorCleared)
+        if (cursorCleared || constraintChanged)
         {
             Dirty?.Invoke();
         }

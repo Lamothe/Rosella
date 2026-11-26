@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Rosella.Input;
 
 namespace Rosella.Compositor;
@@ -207,6 +208,10 @@ internal sealed class InputRouter
                 }
             }
             _seat.ReleaseAllHeld();
+            if (_seat.CapturedPointer(_scene) is not null)
+            {
+                _seat.SetPointerFocus(null, 0, 0);
+            }
             _pressedKeys.Clear();
             _consumedKeys.Clear();
             _chromePressConsumedButtons.Clear();
@@ -216,9 +221,10 @@ internal sealed class InputRouter
             {
                 _scene.MarkDirty();
             }
-            if (_shell is { DockMenu: not null } shell)
+            if (_shell is { } shell && (shell.DockMenu is not null || shell.TaskbarPress is not null))
             {
                 shell.DockMenu = null;
+                shell.TaskbarPress = null;
                 _scene.MarkDirty();
             }
             _buttonPressTargets.Clear();
@@ -433,12 +439,34 @@ internal sealed class InputRouter
 
         var previous = (X: _cursorX, Y: _cursorY);
         var (outputWidth, outputHeight) = _scene.OutputSize;
-        _cursorX = Math.Clamp(_cursorX + moveX, 0, Math.Max(0, outputWidth - 1));
-        _cursorY = Math.Clamp(_cursorY + moveY, 0, Math.Max(0, outputHeight - 1));
+        var current = (X: Math.Clamp(_cursorX + moveX, 0, Math.Max(0, outputWidth - 1)),
+            Y: Math.Clamp(_cursorY + moveY, 0, Math.Max(0, outputHeight - 1)));
+        var capture = _seat.ConstrainPointer(_scene, previous, ref current, out var locked);
+        if (locked && capture is not null)
+        {
+            _seat.SendRelativeMotion(capture, (double)dx / scale, (double)dy / scale);
+            _seat.SendPointerFrame(capture);
+            return;
+        }
+        (_cursorX, _cursorY) = current;
         _scene.Cursor = (_cursorX, _cursorY);
 
         if (_shell?.Screenshot.IsSelecting == true)
         {
+            return;
+        }
+
+        if (_shell is { TaskbarPress: { } press } dragShell)
+        {
+            if (press.IsDrag(current))
+            {
+                var layout = dragShell.LastBarLayout ?? dragShell.ComputeBarLayout(outputWidth, outputHeight, _scene.TaskWindows());
+                if (!press.Dragging || press.DropAt(layout, previous) != press.DropAt(layout, current))
+                {
+                    dragShell.TaskbarPress = press with { Dragging = true };
+                    _scene.MarkDirty(layout.Bounds.ToDamage(scale));
+                }
+            }
             return;
         }
 
@@ -464,7 +492,7 @@ internal sealed class InputRouter
             }
         }
 
-        var hovered = PointerOverShell() ? null : _scene.HitTest(_cursorX, _cursorY);
+        var hovered = capture ?? (PointerOverShell() ? null : _scene.HitTest(_cursorX, _cursorY));
         if (_seat.RouteDragMotion(hovered, LocalX(hovered), LocalY(hovered), time))
         {
             return;
@@ -476,7 +504,7 @@ internal sealed class InputRouter
         _seat.SetPointerFocus(target, LocalX(target), LocalY(target));
         if (target is not null)
         {
-            _seat.SendMotion(target, LocalX(target), LocalY(target), time);
+            _seat.SendMotion(target, LocalX(target), LocalY(target), time, (double)dx / scale, (double)dy / scale);
             _seat.SendPointerFrame(target);
         }
     }
@@ -544,7 +572,7 @@ internal sealed class InputRouter
             _heldButtons.Remove(code);
         }
 
-        var dragTarget = PointerOverShell() ? null : _scene.HitTest(_cursorX, _cursorY);
+        var dragTarget = _seat.CapturedPointer(_scene) ?? (PointerOverShell() ? null : _scene.HitTest(_cursorX, _cursorY));
         if (_seat.RouteDragButton(code, pressed, dragTarget, LocalX(dragTarget), LocalY(dragTarget)))
         {
             if (!pressed)
@@ -595,15 +623,24 @@ internal sealed class InputRouter
                 return;
             }
 
-            if (_shell is { } openShell)
+            if (code == InputConstants.ButtonLeft && _shell is { TaskbarPress: { } press } openShell)
             {
-                openShell.PressedPin = -1;
+                openShell.TaskbarPress = null;
+                _chromePressConsumedButtons.Remove(code);
+                CompleteTaskbarPress(openShell, press);
+                return;
             }
 
             if (_chromePressConsumedButtons.Remove(code))
             {
                 return;
             }
+        }
+
+        if (pressed && _shell?.TaskbarPress is not null)
+        {
+            _chromePressConsumedButtons.Add(code);
+            return;
         }
 
         // An explicit xdg_popup grab takes precedence over shell chrome.
@@ -689,6 +726,16 @@ internal sealed class InputRouter
             {
                 menuShell.StartupApps?.Toggle(startupId);
             }
+            else if (code == InputConstants.ButtonLeft && menu.HitRemovePin(_cursorX, _cursorY) &&
+                menu.RemovePinId is { } removePinId)
+            {
+                UpdatePins(menuShell, "Could not remove taskbar icon", other => menuShell.RemovePin(removePinId, other));
+            }
+            else if (code == InputConstants.ButtonLeft && menu.HitAddPin(_cursorX, _cursorY) &&
+                menu.AddPinId is { } addPinId)
+            {
+                UpdatePins(menuShell, "Could not pin app to taskbar", other => menuShell.AddPin(addPinId, other));
+            }
             else if (code == InputConstants.ButtonLeft && menu.HitClose(_cursorX, _cursorY))
             {
                 foreach (var window in menu.CloseWindows)
@@ -746,7 +793,7 @@ internal sealed class InputRouter
                 }
                 else if (code == InputConstants.ButtonLeft)
                 {
-                    HandleTaskbarClick(shell, layout, _cursorX, _cursorY);
+                    BeginTaskbarPress(shell, layout, _cursorX, _cursorY);
                 }
 
                 _chromePressConsumedButtons.Add(code);
@@ -922,9 +969,12 @@ internal sealed class InputRouter
             return;
         }
 
-        if (pressed && e.Code == InputConstants.KeyEsc && _shell is { DockMenu: not null } menuShell)
+        if (pressed && e.Code == InputConstants.KeyEsc &&
+            _shell is { } menuShell && (menuShell.DockMenu is not null || menuShell.TaskbarPress is not null))
         {
             menuShell.DockMenu = null;
+            menuShell.TaskbarPress = null;
+            menuShell.UpdateDockReveal(_cursorY, _scene.OutputSize.Height);
             _scene.MarkDirty();
             _consumedKeys.Add(e.Code);
             return;
@@ -1127,13 +1177,9 @@ internal sealed class InputRouter
             var remote = remoteTasks.LastOrDefault(task =>
                 PinnedMatch.Matches(task.AppId, pin.Launcher.MatchKeys))?.Surface;
             var startupId = shell.StartupApps is null ? null : pin.Launcher.DesktopId;
-            if (windows.Length > 0 || remote is not null || startupId is not null)
-            {
-                shell.DockMenu = DockMenu.Create(pin.Rect, outputWidth, windows, remote, startupId,
-                    startupId is not null && shell.StartupApps!.Contains(startupId));
-                _scene.MarkDirty();
-            }
-
+            shell.DockMenu = DockMenu.Create(pin.Rect, outputWidth, windows, remote, startupId,
+                startupId is not null && shell.StartupApps!.Contains(startupId), removePinId: pin.Launcher.DesktopId);
+            _scene.MarkDirty();
             return;
         }
 
@@ -1143,7 +1189,12 @@ internal sealed class InputRouter
             {
                 var remote = string.IsNullOrEmpty(task.AppId) ? null : remoteTasks.LastOrDefault(candidate =>
                     string.Equals(candidate.AppId, task.AppId, StringComparison.OrdinalIgnoreCase))?.Surface;
-                shell.DockMenu = DockMenu.Create(rect, outputWidth, [task.Surface], remote);
+                var pinId = shell.ResolvePin is not null ? shell.FindPinDesktopId(task.AppId) : null;
+                if (pinId is not null && shell.Pinned.Any(launcher => launcher.DesktopId == pinId))
+                {
+                    pinId = null;
+                }
+                shell.DockMenu = DockMenu.Create(rect, outputWidth, [task.Surface], remote, addPinId: pinId);
                 _scene.MarkDirty();
                 return;
             }
@@ -1168,7 +1219,7 @@ internal sealed class InputRouter
         }
     }
 
-    private void HandleTaskbarClick(Shell shell, BarLayout layout, int x, int y)
+    private void BeginTaskbarPress(Shell shell, BarLayout layout, int x, int y)
     {
         if (shell.Settings.IsOpen && !layout.Clock.Contains(x, y))
         {
@@ -1182,49 +1233,72 @@ internal sealed class InputRouter
             return;
         }
 
-        for (var i = 0; i < layout.Pinned.Length; i++)
+        if (DockPress.At(layout, (x, y)) is { } press)
         {
-            if (layout.Pinned[i].Rect.Contains(x, y))
+            shell.TaskbarPress = press;
+            _scene.MarkDirty(layout.Bounds.ToDamage(_scene.Scale));
+        }
+    }
+
+    private void CompleteTaskbarPress(Shell shell, DockPress press)
+    {
+        var (width, height) = _scene.OutputSize;
+        var layout = shell.LastBarLayout ?? shell.ComputeBarLayout(width, height, _scene.TaskWindows());
+        var point = (_cursorX, _cursorY);
+        shell.UpdateDockReveal(_cursorY, height);
+        _scene.MarkDirty();
+
+        if (press.IsDrag(point))
+        {
+            if (press.DropAt(layout, point) is not { } drop)
             {
-                shell.PressedPin = i;
-                if (shell.Windows is { } windows)
-                {
-                    var launcher = layout.Pinned[i].Launcher;
-                    if (shell.Spinner.IsSpinning(launcher) && (launcher.IsChatGpt || ChromeProfile.IsKnownChrome(launcher.Argv)))
-                    {
-                        return;
-                    }
-
-                    // A click that actually spawns gets the busy cursor;
-                    // a focus-only click does not need one.
-                    shell.Spinner.Start(launcher, launcher.Click(windows, [.. _pressedKeys],
-                        recovered: pid => shell.Spinner.Start(launcher, pid),
-                        recoveryFailed: () => shell.Notifications.Show(default, "Rosella",
-                            "ChatGPT could not be reopened", "Its previous process is still running. Try again.", 6000)));
-                }
-
                 return;
             }
+            if (press.DesktopId is { } desktopId && drop.DesktopId is { } anchorId)
+            {
+                UpdatePins(shell, "Could not move taskbar icon", other => shell.MovePin(desktopId, anchorId, drop.After, other));
+            }
+            else if (press.Window is { } window && drop.Window is { } anchor)
+            {
+                shell.MoveTask(_scene.TaskWindows(), window, anchor, drop.After);
+            }
+            return;
         }
 
-        foreach (var (rect, task) in layout.Tasks)
+        if (DockPress.At(layout, point) is not { } released ||
+            released.DesktopId != press.DesktopId || released.Window != press.Window)
         {
-            if (rect.Contains(x, y))
-            {
-                // The layout is a snapshot: the window may be gone since it
-                // was drawn. Ghosts get no focus.
-                if (task.Surface is { IsMapped: true, Gone: false } target)
-                {
-                    // A minimised window comes back before it takes the
-                    // keyboard: the taskbar is the only way back a
-                    // set_minimized window has.
-                    _scene.Restore(target);
-                    _scene.Raise(target);
-                    _seat.SetKeyboardFocus(target, _pressedKeys);
-                }
+            return;
+        }
+        if (released.Window is { IsMapped: true, Gone: false } target && target.Scene == _scene)
+        {
+            // A minimized window comes back before it takes keyboard focus.
+            _scene.Restore(target);
+            _scene.Raise(target);
+            _seat.SetKeyboardFocus(target, _pressedKeys);
+        }
+        else if (released.DesktopId is { } id && shell.Windows is { } windows &&
+            shell.Pinned.FirstOrDefault(pin => pin.DesktopId == id) is { } launcher &&
+            !(shell.Spinner.IsSpinning(launcher) && (launcher.IsChatGpt || ChromeProfile.IsKnownChrome(launcher.Argv))))
+        {
+            shell.Spinner.Start(launcher, launcher.Click(windows, [.. _pressedKeys],
+                recovered: pid => shell.Spinner.Start(launcher, pid),
+                recoveryFailed: () => shell.Notifications.Show(default, "Rosella",
+                    "ChatGPT could not be reopened", "Its previous process is still running. Try again.", 6000)));
+        }
+    }
 
-                return;
-            }
+    private void UpdatePins(Shell shell, string failure, Action<Shell?> edit)
+    {
+        var other = _scene.OtherDesktop;
+        try
+        {
+            edit(other?.Shell);
+            other?.MarkDirty();
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException or InvalidDataException or InvalidOperationException)
+        {
+            shell.Notifications.Show(default, "Rosella", failure, error.Message, 6000);
         }
     }
 
@@ -1303,7 +1377,7 @@ internal sealed class InputRouter
 
         // Scrolling needs a focus too, and the cursor may never have moved
         // (a first gesture can be a scroll): hit-test here like motion does.
-        var target = PointerOverShell() ? null : _scene.HitTest(_cursorX, _cursorY);
+        var target = _seat.CapturedPointer(_scene) ?? (PointerOverShell() ? null : _scene.HitTest(_cursorX, _cursorY));
         _seat.SetPointerFocus(target, LocalX(target), LocalY(target));
 
         if (dy != 0)

@@ -32,6 +32,7 @@ internal sealed class SceneWindowRegistry : IWindowRegistry
     private readonly Scene _scene;
     private readonly SeatState _seat;
     private readonly string? _socketName;
+    internal XWaylandBridge? XWayland { get; set; }
 
     internal SceneWindowRegistry(Scene scene, SeatState seat, string? socketName)
     {
@@ -174,5 +175,5 @@ internal sealed class SceneWindowRegistry : IWindowRegistry
         _seat.SetKeyboardFocus(surface, heldKeys);
     }
 
-    public int? Launch(IReadOnlyList<string> argv) => AppLaunch.Spawn(argv, _socketName);
+    public int? Launch(IReadOnlyList<string> argv) => AppLaunch.Spawn(argv, _socketName, XWayland?.Current);
 }

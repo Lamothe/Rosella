@@ -21,6 +21,15 @@ internal sealed class PointerHandler : IRequestHandler, IDisposable
         _seat = seat;
     }
 
+    internal static ServerObject Resolve(ClientSession session, ServerObject target, uint pointerId)
+    {
+        if (session.TryGetObject(pointerId, out var pointer) && pointer.Handler is PointerHandler)
+        {
+            return pointer;
+        }
+        throw new ProtocolErrorException(target.Id, ClientSession.ErrorInvalidObject, $"invalid pointer {pointerId}");
+    }
+
     /// <summary>Registers the pointer with the seat.</summary>
     internal void Bind(ClientSession session, ServerObject self)
     {

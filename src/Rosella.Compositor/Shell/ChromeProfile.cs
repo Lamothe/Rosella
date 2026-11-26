@@ -89,6 +89,37 @@ internal static class ChromeProfile
         return Path.GetFileName(command[0]) is "google-chrome" or "google-chrome-stable" || IsFlatpakChrome(command);
     }
 
+    internal static string[] PreferXWayland(string[] argv)
+    {
+        if (!TryCommand(argv, null, out var command, out _))
+        {
+            return argv;
+        }
+        var flatpak = IsFlatpakChrome(command);
+        if (!flatpak && Path.GetFileName(command[0]) is not ("google-chrome" or "google-chrome-stable"))
+        {
+            return argv;
+        }
+
+        var arguments = argv.ToList();
+        var firstBrowserArgument = argv.Length - command.Length + 1;
+        if (flatpak)
+        {
+            var appId = Array.IndexOf(argv, "com.google.Chrome", firstBrowserArgument + 1);
+            arguments.Insert(appId, "--socket=x11");
+            firstBrowserArgument = appId + 2;
+        }
+        var end = arguments.IndexOf("--", firstBrowserArgument);
+        if (end == -1)
+        {
+            end = arguments.Count;
+        }
+
+        // Chrome uses the last value for a repeated switch.
+        arguments.Insert(end, "--ozone-platform=x11");
+        return [.. arguments];
+    }
+
     // Handle the common desktop-entry form `env NAME=value ... command`.
     // Options and unknown syntax remain opaque, rather than guessing their effects.
     private static bool TryCommand(string[] argv, State? initial, out string[] command, out State state)

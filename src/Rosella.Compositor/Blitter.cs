@@ -162,7 +162,8 @@ internal static class Blitter
         int y,
         int destinationWidth,
         int destinationHeight,
-        in DamageRect clip)
+        in DamageRect clip,
+        ViewportSource? crop = null)
     {
         if (sourceWidth <= 0 || sourceHeight <= 0 || sourceStride <= 0 || destinationWidth <= 0 || destinationHeight <= 0)
         {
@@ -177,6 +178,21 @@ internal static class Blitter
 
         var opaque = format == ShmFormats.Xrgb8888;
 
+        if (crop is { } area)
+        {
+            if (area.X != Math.Truncate(area.X) || area.Y != Math.Truncate(area.Y)
+                || area.Width != Math.Truncate(area.Width) || area.Height != Math.Truncate(area.Height))
+            {
+                Sampled(target, targetStride, source, sourceStride, sourceWidth, sourceHeight, destinationWidth,
+                    destinationHeight, x, y, startX, endX, startY, endY, opaque, area);
+                return;
+            }
+
+            source = source[((int)area.Y * sourceStride + (int)area.X * 4)..];
+            sourceWidth = (int)area.Width;
+            sourceHeight = (int)area.Height;
+        }
+
         if (destinationWidth == sourceWidth && destinationHeight == sourceHeight)
         {
             // No sampling: the source maps onto the destination one pixel at
@@ -187,7 +203,7 @@ internal static class Blitter
             return;
         }
 
-        if (destinationWidth % sourceWidth == 0 && destinationHeight % sourceHeight == 0
+        if (destinationWidth <= targetWidth && destinationWidth % sourceWidth == 0 && destinationHeight % sourceHeight == 0
             && destinationWidth / sourceWidth == destinationHeight / sourceHeight
             && destinationWidth / sourceWidth >= 2)
         {
@@ -422,7 +438,8 @@ internal static class Blitter
         int endX,
         int startY,
         int endY,
-        bool opaque)
+        bool opaque,
+        ViewportSource? crop = null)
     {
         var targetPixels = MemoryMarshal.Cast<byte, uint>(target);
         var sourcePixels = MemoryMarshal.Cast<byte, uint>(source);
@@ -440,14 +457,18 @@ internal static class Blitter
         {
             for (var targetX = startX; targetX < endX; targetX++)
             {
-                var sourceColumn = (int)(((long)(targetX - x) * sourceWidth) / destinationWidth);
+                var sourceColumn = crop is { } area
+                    ? (int)(area.X + (targetX - x) * area.Width / destinationWidth)
+                    : (int)(((long)(targetX - x) * sourceWidth) / destinationWidth);
                 columnMap[targetX - startX] = (uint)sourceColumn < (uint)sourceWidth ? sourceColumn : -1;
             }
 
             for (var targetY = startY; targetY < endY; targetY++)
             {
                 // Nearest-neighbour source row for this target row.
-                var sourceRow = (int)(((long)(targetY - y) * sourceHeight) / destinationHeight);
+                var sourceRow = crop is { } area
+                    ? (int)(area.Y + (targetY - y) * area.Height / destinationHeight)
+                    : (int)(((long)(targetY - y) * sourceHeight) / destinationHeight);
                 if ((uint)sourceRow >= (uint)sourceHeight)
                 {
                     continue;

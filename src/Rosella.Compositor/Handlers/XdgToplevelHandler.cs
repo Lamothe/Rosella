@@ -5,10 +5,8 @@ namespace Rosella.Compositor;
 
 /// <summary>
 /// Handles <c>xdg_toplevel</c>: the window's identity (title, app id) and
-/// its state requests. Rosella's M5 policy is opinionated: the client picks
-/// its own size (configure 0×0), placement is the shell's (window policy),
-/// and interactive move/resize/maximise need input (M6) so they are inert
-/// but legal.
+/// its state requests. Ordinary windows fill the work area. Dialogs can choose
+/// their size and are centered by the shell.
 /// </summary>
 internal sealed class XdgToplevelHandler : IRequestHandler, IXdgRoleObject
 {
@@ -37,7 +35,11 @@ internal sealed class XdgToplevelHandler : IRequestHandler, IXdgRoleObject
     internal string AppId { get; private set; } = "";
 
     // The login prompt is a standalone GTK toplevel, with its own app ID.
-    internal bool IsKeyringPrompt => AppId is "gcr-prompter" or "org.gnome.keyring.SystemPrompter" or "org.gnome.keyring.PrivatePrompter";
+    private bool IsKeyringPrompt => AppId is "gcr-prompter" or "org.gnome.keyring.SystemPrompter" or "org.gnome.keyring.PrivatePrompter";
+
+    // Zenity prompts often have no parent because another process launched them.
+    private bool UsesNaturalSize => IsKeyringPrompt || (!_fullscreen &&
+        (_parent is { IsMapped: true } || AppId is "zenity" or "org.gnome.Zenity"));
 
     /// <summary>Whether the window holds keyboard focus (xdg state 4, activated).</summary>
     internal bool Activated { get; set; }
@@ -66,19 +68,26 @@ internal sealed class XdgToplevelHandler : IRequestHandler, IXdgRoleObject
 
             case "set_parent":
             {
+                var usedNaturalSize = UsesNaturalSize;
                 var parentId = request.Arguments[0].AsObject();
                 if (parentId == 0)
                 {
                     _parent = null;
-                    break;
                 }
-
-                if (!session.TryGetObject(parentId, out var parent) || parent.Handler is not XdgToplevelHandler toplevel || IsSelfOrAncestor(toplevel))
+                else
                 {
-                    throw new ProtocolErrorException(target.Id, XdgErrors.InvalidParent, $"invalid toplevel parent {parentId}");
+                    if (!session.TryGetObject(parentId, out var parent) || parent.Handler is not XdgToplevelHandler toplevel || IsSelfOrAncestor(toplevel))
+                    {
+                        throw new ProtocolErrorException(target.Id, XdgErrors.InvalidParent, $"invalid toplevel parent {parentId}");
+                    }
+
+                    Scene.AttachToParent(_surface.Surface, toplevel._surface.Surface, _ => _parent = toplevel);
                 }
 
-                Scene.AttachToParent(_surface.Surface, toplevel._surface.Surface, _ => _parent = toplevel);
+                if (usedNaturalSize != UsesNaturalSize)
+                {
+                    _surface.SendStateConfigure();
+                }
                 break;
             }
 
@@ -88,9 +97,16 @@ internal sealed class XdgToplevelHandler : IRequestHandler, IXdgRoleObject
                 break;
 
             case "set_app_id":
+            {
+                var usedNaturalSize = UsesNaturalSize;
                 AppId = request.Arguments[0].AsNullableString() ?? "";
+                if (usedNaturalSize != UsesNaturalSize)
+                {
+                    _surface.SendStateConfigure();
+                }
                 _surface.MarkSceneDirty();
                 break;
+            }
 
             case "show_window_menu":
             case "move":
@@ -99,7 +115,7 @@ internal sealed class XdgToplevelHandler : IRequestHandler, IXdgRoleObject
 
             case "resize":
             {
-                var edge = request.Arguments[1].AsUInt32();
+                var edge = request.Arguments[2].AsUInt32();
                 if (!ValidResizeEdges.Contains(edge))
                 {
                     throw new ProtocolErrorException(target.Id, XdgErrors.InvalidResizeEdge, $"invalid resize edge {edge}");
@@ -165,7 +181,7 @@ internal sealed class XdgToplevelHandler : IRequestHandler, IXdgRoleObject
         var (workWidth, workHeight) = _surface.WorkArea;
         var states = new List<byte>();
         // xdg_toplevel.state: fullscreen = 2, maximized = 1.
-        if (IsKeyringPrompt)
+        if (UsesNaturalSize)
         {
             (workWidth, workHeight) = (0, 0);
         }
@@ -182,12 +198,12 @@ internal sealed class XdgToplevelHandler : IRequestHandler, IXdgRoleObject
     }
 
     /// <summary>
-    /// Places normal windows at the work-area origin and centers the keyring prompt.
+    /// Places normal windows at the work-area origin and centers dialogs within it.
     /// </summary>
     public (int Width, int Height, (int X, int Y)? Corner) GetPlacement(SurfaceHandler surface, (int X, int Y, int Width, int Height) geometry)
     {
         var (workWidth, workHeight) = _surface.WorkArea;
-        if (IsKeyringPrompt)
+        if (UsesNaturalSize)
         {
             var factor = Math.Min(1d, Math.Min(workWidth / (double)Math.Max(1, geometry.Width),
                 workHeight / (double)Math.Max(1, geometry.Height)));

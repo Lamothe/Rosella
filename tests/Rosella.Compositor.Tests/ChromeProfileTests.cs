@@ -4,6 +4,38 @@ namespace Rosella.Compositor.Tests;
 
 public class ChromeProfileTests
 {
+    [Fact]
+    public void XWayland_EnablesTheFlatpakX11SocketBeforeTheAppId()
+    {
+        var argv = new[]
+        {
+            "env", "FOO=bar", "/usr/bin/flatpak", "run", "--file-forwarding", "com.google.Chrome",
+            "@@u", "@@", "--ozone-platform=wayland", "--disable-background-mode",
+        };
+
+        Assert.Equal(
+            ["env", "FOO=bar", "/usr/bin/flatpak", "run", "--file-forwarding", "--socket=x11", "com.google.Chrome",
+                "@@u", "@@", "--ozone-platform=wayland", "--disable-background-mode", "--ozone-platform=x11"],
+            ChromeProfile.PreferXWayland(argv));
+    }
+
+    [Fact]
+    public void XWayland_InsertsTheNativeChromeSwitchBeforePositionalArguments()
+    {
+        Assert.Equal(
+            ["google-chrome-stable", "--user-data-dir=/my-profile", "--ozone-platform=x11", "--", "https://example.com"],
+            ChromeProfile.PreferXWayland(["google-chrome-stable", "--user-data-dir=/my-profile", "--", "https://example.com"]));
+        Assert.Equal(["firefox"], ChromeProfile.PreferXWayland(["firefox"]));
+    }
+
+    [Fact]
+    public void WithoutXWayland_ChromeKeepsItsWaylandSwitch()
+    {
+        var start = AppLaunch.CreateStartInfo(["google-chrome-stable", "--ozone-platform=wayland"], "wayland-0");
+
+        Assert.Equal(["--ozone-platform=wayland"], start.ArgumentList);
+    }
+
     private static ChromeProfile.State State(ChromeProfile.LockState lockState, ChromeProfile.ProcessSession session = ChromeProfile.ProcessSession.Other) =>
         new("/home/test", "/config", null, null, "host-name", path => path.Contains("rosella-user-data", StringComparison.Ordinal) ? new(ChromeProfile.LockKind.Missing) : lockState, _ => session);
 

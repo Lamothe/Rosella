@@ -15,7 +15,11 @@ public sealed class ProtocolDescription
     private static readonly Lazy<ProtocolDescription> CombinedInstance = new(
         () => Combine(Core, XdgShell,
             LoadResource("Rosella.Protocol.Resources.linux-dmabuf-v1.xml"),
-            LoadResource("Rosella.Protocol.Resources.idle-inhibit-unstable-v1.xml")),
+            LoadResource("Rosella.Protocol.Resources.linux-drm-syncobj-v1.xml"),
+            LoadResource("Rosella.Protocol.Resources.idle-inhibit-unstable-v1.xml"),
+            LoadResource("Rosella.Protocol.Resources.viewporter.xml"),
+            LoadResource("Rosella.Protocol.Resources.relative-pointer-unstable-v1.xml"),
+            LoadResource("Rosella.Protocol.Resources.pointer-constraints-unstable-v1.xml")),
         LazyThreadSafetyMode.ExecutionAndPublication);
 
     private readonly Dictionary<string, InterfaceDescription> _interfacesByName;

@@ -7,10 +7,8 @@ namespace Rosella.Compositor;
 internal static class PinnedApps
 {
     /// <summary>The bar's pinned apps, desktop-file candidates and launch arguments.</summary>
-    // Chromium honours the last Ozone switch. Append it even when a user
-    // desktop entry forces X11: Rosella cannot host X11 clients. Chrome
-    // profile selection happens at click
-    // time, not at startup, since another session may start or stop Chrome.
+    // Chrome uses Wayland when the XWayland bridge is unavailable. Resolve its
+    // profile at launch, since other sessions can open Chrome at any time.
     internal static readonly (string Name, string[] DesktopIds, string[] Arguments)[] Table =
     [
         ("Google Chrome", ["google-chrome.desktop", "google-chrome-stable.desktop", "com.google.Chrome.desktop"], ["--ozone-platform=wayland"]),
@@ -38,6 +36,65 @@ internal static class PinnedApps
             Environment.GetEnvironmentVariable("XDG_CONFIG_HOME"), Environment.MachineName);
         var configured = PinnedConfiguration.Load(path);
         return Resolve(iconDecodeSize, DesktopLocator.DefaultSearchDirs(), DesktopLocator.DefaultDataRoots(), configured, display, secondary);
+    }
+
+    internal static PinnedLauncher? ResolvePin(string desktopId, int iconDecodeSize, string display, bool secondary) =>
+        Resolve(iconDecodeSize, DesktopLocator.DefaultSearchDirs(), DesktopLocator.DefaultDataRoots(), [[desktopId]], display, secondary)
+            .SingleOrDefault();
+
+    internal static string? DesktopIdForWindow(string appId, IReadOnlyList<string> searchDirs)
+    {
+        var id = PinnedMatch.WindowId(appId);
+        var desktopId = id + ".desktop";
+        if (!PinnedConfiguration.IsValidDesktopId(desktopId))
+        {
+            return null;
+        }
+
+        static bool CanLaunch(DesktopEntry entry) => !entry.IsHidden && DesktopEntry.ParseExec(entry.Exec) is not null;
+
+        var exact = DesktopLocator.FindDesktopFile([desktopId, desktopId.ToLowerInvariant()], searchDirs);
+        if (exact is not null)
+        {
+            return DesktopEntry.ParseFile(exact) is { } entry && CanLaunch(entry) ? entry.Id : null;
+        }
+
+        string? match = null;
+        var bestRank = 0;
+        var ids = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var directory in searchDirs)
+        {
+            try
+            {
+                foreach (var path in Directory.EnumerateFiles(directory, "*.desktop"))
+                {
+                    var candidate = Path.GetFileName(path);
+                    if (!PinnedConfiguration.IsValidDesktopId(candidate) || !ids.Add(candidate) ||
+                        DesktopEntry.ParseFile(path) is not { } entry || !CanLaunch(entry))
+                    {
+                        continue;
+                    }
+
+                    var rank = candidate.Equals(desktopId, StringComparison.OrdinalIgnoreCase) ? 3
+                        : PinnedMatch.WindowId(entry.StartupWMClass).Equals(id, StringComparison.OrdinalIgnoreCase) ? 2
+                        : PinnedMatch.Matches(id, PinnedMatch.MatchKeysFor(candidate, null)) ? 1 : 0;
+                    if (rank > bestRank)
+                    {
+                        match = candidate;
+                        bestRank = rank;
+                    }
+                    else if (rank == bestRank && rank > 0)
+                    {
+                        match = null;
+                    }
+                }
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+            {
+                // XDG search directories can be absent or unreadable.
+            }
+        }
+        return match;
     }
 
     internal static PinnedLauncher[] Resolve(int iconDecodeSize, IReadOnlyList<string> searchDirs, IReadOnlyList<string> dataRoots,
@@ -140,6 +197,12 @@ internal static class PinnedApps
 /// <summary>Matching between a launcher and the windows that belong to it.</summary>
 internal static class PinnedMatch
 {
+    internal static string WindowId(string appId)
+    {
+        var id = appId.Trim();
+        return id.EndsWith(".desktop", StringComparison.OrdinalIgnoreCase) ? id[..^8] : id;
+    }
+
     /// <summary>
     /// The app-id keys a launcher's windows may show: the StartupWMClass,
     /// the desktop id sans ".desktop", and the last dot-separated segment
@@ -176,9 +239,12 @@ internal static class PinnedMatch
             return false;
         }
 
+        var id = WindowId(appId);
+        var original = appId.Trim();
         foreach (var key in matchKeys)
         {
-            if (string.Equals(appId.Trim(), key, StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(id, key, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(original, key, StringComparison.OrdinalIgnoreCase))
             {
                 return true;
             }

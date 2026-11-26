@@ -7,6 +7,9 @@ namespace Rosella.Compositor;
 internal sealed class DesktopSession : IDisposable
 {
     private readonly DisplayServer _server;
+    private readonly OutputInfo _outputInfo;
+    private readonly SceneWindowRegistry _windows;
+    private XWaylandBridge? _xWayland;
     internal Scene Scene { get; }
     internal SeatState Seat { get; }
     internal Shell Shell { get; }
@@ -30,12 +33,17 @@ internal sealed class DesktopSession : IDisposable
 
         var taskbarPath = TaskbarGeneration.PublishedPath(AppContext.BaseDirectory);
         PinnedLauncher[] ResolvePinned() => PinnedApps.Resolve(Bar.IconSize * scale, Display, secondary);
+        _windows = new SceneWindowRegistry(Scene, Seat, Display);
         Shell = new Shell(new SystemActions(quit), taskbarPath: taskbarPath)
         {
             SocketName = Display,
-            Windows = new SceneWindowRegistry(Scene, Seat, Display),
+            Windows = _windows,
             Pinned = ResolvePinned(),
             ResolvePinned = ResolvePinned,
+            SavePinRemoval = PinnedConfiguration.Remove,
+            ResolvePin = id => PinnedApps.ResolvePin(id, Bar.IconSize * scale, Display, secondary),
+            SavePinAddition = PinnedConfiguration.Add,
+            SavePinMove = PinnedConfiguration.Move,
         };
         Scene.Shell = Shell;
         if (output.Connector.Modes.Select(mode => (mode.HDisplay, mode.VDisplay)).Distinct().Skip(1).Any())
@@ -59,10 +67,10 @@ internal sealed class DesktopSession : IDisposable
             Console.Error.WriteLine($"rosella: no cursor theme found ('{cursor.Theme}'); using the built-in arrow");
         }
 
-        var info = new OutputInfo(output.Mode.HDisplay, output.Mode.VDisplay, output.Connector.MmWidth, output.Connector.MmHeight,
+        _outputInfo = new OutputInfo(output.Mode.HDisplay, output.Mode.VDisplay, output.Connector.MmWidth, output.Connector.MmHeight,
             (int)Math.Round(output.Mode.RefreshHz * 1000), scale, output.Connector.TypeName, output.Mode.Name,
             $"{output.Connector.TypeName}-{output.Connector.TypeId}");
-        var factory = new CompositorHandlerFactory(Scene, Seat, info, dmaBuf);
+        var factory = new CompositorHandlerFactory(Scene, Seat, _outputInfo, dmaBuf);
         _server = new DisplayServer(socketPath, factory.Globals, factory);
         try
         {
@@ -76,9 +84,14 @@ internal sealed class DesktopSession : IDisposable
         }
     }
 
-    internal void Start()
+    internal void Start(string? xWaylandHelper, DmaBufReader? xWaylandDmaBuf)
     {
         _server.Start();
+        if (xWaylandHelper is not null)
+        {
+            _xWayland = new XWaylandBridge(xWaylandHelper, Scene, Seat, _outputInfo, xWaylandDmaBuf);
+            _windows.XWayland = _xWayland;
+        }
         Console.WriteLine($"rosella: {Display} driving {Output.Connector} at {Output.Mode}@{Output.Mode.RefreshHz:F2} Hz via CRTC {Output.CrtcId}, scale {Scene.Scale}");
     }
 
@@ -99,6 +112,7 @@ internal sealed class DesktopSession : IDisposable
     {
         Scanout.CancelPendingCapture();
         Shell.Settings.Close();
+        _xWayland?.Dispose();
         _server.Dispose();
         Scene.Seat = null;
         Scanout.Dispose();

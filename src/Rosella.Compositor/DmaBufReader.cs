@@ -38,6 +38,8 @@ internal sealed unsafe class DmaBufReader : IDisposable
 
     public byte[] DeviceId { get; private set; } = [];
 
+    internal SafeFileHandle? TimelineDevice { get; private set; }
+
     public static string? FindRenderNode(string cardPath)
     {
         var card = Directory.ResolveLinkTarget($"/sys/class/drm/{Path.GetFileName(cardPath)}/device", true);
@@ -91,6 +93,10 @@ internal sealed unsafe class DmaBufReader : IDisposable
         DeviceId = BitConverter.GetBytes(deviceId);
 
         _deviceFd = File.OpenHandle(renderNode, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite);
+        if (DrmSyncobjNative.SupportsTimelines(_deviceFd))
+        {
+            TimelineDevice = _deviceFd;
+        }
         _gbm = gbm_create_device((int)_deviceFd.DangerousGetHandle());
         if (_gbm == 0)
         {
@@ -133,22 +139,58 @@ internal sealed unsafe class DmaBufReader : IDisposable
             throw EglError("OpenGL ES context creation");
         }
 
-        ProbeFormat(Xrgb8888);
-        ProbeFormat(Argb8888);
+        var queryModifiers = Load<QueryModifiers>("eglQueryDmaBufModifiersEXT");
+        ProbeFormats(Xrgb8888, queryModifiers);
+        ProbeFormats(Argb8888, queryModifiers);
         if (_formats.Count == 0)
         {
             throw new InvalidOperationException("no renderable DMA-BUF formats passed the readback check");
         }
     }
 
-    private void ProbeFormat(uint fourcc)
+    private void ProbeFormats(uint fourcc, QueryModifiers query)
     {
-        const int size = 64;
+        ProbeFormat(fourcc, size: 64);
+        if (query(_display, (int)fourcc, 0, null, null, out var count) == 0 || count <= 0)
+        {
+            return;
+        }
+
+        var modifiers = new ulong[count];
+        var externalOnly = new uint[count];
+        fixed (ulong* layouts = modifiers)
+        fixed (uint* external = externalOnly)
+        {
+            if (query(_display, (int)fourcc, count, layouts, external, out count) == 0)
+            {
+                return;
+            }
+        }
+        for (var index = 0; index < count; index++)
+        {
+            var modifier = modifiers[index];
+            if (externalOnly[index] == 0 && !_formats.Contains(new(fourcc, modifier)))
+            {
+                // Small allocations may fall back to a shorter tile layout.
+                // Validate the renderable layouts apps can use for real windows.
+                ProbeFormat(fourcc, size: 640, modifier);
+            }
+        }
+    }
+
+    private void ProbeFormat(uint fourcc, int size, ulong? requested = null)
+    {
         const uint useRendering = 1 << 2;
-        var bo = gbm_bo_create(_gbm, size, size, fourcc, useRendering);
+        var modifier = requested.GetValueOrDefault();
+        var bo = requested.HasValue
+            ? gbm_bo_create_with_modifiers2(_gbm, (uint)size, (uint)size, fourcc, &modifier, 1, useRendering)
+            : gbm_bo_create(_gbm, (uint)size, (uint)size, fourcc, useRendering);
         if (bo == 0)
         {
-            Console.Error.WriteLine($"rosella: DMA-BUF format 0x{fourcc:X8} could not allocate a GBM buffer");
+            if (!requested.HasValue)
+            {
+                Console.Error.WriteLine($"rosella: DMA-BUF format 0x{fourcc:X8} could not allocate a GBM buffer");
+            }
             return;
         }
 
@@ -162,6 +204,11 @@ internal sealed unsafe class DmaBufReader : IDisposable
 
             using var handle = new SafeFileHandle(fd, ownsHandle: true);
             var plane = new DmaBufPlane(fd, gbm_bo_get_offset(bo, 0), gbm_bo_get_stride(bo), gbm_bo_get_modifier(bo));
+            var format = new DmaBufFormat(fourcc, plane.Modifier);
+            if (_formats.Contains(format))
+            {
+                return;
+            }
             var image = Import(size, size, fourcc, plane);
             if (image == 0)
             {
@@ -174,7 +221,7 @@ internal sealed unsafe class DmaBufReader : IDisposable
                 if (Read(image, size, size, false, null, probe: true) is { } pixels &&
                     pixels[0] is 191 or 192 && pixels[1] is 127 or 128 && pixels[2] is 63 or 64)
                 {
-                    _formats.Add(new DmaBufFormat(fourcc, plane.Modifier));
+                    _formats.Add(format);
                 }
             }
             finally
@@ -377,6 +424,8 @@ internal sealed unsafe class DmaBufReader : IDisposable
     private delegate uint DestroyImage(nint display, nint image);
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate void BindImage(uint target, nint image);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate uint QueryModifiers(nint display, int fourcc, int capacity, ulong* modifiers, uint* externalOnly, out int count);
 
     private const string Gbm = "libgbm.so.1";
     private const string Egl = "libEGL.so.1";
@@ -385,6 +434,8 @@ internal sealed unsafe class DmaBufReader : IDisposable
     [DllImport(Gbm)] private static extern nint gbm_create_device(int fd);
     [DllImport(Gbm)] private static extern void gbm_device_destroy(nint device);
     [DllImport(Gbm)] private static extern nint gbm_bo_create(nint device, uint width, uint height, uint format, uint flags);
+    [DllImport(Gbm)] private static extern nint gbm_bo_create_with_modifiers2(nint device, uint width, uint height, uint format,
+        ulong* modifiers, uint count, uint flags);
     [DllImport(Gbm)] private static extern void gbm_bo_destroy(nint bo);
     [DllImport(Gbm)] private static extern int gbm_bo_get_plane_count(nint bo);
     [DllImport(Gbm)] private static extern int gbm_bo_get_fd(nint bo);

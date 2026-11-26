@@ -166,7 +166,10 @@ internal static class Bar
             Chrome.FillRoundedRect(pixels, clipW, clipH, stride, layout.Clock, 10, ClockHoverColour, scale);
         }
 
-        var clockY = layout.Clock.Y + ((layout.Clock.H - ShellText.LineHeight(ShellText.BarEm)) / 2);
+        // The line box reserves room for descenders. Lower the clock's baseline
+        // to centre the month and digits while keeping it steady as the text changes.
+        const int clockBaselineOffset = 2;
+        var clockY = layout.Clock.Y + ((layout.Clock.H - ShellText.LineHeight(ShellText.BarEm)) / 2) + clockBaselineOffset;
         ShellText.DrawText(pixels, clipW, clipH, stride, clock, (layout.Clock.X + Pad) * scale, clockY * scale, TextColour, ShellText.BarEm, scale);
 
         for (var i = 0; i < layout.Pinned.Length; i++)

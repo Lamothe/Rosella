@@ -14,6 +14,85 @@ namespace Rosella.Compositor.Tests;
 /// </summary>
 public class InputTests
 {
+    [Fact]
+    public void PointerLock_UsesUnclippedRelativeMotionAndReleasesWhenFocusLeaves()
+    {
+        using var harness = new Harness();
+        harness.BindXdg();
+        harness.MapWindow(8, 11, 12);
+        harness.MapWindow(30, 31, 32);
+        harness.ClickAt(100, 120);
+        var client = harness.Client;
+        var focus = harness.Seat.KeyboardFocus;
+        Assert.Equal(30u, focus?.Id);
+        client.SendRequest(20, "wl_seat", "get_pointer", WireArgument.NewId(22));
+        client.RegisterObject(22, "wl_pointer");
+        client.SendRequest(2, "wl_registry", "bind", WireArgument.UInt32(11),
+            WireArgument.String(RelativePointerHandler.Interface), WireArgument.UInt32(1), WireArgument.NewId(23));
+        client.SendRequest(23, RelativePointerHandler.Interface, "get_relative_pointer", WireArgument.NewId(24), WireArgument.Object(22));
+        client.RegisterObject(24, "zwp_relative_pointer_v1");
+        client.SendRequest(2, "wl_registry", "bind", WireArgument.UInt32(12),
+            WireArgument.String(PointerConstraintsHandler.Interface), WireArgument.UInt32(1), WireArgument.NewId(25));
+        client.SendRequest(25, PointerConstraintsHandler.Interface, "lock_pointer", WireArgument.NewId(26),
+            WireArgument.Object(30), WireArgument.Object(22), WireArgument.Object(0), WireArgument.UInt32(1));
+        client.RegisterObject(26, "zwp_locked_pointer_v1");
+        client.ReadUntil(26, "locked");
+
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventRelative, InputConstants.RelativeX, 3000));
+        var motion = client.ReadUntil(24, "relative_motion");
+        Assert.Equal(3000, motion.Arguments[4].AsFixed().ToDouble());
+        Assert.Equal((100, 120), harness.Router.Cursor);
+        Assert.True(harness.Seat.CurrentCursor().Hidden);
+        var events = harness.CollectUntilRoundTrip();
+        Assert.Contains((22u, "frame"), events);
+        Assert.DoesNotContain((22u, "motion"), events);
+
+        harness.Seat.SetKeyboardFocus(harness.Scene.Surfaces.Single(surface => surface.Id == 8), []);
+        client.ReadUntil(26, "unlocked");
+        Assert.False(harness.Seat.CurrentCursor().Hidden);
+        harness.Seat.SetKeyboardFocus(focus, []);
+        Assert.DoesNotContain((26u, "locked"), harness.CollectUntilRoundTrip());
+
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventRelative, InputConstants.RelativeX, 40));
+        client.ReadUntil(22, "motion");
+        Assert.Equal((140, 120), harness.Router.Cursor);
+    }
+
+    [Fact]
+    public void ConfinedPointer_ClipsToRegionUntilANewRegionIsCommitted()
+    {
+        using var harness = new Harness();
+        harness.BindXdg();
+        harness.MapWindow(8, 11, 12);
+        harness.ClickAt(100, 120);
+        var client = harness.Client;
+        client.SendRequest(20, "wl_seat", "get_pointer", WireArgument.NewId(22));
+        client.SendRequest(4, "wl_compositor", "create_region", WireArgument.NewId(23));
+        client.SendRequest(23, "wl_region", "add", WireArgument.Int32(0), WireArgument.Int32(0),
+            WireArgument.Int32(10), WireArgument.Int32(32));
+        client.SendRequest(2, "wl_registry", "bind", WireArgument.UInt32(12),
+            WireArgument.String(PointerConstraintsHandler.Interface), WireArgument.UInt32(1), WireArgument.NewId(25));
+        client.SendRequest(25, PointerConstraintsHandler.Interface, "confine_pointer", WireArgument.NewId(26),
+            WireArgument.Object(8), WireArgument.Object(22), WireArgument.Object(23), WireArgument.UInt32(2));
+        client.RegisterObject(22, "wl_pointer");
+        client.RegisterObject(26, "zwp_confined_pointer_v1");
+        client.ReadUntil(26, "confined");
+
+        void Move() => harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventRelative, InputConstants.RelativeX, 800));
+        var limit = harness.Scene.OutputSize.Width * 10 / 32 - 1;
+        Move();
+        Assert.Equal((limit, 120), harness.Router.Cursor);
+        client.SendRequest(26, "zwp_confined_pointer_v1", "set_region", WireArgument.Object(0));
+        harness.RoundTrip();
+        Move();
+        Assert.Equal((limit, 120), harness.Router.Cursor);
+
+        client.SendRequest(8, "wl_surface", "commit");
+        harness.RoundTrip();
+        Move();
+        Assert.Equal((limit + 800, 120), harness.Router.Cursor);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -856,7 +935,8 @@ public class InputTests
             Seat = new SeatState { HasKeyboardDevice = true, HasPointerDevice = true };
             Router = new InputRouter(Scene, Seat, () => Quit = true, shell, switchVt: vt => VtSwitches.Add(vt));
             var socketPath = Path.Combine(Path.GetTempPath(), $"rosella-test-{Guid.NewGuid():N}");
-            _server = new DisplayServer(socketPath, handlerFactory: new CompositorHandlerFactory(Scene, Seat));
+            var factory = new CompositorHandlerFactory(Scene, Seat);
+            _server = new DisplayServer(socketPath, factory.Globals, factory);
             _server.Start();
             Client = new TestClient(_server.SocketPath);
             CompositorSessionTests.Handshake(Client);

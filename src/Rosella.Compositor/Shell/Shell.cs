@@ -8,8 +8,11 @@ internal sealed class Shell
     /// <summary>Taskbar height in logical pixels.</summary>
     internal const int BarHeight = 64;
     private const int RevealEdge = 2;
+    private static readonly object PinnedGate = new();
 
     private volatile bool _dockRevealed;
+    private volatile PinnedLauncher[] _pinned = [];
+    private volatile WeakReference<SurfaceHandler>[] _taskOrder = [];
     private readonly ISystemActions _systemActions;
     private readonly IVolumeControl _volume;
     private readonly string? _taskbarPath;
@@ -17,9 +20,10 @@ internal sealed class Shell
     private volatile TaskbarGeneration _taskbar;
     private volatile string? _lastReload;
 
-    internal bool DockVisible => _dockRevealed || Settings.IsOpen || DockMenu is not null;
+    internal bool DockVisible => _dockRevealed || Settings.IsOpen || DockMenu is not null || TaskbarPress is not null;
 
     internal volatile DockMenu? DockMenu;
+    internal volatile DockPress? TaskbarPress;
 
     /// <summary>Reveal at the bottom edge, with room to move up into the dock.</summary>
     internal bool UpdateDockReveal(int pointerY, int outputHeight)
@@ -96,6 +100,14 @@ internal sealed class Shell
     // takes one generation for layout and drawing without blocking input.
     internal string ReloadTaskbar()
     {
+        lock (PinnedGate)
+        {
+            return ReloadTaskbarCore();
+        }
+    }
+
+    private string ReloadTaskbarCore()
+    {
         if (_taskbarPath is null)
         {
             throw new InvalidOperationException("Taskbar reload is unavailable in this build");
@@ -125,7 +137,7 @@ internal sealed class Shell
         next.Settings.Resolution = previous.Settings.Resolution;
         next.Settings.Modules = _moduleControls;
         DockMenu = null;
-        PressedPin = -1;
+        TaskbarPress = null;
         Pinned = pinned;
         _taskbar = next;
         _lastReload = next.BuildId == previous.BuildId ? "Same build reloaded" : "New build loaded";
@@ -174,18 +186,115 @@ internal sealed class Shell
     internal StartupApps? StartupApps { get; set; }
 
     internal Func<PinnedLauncher[]>? ResolvePinned { get; init; }
+    internal Func<string, string?> FindPinDesktopId { get; init; } =
+        appId => PinnedApps.DesktopIdForWindow(appId, DesktopLocator.DefaultSearchDirs());
+    internal Func<string, PinnedLauncher?>? ResolvePin { get; init; }
+    internal Action<string>? SavePinRemoval { get; init; }
+    internal Action<string>? SavePinAddition { get; init; }
+    internal Action<string, string, bool>? SavePinMove { get; init; }
 
     /// <summary>The pinned taskbar launchers resolved at startup or on reload.</summary>
-    internal PinnedLauncher[] Pinned { get; set; } = [];
+    internal PinnedLauncher[] Pinned { get => _pinned; set => _pinned = value; }
+
+    internal void RemovePin(string desktopId, Shell? other)
+    {
+        lock (PinnedGate)
+        {
+            SavePinRemoval?.Invoke(desktopId);
+            ForgetPin(desktopId);
+            other?.ForgetPin(desktopId);
+        }
+    }
+
+    private void ForgetPin(string desktopId)
+    {
+        Pinned = Pinned.Where(pin => pin.DesktopId != desktopId).ToArray();
+    }
+
+    internal void AddPin(string desktopId, Shell? other)
+    {
+        lock (PinnedGate)
+        {
+            if (Pinned.Any(pin => pin.DesktopId == desktopId))
+            {
+                return;
+            }
+            var launcher = ResolvePin?.Invoke(desktopId)
+                ?? throw new InvalidOperationException("the app's launcher is no longer available");
+            var remote = other?.ResolvePin?.Invoke(desktopId);
+            SavePinAddition?.Invoke(desktopId);
+            Pinned = [.. Pinned, launcher];
+            if (other is not null && remote is not null && !other.Pinned.Any(pin => pin.DesktopId == desktopId))
+            {
+                other.Pinned = [.. other.Pinned, remote];
+            }
+        }
+    }
+
+    internal void MovePin(string desktopId, string anchorId, bool after, Shell? other)
+    {
+        lock (PinnedGate)
+        {
+            if (MoveRelative(Pinned, pin => pin.DesktopId == desktopId, pin => pin.DesktopId == anchorId, after) is not { } order)
+            {
+                return;
+            }
+            SavePinMove?.Invoke(desktopId, anchorId, after);
+            Pinned = order;
+            if (other is not null &&
+                MoveRelative(other.Pinned, pin => pin.DesktopId == desktopId, pin => pin.DesktopId == anchorId, after) is { } remote)
+            {
+                other.Pinned = remote;
+            }
+        }
+    }
+
+    internal IReadOnlyList<BarTask> OrderTasks(IReadOnlyList<BarTask> tasks)
+    {
+        var order = _taskOrder;
+        if (order.Length == 0 || tasks.Count < 2)
+        {
+            return tasks;
+        }
+        return tasks.OrderBy(task =>
+        {
+            var position = Array.FindIndex(order, reference => reference.TryGetTarget(out var surface) && surface == task.Surface);
+            return position < 0 ? int.MaxValue : position;
+        }).ToArray();
+    }
+
+    internal void MoveTask(IReadOnlyList<BarTask> tasks, SurfaceHandler window, SurfaceHandler anchor, bool after)
+    {
+        if (MoveRelative(OrderTasks(tasks).ToArray(), task => task.Surface == window, task => task.Surface == anchor, after) is { } order)
+        {
+            _taskOrder = order.Select(task => new WeakReference<SurfaceHandler>(task.Surface)).ToArray();
+        }
+    }
+
+    private static T[]? MoveRelative<T>(T[] items, Predicate<T> source, Predicate<T> anchor, bool after)
+    {
+        var from = Array.FindIndex(items, source);
+        var to = Array.FindIndex(items, anchor);
+        if (from < 0 || to < 0 || from == to)
+        {
+            return null;
+        }
+        var insertion = to - (from < to ? 1 : 0) + (after ? 1 : 0);
+        if (insertion == from)
+        {
+            return null;
+        }
+        var result = items.ToList();
+        result.RemoveAt(from);
+        result.Insert(insertion, items[from]);
+        return result.ToArray();
+    }
 
     /// <summary>The socket name launched apps should connect to.</summary>
     internal string? SocketName { get; set; }
 
     /// <summary>The taskbar's window registry (focus-or-launch); wired by the entry point.</summary>
     internal IWindowRegistry? Windows { get; set; }
-
-    /// <summary>The pinned button held down (for the press visual), or -1.</summary>
-    internal int PressedPin { get; set; } = -1;
 
     /// <summary>
     /// The taskbar layout the scanout drew last frame: the input thread
@@ -197,7 +306,7 @@ internal sealed class Shell
     internal BarLayout ComputeBarLayout(int width, int height, IReadOnlyList<BarTask> tasks)
     {
         var module = _taskbar.Module;
-        return module.ComputeLayout(width, height, module.ClockString(), tasks, Pinned);
+        return module.ComputeLayout(width, height, module.ClockString(), OrderTasks(tasks), Pinned);
     }
 
     /// <summary>
@@ -211,7 +320,12 @@ internal sealed class Shell
     {
         if (dockVisible && DockGlass.HasDamage)
         {
-            taskbar.Module.Draw(pixels, width, height, stride, scale, layout, clock, focused, pointer, PressedPin, DockGlass);
+            var press = TaskbarPress;
+            taskbar.Module.Draw(pixels, width, height, stride, scale, layout, clock, focused, pointer, press?.PinIndex(layout) ?? -1, DockGlass);
+            if (press is { Dragging: true } && pointer is { } point && press.DropAt(layout, point) is { } drop)
+            {
+                Chrome.FillRoundedRect(pixels, stride / 4, pixels.Length / stride, stride, drop.Marker, 1, Chrome.AccentBlue, scale);
+            }
         }
 
         if (settingsPanel is { } panel && SettingsGlass.HasDamage)
@@ -234,7 +348,8 @@ internal sealed class Shell
 }
 
 /// <summary>The actions available for an app icon, anchored above the dock.</summary>
-internal sealed record DockMenu(Rect Bounds, SurfaceHandler[] CloseWindows, SurfaceHandler? MoveWindow, string? StartupId, bool StartsAtLogin)
+internal sealed record DockMenu(Rect Bounds, SurfaceHandler[] CloseWindows, SurfaceHandler? MoveWindow, string? StartupId,
+    bool StartsAtLogin, string? RemovePinId, string? AddPinId)
 {
     private const int RowHeight = 36;
     internal bool ReloadTaskbar { get; init; }
@@ -243,13 +358,15 @@ internal sealed record DockMenu(Rect Bounds, SurfaceHandler[] CloseWindows, Surf
         Create(clock, outputWidth, []) with { ReloadTaskbar = true };
 
     internal static DockMenu Create(Rect anchor, int outputWidth, SurfaceHandler[] windows, SurfaceHandler? moveWindow = null,
-        string? startupId = null, bool startsAtLogin = false)
+        string? startupId = null, bool startsAtLogin = false, string? removePinId = null, string? addPinId = null)
     {
-        var width = Math.Min(startupId is not null ? 200 : moveWindow is not null ? 180 : 144, outputWidth);
-        var rows = (moveWindow is null ? 0 : 1) + (windows.Length == 0 ? 0 : 1) + (startupId is null ? 0 : 1);
+        var width = Math.Min(startupId is not null ? 200 : moveWindow is not null || removePinId is not null || addPinId is not null ? 180 : 144, outputWidth);
+        var rows = (moveWindow is null ? 0 : 1) + (windows.Length == 0 ? 0 : 1) +
+            (startupId is null ? 0 : 1) + (removePinId is null && addPinId is null ? 0 : 1);
         var height = RowHeight * Math.Max(1, rows);
         var x = Math.Clamp(anchor.X + (anchor.W - width) / 2, 0, outputWidth - width);
-        return new DockMenu(new Rect(x, Math.Max(0, anchor.Y - height - 14), width, height), windows, moveWindow, startupId, startsAtLogin);
+        return new DockMenu(new Rect(x, Math.Max(0, anchor.Y - height - 14), width, height), windows, moveWindow, startupId,
+            startsAtLogin, removePinId, addPinId);
     }
 
     internal bool HitMove(int x, int y) => MoveWindow is not null && Row(0).Contains(x, y);
@@ -259,6 +376,15 @@ internal sealed record DockMenu(Rect Bounds, SurfaceHandler[] CloseWindows, Surf
     private int StartupRow => (MoveWindow is null ? 0 : 1) + (CloseWindows.Length == 0 ? 0 : 1);
 
     internal bool HitStartup(int x, int y) => StartupId is not null && Row(StartupRow).Contains(x, y);
+
+    private Rect PinRow => Row(StartupRow + (StartupId is null ? 0 : 1));
+
+    internal bool HitRemovePin(int x, int y) => RemovePinId is not null && PinRow.Contains(x, y);
+
+    internal bool HitAddPin(int x, int y) => AddPinId is not null && PinRow.Contains(x, y);
+
+    internal Rect HoverBounds((int X, int Y) pointer) => Bounds.Contains(pointer.X, pointer.Y)
+        ? Row((pointer.Y - Bounds.Y) / RowHeight) : default;
 
     private Rect Row(int index) => new(Bounds.X, Bounds.Y + index * RowHeight, Bounds.W, RowHeight);
 
@@ -291,6 +417,14 @@ internal sealed record DockMenu(Rect Bounds, SurfaceHandler[] CloseWindows, Surf
                 PowerIcons.Draw(pixels, clipW, clipH, stride, PowerGlyph.Check,
                     row.X + row.W - 16, row.Y + row.H / 2, 0xFF7BB7FF, scale, 16);
             }
+        }
+        if (RemovePinId is not null)
+        {
+            DrawRow(pixels, stride, scale, PinRow, "Remove from Taskbar", pointer);
+        }
+        else if (AddPinId is not null)
+        {
+            DrawRow(pixels, stride, scale, PinRow, "Pin to taskbar", pointer);
         }
     }
 

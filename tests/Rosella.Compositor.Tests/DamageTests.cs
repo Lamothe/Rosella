@@ -421,6 +421,56 @@ public class DamageTests
         Assert.DoesNotContain(DamageRect.For(outputWidth, outputHeight), damage[..count].ToArray());
     }
 
+    [Theory]
+    [InlineData(1, false)]
+    [InlineData(2, false)]
+    [InlineData(1, true)]
+    [InlineData(2, true)]
+    public void Scene_DockMenuHoverMatchesFullRender(int scale, bool clockMenu)
+    {
+        const int width = 640, height = 400;
+        var scene = new Scene { OutputSize = (width, height), Scale = scale };
+        var anchor = new Rect(300, height - Shell.BarHeight, 42, 42);
+        var menu = clockMenu ? DockMenu.CreateTaskbarMenu(anchor, width)
+            : DockMenu.Create(anchor, width, [], startupId: "app.desktop", startsAtLogin: true, removePinId: "app.desktop");
+        scene.Shell = new Shell { DockMenu = menu };
+        var outside = (X: 10, Y: 10);
+        scene.Cursor = outside;
+
+        var outputWidth = width * scale;
+        var outputHeight = height * scale;
+        var stride = outputWidth * 4;
+        var displayed = Frame(scene, outputWidth, outputHeight);
+        var composite = (byte[])displayed.Clone();
+        Span<DamageRect> damage = stackalloc DamageRect[DamageTracker.Capacity];
+        scene.TakeDamage(outputWidth, outputHeight, damage);
+
+        // Enter at the right edge, move to the last row, then leave the menu.
+        // The cursor footprint alone leaves most of each row untouched.
+        var x = menu.Bounds.X + menu.Bounds.W - 2;
+        var area = menu.Bounds.ToDamage(scale);
+        var positions = new[] { (x, menu.Bounds.Y + 8), (x, menu.Bounds.Y + menu.Bounds.H - 8), outside };
+        foreach (var position in positions)
+        {
+            scene.Cursor = position;
+            var count = scene.TakeDamage(outputWidth, outputHeight, damage);
+            for (var i = 0; i < count; i++)
+            {
+                Assert.NotEqual(DamageRect.For(outputWidth, outputHeight), damage[i]);
+                scene.RenderRegion(composite, outputWidth, outputHeight, stride, frame: 1, damage[i]);
+                Blitter.CopyToScanout(displayed, outputWidth, outputHeight, stride, composite, damage[i], allowStreamingStores: false);
+            }
+
+            var expected = Frame(scene, outputWidth, outputHeight);
+            for (var y = area.Y; y < area.Y + area.H; y++)
+            {
+                var offset = y * stride + area.X * 4;
+                Assert.True(displayed.AsSpan(offset, area.W * 4).SequenceEqual(expected.AsSpan(offset, area.W * 4)),
+                    $"Dock menu differs on scanline {y} with the cursor at {position}");
+            }
+        }
+    }
+
     [Fact]
     public void Scene_DamageRenderMatchesFullRender()
     {
