@@ -11,6 +11,7 @@ internal sealed class Scanout : IDisposable
 {
     private const uint BitsPerPixel = 32;
     private const uint Depth = 24;
+    private const int FlipTimeoutMilliseconds = 2_000;
 
     private readonly DrmDevice _device;
     private readonly DrmOutput _output;
@@ -403,6 +404,7 @@ internal sealed class Scanout : IDisposable
         var front = 0;
         long frame = 1;
         var blankState = new BlankState();
+        var recoveringFlip = false;
         Span<DamageRect> damage = stackalloc DamageRect[DamageTracker.Capacity];
         Span<DamageRect> repaint = stackalloc DamageRect[DamageTracker.Capacity];
 
@@ -442,7 +444,12 @@ internal sealed class Scanout : IDisposable
                         RetryBraviaScanout(exception, token);
                         continue;
                     }
-                    Console.Error.WriteLine($"rosella: re-modeset after VT switch failed: {exception.Message}; retrying");
+                    if (!recoveringFlip)
+                    {
+                        Console.Error.WriteLine($"rosella: re-modeset after VT switch failed: {exception.Message}; retrying");
+                    }
+                    token.WaitHandle.WaitOne(PowerRetryDelay);
+                    continue;
                 }
             }
             // Keep this output in step with its idle policy. The render loop
@@ -534,12 +541,29 @@ internal sealed class Scanout : IDisposable
                 WaitForFlip(frame, flip, wakeDeadline?.Token ?? token);
                 _restoringBravia = false;
                 _braviaRestoreLogged = false;
+                recoveringFlip = false;
             }
             catch (Exception exception) when (_restoringBravia && !token.IsCancellationRequested &&
                 exception is DrmException or TimeoutException or OperationCanceledException)
             {
                 frame++;
                 RetryBraviaScanout(exception, token);
+                continue;
+            }
+            catch (TimeoutException) when (!token.IsCancellationRequested)
+            {
+                if (!recoveringFlip)
+                {
+                    Console.Error.WriteLine($"rosella: flip timed out on CRTC {_output.CrtcId}; restoring scanout");
+                }
+                recoveringFlip = true;
+                // The completion event may have been lost after scanout
+                // switched buffers. Re-establish the known front buffer
+                // before writing the other buffer again.
+                _remodeset = true;
+                _age.MarkFull();
+                _scene.MarkDirty();
+                frame++;
                 continue;
             }
             var app = _scene.FocusedWindow?.MainSurface.XdgRole?.RootToplevelSurface?.XdgRole?.Toplevel?.AppId;
@@ -1132,7 +1156,7 @@ internal sealed class Scanout : IDisposable
         {
             try
             {
-                completion.WaitAsync(TimeSpan.FromSeconds(2), token).GetAwaiter().GetResult();
+                completion.WaitAsync(TimeSpan.FromMilliseconds(FlipTimeoutMilliseconds), token).GetAwaiter().GetResult();
             }
             finally
             {
@@ -1141,9 +1165,10 @@ internal sealed class Scanout : IDisposable
             return;
         }
 
+        var deadline = Environment.TickCount64 + FlipTimeoutMilliseconds;
         while (true)
         {
-            foreach (var flipEvent in _device.ReadEvents(token))
+            foreach (var flipEvent in _device.ReadEvents(token, deadline))
             {
                 if (IsTargetFlip(flipEvent, userData))
                 {

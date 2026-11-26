@@ -9,7 +9,7 @@ namespace Rosella.Compositor.Tests;
 /// The Windows 11 style shell over a real socket: windows land above the
 /// taskbar, the taskbar's pinned and task buttons are clickable,
 /// binding keys never leak to clients, and windows wear no chrome of their
-/// own. The Super key by itself does nothing.
+/// own. Super opens the desktop dashboard.
 /// </summary>
 public class ShellTests
 {
@@ -506,18 +506,25 @@ public class ShellTests
         Assert.Null(harness.Seat.KeyboardFocus);
     }
 
-    // --- The Super key remains unbound ----------------------------------
+    // --- Super dashboard ------------------------------------------------
 
     [Fact]
-    public void SuperAlone_DoesNothing()
+    public void SuperAlone_TogglesTheDashboardAndDock()
     {
         using var harness = new Harness();
 
         harness.Press(InputConstants.KeyLeftMeta);
+        Assert.False(harness.Shell.Dashboard.IsOpen);
         harness.Release(InputConstants.KeyLeftMeta);
+        Assert.True(harness.Shell.Dashboard.IsOpen);
+        Assert.True(harness.Shell.DockVisible);
+        Assert.True(harness.Shell.Settings.IsOpen);
+        harness.RenderFrame();
+        Assert.NotNull(harness.Shell.LastBarLayout);
         harness.Press(InputConstants.KeyRightMeta);
         harness.Release(InputConstants.KeyRightMeta);
 
+        Assert.False(harness.Shell.Dashboard.IsOpen);
         Assert.False(harness.Shell.Settings.IsOpen);
         Assert.False(harness.Quit);
     }
@@ -532,8 +539,83 @@ public class ShellTests
         harness.Release(InputConstants.KeyA);
         harness.Release(InputConstants.KeyLeftMeta);
 
+        Assert.False(harness.Shell.Dashboard.IsOpen);
         Assert.False(harness.Shell.Settings.IsOpen);
         Assert.False(harness.Quit);
+    }
+
+    [Fact]
+    public void Dashboard_ScrollsPinsAndLaunchesInstalledApps()
+    {
+        var apps = Enumerable.Range(0, 100).Select(index => new DashboardApp($"app-{index:00}.desktop", $"App {index:00}", "")).ToArray();
+        var added = new List<string>();
+        using var harness = new Harness(dashboard: new Dashboard(() => apps), savePinAddition: added.Add,
+            resolvePin: id => new PinnedLauncher(id, id, [id[..^8]], [id], null, null));
+        var windows = new FakeWindowRegistry();
+        harness.Shell.Windows = windows;
+        harness.Press(InputConstants.KeyLeftMeta);
+        harness.Release(InputConstants.KeyLeftMeta);
+        var layout = DashboardLayout.Create(1920, 1080);
+        var tile = layout.Tile(0);
+        var x = tile.X + 40;
+        var y = tile.Y + 22;
+        CompositorSessionTests.WaitFor(() => harness.Shell.Dashboard.AppAt(layout, x, y), app => app == apps[0]);
+        var second = layout.Tile(1);
+        Assert.Equal(apps[1], harness.Shell.Dashboard.AppAt(layout, second.X + 4, second.Y + 4));
+
+        harness.Router.PlaceCursor(x, y);
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventRelative, InputConstants.RelativeWheel, -1));
+        var app = Assert.IsType<DashboardApp>(harness.Shell.Dashboard.AppAt(layout, x, y));
+        Assert.NotEqual(apps[0], app);
+        harness.Press(InputConstants.ButtonRight);
+        harness.Release(InputConstants.ButtonRight);
+        Assert.True(harness.Shell.Dashboard.MenuOpen);
+        harness.ClickAt(x + 7, y + 7);
+        Assert.Equal([app.Id], added);
+        Assert.Equal(app.Id, Assert.Single(harness.Shell.Pinned).DesktopId);
+        Assert.Empty(windows.Launched);
+
+        harness.ClickAt(x, y);
+        Assert.Equal([app.Id], Assert.Single(windows.Launched));
+        Assert.False(harness.Shell.Dashboard.IsOpen);
+    }
+
+    [Fact]
+    public void Dashboard_SystemSettingsUseTheirEmbeddedGeometry()
+    {
+        using var harness = new Harness();
+        harness.Press(InputConstants.KeyLeftMeta);
+        harness.Release(InputConstants.KeyLeftMeta);
+        var panel = harness.Shell.Dashboard.SettingsPanel(DashboardLayout.Create(1920, 1080), harness.Shell.Settings);
+        var restart = SettingsPanel.ActionRect(panel, 1);
+        harness.ClickAt(restart.X + restart.W / 2, restart.Y + restart.H / 2);
+
+        Assert.Equal(["Restart"], harness.Actions.Calls);
+        Assert.False(harness.Shell.Dashboard.IsOpen);
+    }
+
+    [Fact]
+    public void Dashboard_OnShortDisplaysScrollsSettingsWithoutCoveringTheDock()
+    {
+        using var harness = new Harness();
+        harness.Scene.OutputSize = (640, 360);
+        harness.Press(InputConstants.KeyLeftMeta);
+        harness.Release(InputConstants.KeyLeftMeta);
+        var layout = DashboardLayout.Create(640, 360);
+        var tab = layout.Tab(DashboardPage.Settings);
+        harness.ClickAt(tab.X + 8, tab.Y + 8);
+        var viewport = Dashboard.SettingsViewport(layout);
+        var before = harness.Shell.Dashboard.SettingsPanel(layout, harness.Shell.Settings);
+        Assert.True(layout.Compact && before.H > viewport.H);
+        harness.Router.PlaceCursor(before.X + 20, viewport.Y + 20);
+        harness.Router.ProcessEvent(new InputEvent(0, 0, InputConstants.EventRelative, InputConstants.RelativeWheel, -8));
+        var after = harness.Shell.Dashboard.SettingsPanel(layout, harness.Shell.Settings);
+        var restart = SettingsPanel.ActionRect(after, 1);
+        Assert.True(viewport.Contains(restart.X + restart.W / 2, restart.Y + restart.H / 2));
+        harness.RenderFrame();
+        Assert.True(harness.Shell.LastBarLayout!.Bounds.Y >= viewport.Y + viewport.H);
+        harness.ClickAt(restart.X + restart.W / 2, restart.Y + restart.H / 2);
+        Assert.Equal(["Restart"], harness.Actions.Calls);
     }
 
     // --- Clock-anchored settings panel ----------------------------------
@@ -593,7 +675,7 @@ public class ShellTests
             harness.RenderFrame();
             var clock = harness.Shell.LastBarLayout!.Clock;
             void Click(Rect rect) => harness.ClickAt(rect.X + rect.W / 2, rect.Y + rect.H / 2);
-            Rect Panel() => harness.Shell.Settings.PanelRect(clock, 1920, 1080);
+            Rect Panel() => harness.Shell.Dashboard.SettingsPanel(DashboardLayout.Create(1920, 1080), harness.Shell.Settings);
 
             Click(clock);
             Click(SettingsPanel.ModulesRow(Panel(), showResolution: false));
@@ -654,15 +736,18 @@ public class ShellTests
     }
 
     [Fact]
-    public void ClockButton_TogglesSettings()
+    public void ClockButton_TogglesDashboardWithSettings()
     {
         using var harness = new Harness();
         var layout = Bar.ComputeLayout(1920, 1080, Bar.ClockString(), []);
 
         harness.ClickAt(layout.Clock.X + (layout.Clock.W / 2), layout.Clock.Y + (layout.Clock.H / 2));
+        Assert.True(harness.Shell.Dashboard.IsOpen);
+        Assert.Equal(DashboardPage.Settings, harness.Shell.Dashboard.Page);
         Assert.True(harness.Shell.Settings.IsOpen);
 
         harness.ClickAt(layout.Clock.X + (layout.Clock.W / 2), layout.Clock.Y + (layout.Clock.H / 2));
+        Assert.False(harness.Shell.Dashboard.IsOpen);
         Assert.False(harness.Shell.Settings.IsOpen);
 
     }
@@ -674,7 +759,7 @@ public class ShellTests
         var layout = Bar.ComputeLayout(1920, 1080, Bar.ClockString(), []);
         harness.ClickAt(layout.Clock.X + (layout.Clock.W / 2), layout.Clock.Y + (layout.Clock.H / 2));
 
-        var panel = harness.Shell.Settings.PanelRect(layout.Clock, 1920, 1080);
+        var panel = harness.Shell.Dashboard.SettingsPanel(DashboardLayout.Create(1920, 1080), harness.Shell.Settings);
         var row = SettingsPanel.ActionRect(panel, 1);
         harness.ClickAt(row.X + (row.W / 2), row.Y + (row.H / 2));
 
@@ -700,7 +785,7 @@ public class ShellTests
         using var harness = new Harness();
         var layout = Bar.ComputeLayout(1920, 1080, Bar.ClockString(), []);
         harness.ClickAt(layout.Clock.X + (layout.Clock.W / 2), layout.Clock.Y + (layout.Clock.H / 2));
-        var panel = harness.Shell.Settings.PanelRect(layout.Clock, 1920, 1080);
+        var panel = harness.Shell.Dashboard.SettingsPanel(DashboardLayout.Create(1920, 1080), harness.Shell.Settings);
         var track = Assert.IsType<SettingsPanel>(harness.Shell.Settings).MicrophoneTrackRect(panel);
 
         harness.Router.PlaceCursor(track.X + (track.W / 2), track.Y);
@@ -857,7 +942,7 @@ public class ShellTests
         public Harness(SeatState? seat = null, string? taskbarPath = null, Func<PinnedLauncher[]>? resolvePinned = null,
             Action<string>? savePinRemoval = null, Func<string, PinnedLauncher?>? resolvePin = null,
             Func<string, string?>? findPinDesktopId = null, Action<string>? savePinAddition = null,
-            Action<string, string, bool>? savePinMove = null)
+            Action<string, string, bool>? savePinMove = null, Dashboard? dashboard = null)
         {
             Scene = new Scene();
             Seat = seat ?? new SeatState { HasKeyboardDevice = true, HasPointerDevice = true };
@@ -871,6 +956,7 @@ public class ShellTests
                 FindPinDesktopId = findPinDesktopId ?? (_ => null),
                 SavePinAddition = savePinAddition,
                 SavePinMove = savePinMove,
+                Dashboard = dashboard ?? new Dashboard(),
             };
             Shell.Windows = new SceneWindowRegistry(Scene, Seat, "wayland-test");
             Scene.Shell = Shell;

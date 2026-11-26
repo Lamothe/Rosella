@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.IO.Pipes;
 using System.Runtime.InteropServices;
 using System.Text;
 
@@ -10,6 +11,22 @@ namespace Rosella.Drm.Tests;
 /// </summary>
 public class DrmEventParsingTests
 {
+    [Fact]
+    public void ReadEvents_TimesOutWhenNoEventArrives()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return;
+        }
+
+        // Exercise the polling path on an idle fd with no display hardware.
+        using var writer = new AnonymousPipeServerStream(PipeDirection.Out);
+        using var device = DrmDevice.Open($"/proc/self/fd/{writer.GetClientHandleAsString()}");
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+
+        Assert.Throws<TimeoutException>(() => device.ReadEvents(cancellation.Token, Environment.TickCount64 + 30));
+    }
+
     private static byte[] EventBytes(uint type, uint length, ulong userData = 0, uint sequence = 0)
     {
         var buffer = new byte[32];

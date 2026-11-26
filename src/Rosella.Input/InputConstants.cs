@@ -50,6 +50,8 @@ public static class InputConstants
     public const ushort KeyRightCtrl = 97;
     public const ushort KeyRightAlt = 100;
     public const ushort KeyUp = 103;
+    public const ushort KeyLeft = 105;
+    public const ushort KeyRight = 106;
     public const ushort KeyDown = 108;
     public const ushort KeyMute = 113;
     public const ushort KeyVolumeDown = 114;

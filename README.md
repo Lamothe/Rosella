@@ -118,23 +118,23 @@ If the .NET 10 watcher requires a restart for an edit, Rosella keeps running
 and the watcher pauses live updates until the next launch. Build and reload
 messages are in `/tmp/rosella.log`.
 
-### Reload the taskbar in an installed session
+### Reload desktop modules in an installed session
 
-Open the clock’s Quick Settings and choose **Modules → Reload** beside
-**Taskbar & Quick Settings**. The submenu shows the active build and whether
-the reload loaded a new build, reloaded the same build, or failed. Open
-applications and keyboard focus stay in place. The clock’s right-click
+Open the dashboard’s **Settings → Modules**, select a module with the arrows,
+and choose **Reload**. The submenu shows the active build and the reload result.
+Open applications and keyboard focus stay in place. The clock’s right-click
 menu also offers **Reload Taskbar**.
 
 From the repository root, run `dotnet run --project tools/Rosella.Driver -- modules`
 to compare the active and installed build IDs on the current desktop. Run
 `dotnet run --project tools/Rosella.Driver -- reload taskbar` to reload the
-module and print the result.
+taskbar. Use `reload dashboard` for all dashboard widgets, or use a widget ID
+such as `reload dashboard-weather` to reload just that widget.
 
-To publish a taskbar or Quick Settings code change, run
-`scripts/deploy.sh --taskbar` and then reload the taskbar. This builds the
-module against the published compositor. Updates to shared compositor code
-still use a full publish and a new login.
+Use `scripts/deploy.sh --taskbar` for taskbar changes and
+`scripts/deploy.sh --dashboard` for dashboard widget changes. Select the changed
+module and reload it after publishing. Changes to shared compositor code use a
+full publish and a new login.
 
 ### What you get
 
@@ -151,8 +151,21 @@ inhibits blanking. Supported BRAVIA displays can also use Simple IP Control
 for standby and wake with `gnome-bravia-screensaver.config` in
 `$XDG_CONFIG_HOME` (defaults to `~/.config`).
 
-Super on its own is unbound; Alt+F4 closes a window, Alt+Tab switches windows
-and Super+Esc quits.
+Tap Super or click the taskbar clock to open or close the dashboard. Launch
+apps from the scrollable grid or right-click one and choose **Add to taskbar**.
+The dashboard includes a monthly calendar, system settings, and recent
+notifications, including package updates from local DNF and Flatpak history
+when available. The taskbar stays visible. Alt+F4 closes a window, Alt+Tab
+switches windows and Super+Esc quits.
+
+Set local weather in `~/.config/rosella/dashboard-weather.json` (or under
+`$XDG_CONFIG_HOME`) with a place name and its latitude and longitude in degrees.
+The weather card refreshes when the dashboard is open. Forecast data is from
+[Open-Meteo](https://open-meteo.com/).
+
+```json
+{"name": "Canberra", "latitude": -35.28, "longitude": 149.13}
+```
 
 ### Customising pinned launchers
 

@@ -10,7 +10,7 @@ internal sealed record TaskbarGeneration(ITaskbarModule Module, ISettingsPanel S
 
     // Keep the previous contract's module available to a compositor that
     // is still running while a full release is published for its next login.
-    internal static string PublishedPath(string directory) => Path.Combine(directory, "modules", "v2", AssemblyFile);
+    internal static string PublishedPath(string directory) => Path.Combine(directory, "modules", "v3", AssemblyFile);
 
     internal static string InstalledBuild(string path)
     {

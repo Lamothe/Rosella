@@ -7,14 +7,13 @@ namespace Rosella.Compositor;
 /// The input policy, and deliberately the only policy there is: the cursor
 /// moves and hit-tests windows, a click focuses and raises, keys go to the
 /// keyboard focus, and the keybindings are fixed: Alt+F4 closes the focused
-/// window, Alt+Tab switches windows, Super+Esc quits. The Super key by itself
-/// is unbound. On the
+/// window, Alt+Tab switches windows, Super opens the dashboard and Super+Esc quits. On the
 /// touchpad, one finger moves the pointer, a quick tap clicks (left, right or
 /// middle by finger count), two or more fingers scroll and a tap then a quick
 /// second touch drags; a physical click always beats a pending tap. Anything
 /// else typed or clicked is ordinary input. Nothing is configurable.
 /// </summary>
-internal sealed class InputRouter
+internal sealed partial class InputRouter
 {
     private readonly Scene _scene;
     private readonly SeatState _seat;
@@ -26,6 +25,7 @@ internal sealed class InputRouter
     private readonly object _gate = new();
     private readonly HashSet<int> _pressedKeys = new();
     private readonly HashSet<int> _consumedKeys = new();
+    private bool _superTap;
     private int _cursorX;
     private int _cursorY;
 
@@ -213,10 +213,17 @@ internal sealed class InputRouter
                 _seat.SetPointerFocus(null, 0, 0);
             }
             _pressedKeys.Clear();
+            _superTap = false;
             _consumedKeys.Clear();
             _chromePressConsumedButtons.Clear();
             _settingsPressConsumedButtons.Clear();
             _shell?.Settings.PointerReleased();
+            if (_shell is { Dashboard.IsOpen: true } dashboardShell)
+            {
+                dashboardShell.Dashboard.Close();
+                dashboardShell.Settings.Close();
+                _scene.MarkDirty();
+            }
             if (_shell?.Screenshot.Cancel() == true)
             {
                 _scene.MarkDirty();
@@ -470,6 +477,12 @@ internal sealed class InputRouter
             return;
         }
 
+        if (_shell is { Dashboard.IsOpen: true } dashboardShell)
+        {
+            MoveOverDashboard(dashboardShell, previous, current);
+            return;
+        }
+
         // Shake to find the pointer: a few fast strokes grow it for a
         // moment. Never while dragging — swiping a selection back and forth
         // is not a search for the cursor.
@@ -511,6 +524,11 @@ internal sealed class InputRouter
 
     private bool PointerOverShell()
     {
+        if (_shell?.Dashboard.IsOpen == true)
+        {
+            return true;
+        }
+
         if (_shell is not { } shell || _scene.TopmostPopupGrab is not null)
         {
             return false;
@@ -564,6 +582,7 @@ internal sealed class InputRouter
         // drag cannot re-arm the gesture with another still down.
         if (pressed)
         {
+            _superTap = false;
             _heldButtons.Add(code);
             _shake.Reset();
         }
@@ -646,7 +665,7 @@ internal sealed class InputRouter
         // An explicit xdg_popup grab takes precedence over shell chrome.
         // Owner surfaces remain interactive; outside presses dismiss the grab
         // and are consumed rather than leaking to an unrelated client.
-        if (_scene.TopmostPopupGrab is { } grabbedPopup)
+        if (_shell?.Dashboard.IsOpen != true && _scene.TopmostPopupGrab is { } grabbedPopup)
         {
             if (pressed)
             {
@@ -694,8 +713,8 @@ internal sealed class InputRouter
             return;
         }
 
-        if (pressed && _shell?.Notifications.Hit(_scene.OutputSize.Width, _cursorX, _cursorY,
-            dismiss: code == InputConstants.ButtonLeft) == true)
+        if (pressed && _shell is { Dashboard.IsOpen: false } noticeShell &&
+            noticeShell.Notifications.Hit(_scene.OutputSize.Width, _cursorX, _cursorY, dismiss: code == InputConstants.ButtonLeft))
         {
             _chromePressConsumedButtons.Add(code);
             return;
@@ -754,7 +773,12 @@ internal sealed class InputRouter
 
         // The settings panel is drawn over the taskbar and owns all presses
         // in its bounds. Its sliders may continue a drag outside it.
-        if (_shell is { Settings.IsOpen: true } settingsShell)
+        if (pressed && _shell is { Dashboard.IsOpen: true } dashboardShell && PressDashboard(dashboardShell, code))
+        {
+            return;
+        }
+
+        if (_shell is { Dashboard.IsOpen: false, Settings.IsOpen: true } settingsShell)
         {
             var (width, height) = _scene.OutputSize;
             var settingsLayout = settingsShell.LastBarLayout
@@ -920,6 +944,14 @@ internal sealed class InputRouter
         }
 
         var pressed = e.Value != InputConstants.KeyReleased;
+        var isSuper = e.Code is InputConstants.KeyLeftMeta or InputConstants.KeyRightMeta;
+        var isModifier = isSuper || e.Code is InputConstants.KeyLeftAlt or InputConstants.KeyRightAlt
+            or InputConstants.KeyLeftShift or InputConstants.KeyRightShift or InputConstants.KeyLeftCtrl or InputConstants.KeyRightCtrl;
+        var toggleDashboard = !pressed && isSuper && _superTap && _pressedKeys.Contains(e.Code);
+        if (isSuper || pressed)
+        {
+            _superTap = pressed && isSuper && _pressedKeys.Count == 0 && _heldButtons.Count == 0;
+        }
 
         // The release of a binding-consumed key is swallowed with its press,
         // so a consumed key never appears in enter frames or at a client.
@@ -939,6 +971,10 @@ internal sealed class InputRouter
         // The Alt+Tab switcher's keys come before every other consumer: Tab
         // is consumed outright (its release with it), and Esc cancels the
         // switch rather than reaching a client or closing the settings panel.
+        if (pressed && e.Code == InputConstants.KeyTab && AltDown && _shell is { Dashboard.IsOpen: true } dashboardShell)
+        {
+            CloseDashboard(dashboardShell);
+        }
         if (_shell is { } switcherShell && HandleTaskSwitcher(switcherShell, e, pressed))
         {
             return;
@@ -980,6 +1016,13 @@ internal sealed class InputRouter
             return;
         }
 
+        if (pressed && !isModifier && _shell is { Dashboard.IsOpen: true } dashboard)
+        {
+            HandleDashboardKey(dashboard, e.Code);
+            _consumedKeys.Add(e.Code);
+            return;
+        }
+
         // The settings panel, when open, eats Esc: it closes the panel, and
         // the key never reaches a client (press and release alike).
         if (pressed && _shell is { Settings.IsOpen: true } settingsShell && settingsShell.Settings.HandleKey(e.Code))
@@ -1010,6 +1053,10 @@ internal sealed class InputRouter
 
         // The mask is tracked even unfocused; sent when there is a focus.
         SendModifiers(_seat.KeyboardFocus);
+        if (toggleDashboard && _shell is { Screenshot.IsSelecting: false } shell)
+        {
+            ToggleDashboard(shell);
+        }
     }
 
     /// <summary>The fixed keybindings. True = the key is consumed outright.</summary>
@@ -1050,7 +1097,7 @@ internal sealed class InputRouter
             }
         }
 
-        if (code == InputConstants.KeyF4 && AltDown)
+        if (code == InputConstants.KeyF4 && AltDown && _shell?.Dashboard.IsOpen != true)
         {
             _seat.KeyboardFocus?.XdgRole?.Close();
             return true;
@@ -1219,24 +1266,54 @@ internal sealed class InputRouter
         }
     }
 
+    internal string ReloadModule(string module)
+    {
+        if (module == "taskbar")
+        {
+            return ReloadTaskbar();
+        }
+
+        lock (_gate)
+        {
+            var shell = _shell ?? throw new InvalidOperationException("Modules are unavailable");
+            if (module == "dashboard")
+            {
+                return shell.ReloadDashboardWidgets(null);
+            }
+
+            foreach (var (page, id, _) in DashboardWidgetModules.Entries)
+            {
+                if (module == id)
+                {
+                    return shell.ReloadDashboardWidgets(page);
+                }
+            }
+            throw new InvalidOperationException($"Unknown module: {module}");
+        }
+    }
+
     private void BeginTaskbarPress(Shell shell, BarLayout layout, int x, int y)
     {
-        if (shell.Settings.IsOpen && !layout.Clock.Contains(x, y))
+        if (shell.Settings.IsOpen && !shell.Dashboard.IsOpen && !layout.Clock.Contains(x, y))
         {
             shell.Settings.Close();
         }
 
         if (layout.Clock.Contains(x, y))
         {
-            shell.Settings.Toggle();
-            _scene.MarkDirty();
+            ToggleDashboard(shell, DashboardPage.Settings);
             return;
         }
 
         if (DockPress.At(layout, (x, y)) is { } press)
         {
+            var label = shell.HoverLabel(layout, (x, y), _scene.OutputSize.Width);
             shell.TaskbarPress = press;
             _scene.MarkDirty(layout.Bounds.ToDamage(_scene.Scale));
+            if (label is { } dismissed)
+            {
+                _scene.MarkDirty(dismissed.Bounds.ToDamage(_scene.Scale));
+            }
         }
     }
 
@@ -1270,6 +1347,11 @@ internal sealed class InputRouter
         {
             return;
         }
+        if (shell.Dashboard.IsOpen)
+        {
+            CloseDashboard(shell);
+        }
+
         if (released.Window is { IsMapped: true, Gone: false } target && target.Scene == _scene)
         {
             // A minimized window comes back before it takes keyboard focus.
@@ -1356,6 +1438,24 @@ internal sealed class InputRouter
 
     private void SendAxis(int axis, int value, uint time)
     {
+        if (_shell is { Dashboard.IsOpen: true, Screenshot.IsSelecting: false } shell)
+        {
+            var layout = CurrentDashboardLayout();
+            if (axis == 0 && shell.Dashboard.Scroll(layout, _cursorX, _cursorY, value))
+            {
+                _scene.MarkDirty(layout.Applications.ToDamage(_scene.Scale));
+            }
+            else if (axis == 0 && shell.Dashboard.ScrollSettings(layout, shell.Settings, _cursorX, _cursorY, value))
+            {
+                _scene.MarkDirty(Dashboard.SettingsViewport(layout).ToDamage(_scene.Scale));
+            }
+            else if (axis == 0 && shell.Dashboard.ScrollNotifications(layout, shell.Notifications, _cursorX, _cursorY, value))
+            {
+                _scene.MarkDirty(layout.Notifications.ToDamage(_scene.Scale));
+            }
+            return;
+        }
+
         if (_shell?.Screenshot.IsSelecting != true && !PointerOverShell() && _seat.PointerFocus is { } target)
         {
             _seat.SendAxis(target, axis, value, time);

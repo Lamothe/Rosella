@@ -75,6 +75,35 @@ internal static class Chrome
         FillEllipse(pixels, width, height, stride, (rect.X + rect.W) - 1 - r, (rect.Y + rect.H) - 1 - r, r, r, colour, scale);
     }
 
+    internal static void BlendRoundedRect(Span<byte> pixels, int stride, Rect rect, int radius, uint colour,
+        int scale, in DamageRect damage)
+    {
+        var bounds = rect.ToDamage(scale);
+        var area = bounds.Intersect(damage).Intersect(DamageRect.For(stride / 4, pixels.Length / stride));
+        if (area.IsEmpty)
+        {
+            return;
+        }
+
+        var r = Math.Clamp(radius * scale, 0, Math.Min(bounds.W, bounds.H) / 2);
+        var alpha = colour >> 24;
+        uint Channel(int shift) => (((colour >> shift) & 0xFFu) * alpha + 127) / 255;
+        var source = (alpha << 24) | (Channel(16) << 16) | (Channel(8) << 8) | Channel(0);
+        var destination = MemoryMarshal.Cast<byte, uint>(pixels);
+        var pitch = stride / 4;
+        for (var y = area.Y; y < area.Y + area.H; y++)
+        {
+            var dy = Math.Max(0, r - Math.Min(y - bounds.Y, bounds.Y + bounds.H - 1 - y));
+            var inset = r - (int)Math.Sqrt((r * r) - (dy * dy));
+            var start = Math.Max(area.X, bounds.X + inset);
+            var end = Math.Min(area.X + area.W, bounds.X + bounds.W - inset);
+            for (var x = start; x < end; x++)
+            {
+                Blitter.Blend(ref destination[y * pitch + x], source);
+            }
+        }
+    }
+
     /// <summary>
     /// Filled ellipse by logical centre and radii, clipped. The shape is
     /// sampled per logical pixel and drawn as scale-sized blocks, so it

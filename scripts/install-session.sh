@@ -25,11 +25,13 @@ if [ "$(id -u)" = 0 ] && [ -n "$SUDO_USER" ]; then
     runuser -u "$owner" -- env DOTNET="$dotnet" "$dotnet" publish "$root/src/Rosella.Compositor/Rosella.Compositor.csproj" \
         -c Release --self-contained -o "$root/build/publish" --nologo
     runuser -u "$owner" -- env DOTNET="$dotnet" "$root/scripts/publish-taskbar.sh"
+    runuser -u "$owner" -- env DOTNET="$dotnet" "$root/scripts/publish-dashboard.sh"
     chown -R "$owner:" "$root/build"
 else
     "$dotnet" publish "$root/src/Rosella.Compositor/Rosella.Compositor.csproj" \
         -c Release --self-contained -o "$root/build/publish" --nologo
     DOTNET="$dotnet" "$root/scripts/publish-taskbar.sh"
+    DOTNET="$dotnet" "$root/scripts/publish-dashboard.sh"
 fi
 
 sudo install -d /usr/local/lib/rosella

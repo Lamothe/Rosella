@@ -295,13 +295,20 @@ public sealed class ControlServer : IDisposable
                     break;
 
                 case "reload":
-                case "reload-taskbar":
-                    if (parts[0] == "reload" ? parts.Length != 2 || parts[1] != "taskbar" : parts.Length != 1)
+                    if (parts.Length != 2)
                     {
-                        SendError(client, parts[0] == "reload" ? "usage: reload taskbar" : "usage: reload-taskbar");
+                        SendError(client, "usage: reload <module>");
                         break;
                     }
+                    SendPayload(client, Encoding.UTF8.GetBytes(_target.ReloadModule(parts[1]) + "\n"));
+                    break;
 
+                case "reload-taskbar":
+                    if (parts.Length != 1)
+                    {
+                        SendError(client, "usage: reload-taskbar");
+                        break;
+                    }
                     SendPayload(client, Encoding.UTF8.GetBytes(_target.ReloadTaskbar() + "\n"));
                     break;
 

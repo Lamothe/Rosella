@@ -1,6 +1,7 @@
 namespace Rosella.Compositor;
 
 internal readonly record struct NotificationKey(uint Number, string? AppId = null, string? Token = null);
+internal sealed record NotificationRecord(string App, string Title, string Body, DateTimeOffset Time);
 
 internal enum NotificationCloseReason : uint
 {
@@ -20,6 +21,7 @@ internal sealed class NotificationStack
 
     private readonly object _gate = new();
     private readonly List<Toast> _toasts = [];
+    private readonly List<(NotificationKey Key, NotificationRecord Record)> _history = [];
     private uint _nextId;
 
     internal Action? Dirty { get; set; }
@@ -56,6 +58,12 @@ internal sealed class NotificationStack
                 }
                 _toasts.Insert(0, notification);
             }
+            _history.RemoveAll(entry => entry.Key == key);
+            _history.Insert(0, (key, new(notification.App, notification.Title, notification.Body, DateTimeOffset.Now)));
+            if (_history.Count > 32)
+            {
+                _history.RemoveAt(_history.Count - 1);
+            }
         }
 
         if (overflow is not null)
@@ -64,6 +72,14 @@ internal sealed class NotificationStack
         }
         Dirty?.Invoke();
         return key;
+    }
+
+    internal NotificationRecord[] Recent()
+    {
+        lock (_gate)
+        {
+            return [.. _history.Select(entry => entry.Record)];
+        }
     }
 
     internal bool Close(NotificationKey key)

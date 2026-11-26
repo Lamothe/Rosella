@@ -24,6 +24,10 @@ internal static class ShellText
     /// <summary>The line height at this em, in logical pixels.</summary>
     internal static int LineHeight(int em) => Renderer?.LineHeight(em) ?? BitmapFont.GlyphHeight;
 
+    internal static int InkCenteredY(string text, int em, Rect row, int scale) =>
+        (row.Y * scale) + (row.H * scale / 2) - (Renderer?.InkCenterOffset(text, em * scale) ??
+            BitmapFont.GlyphHeight * Math.Max(1, (em * scale) / BitmapFont.GlyphHeight) / 2);
+
     /// <summary>The size of one line of <paramref name="text"/>, in logical pixels.</summary>
     internal static (int Width, int Height) Measure(string text, int em) =>
         Renderer?.Measure(text, em) ?? BitmapFont.Measure(text, 1);

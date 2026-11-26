@@ -382,7 +382,7 @@ public class DamageTests
     [Theory]
     [InlineData(1)]
     [InlineData(2)]
-    public void Scene_RepaintsBothDockTilesWhenHoverMoves(int scale)
+    public void Scene_RepaintsDockTilesAndLabelsWhenHoverMoves(int scale)
     {
         const int width = 640, height = 400;
         var scene = new Scene { OutputSize = (width, height), Scale = scale };
@@ -398,9 +398,13 @@ public class DamageTests
         scene.Cursor = (0, height - 1);
         var outputWidth = width * scale;
         var outputHeight = height * scale;
-        Frame(scene, outputWidth, outputHeight);
+        var displayed = Frame(scene, outputWidth, outputHeight);
+        var composite = (byte[])displayed.Clone();
         var first = shell.LastBarLayout!.Pinned[0].Rect;
         var second = shell.LastBarLayout.Pinned[1].Rect;
+        var firstLabel = DockLabel.Create(first, "First", width)!.Value.Bounds.ToDamage(scale);
+        var secondLabel = DockLabel.Create(second, "Second", width)!.Value.Bounds.ToDamage(scale);
+        var labelArea = firstLabel.Union(secondLabel);
         Span<DamageRect> damage = stackalloc DamageRect[DamageTracker.Capacity];
         scene.TakeDamage(outputWidth, outputHeight, damage);
 
@@ -408,17 +412,41 @@ public class DamageTests
         scene.Cursor = (first.X + first.W - 1, first.Y + first.H - 1);
         var count = scene.TakeDamage(outputWidth, outputHeight, damage);
         Assert.Contains(damage[..count].ToArray(), rect => rect.Contains(first.ToDamage(scale)));
+        Assert.Contains(damage[..count].ToArray(), rect => rect.Contains(firstLabel));
+        CheckLabelPixels(damage[..count]);
 
         scene.Cursor = (second.X + second.W - 1, second.Y + second.H - 1);
         count = scene.TakeDamage(outputWidth, outputHeight, damage);
         Assert.Contains(damage[..count].ToArray(), rect => rect.Contains(first.ToDamage(scale)));
         Assert.Contains(damage[..count].ToArray(), rect => rect.Contains(second.ToDamage(scale)));
+        Assert.Contains(damage[..count].ToArray(), rect => rect.Contains(firstLabel));
+        Assert.Contains(damage[..count].ToArray(), rect => rect.Contains(secondLabel));
+        CheckLabelPixels(damage[..count]);
 
         // Leave the tile while the dock stays visible.
         scene.Cursor = (0, height - 1);
         count = scene.TakeDamage(outputWidth, outputHeight, damage);
         Assert.Contains(damage[..count].ToArray(), rect => rect.Contains(second.ToDamage(scale)));
         Assert.DoesNotContain(DamageRect.For(outputWidth, outputHeight), damage[..count].ToArray());
+        Assert.Contains(damage[..count].ToArray(), rect => rect.Contains(secondLabel));
+        CheckLabelPixels(damage[..count]);
+
+        void CheckLabelPixels(ReadOnlySpan<DamageRect> changes)
+        {
+            var stride = outputWidth * 4;
+            foreach (var region in changes)
+            {
+                scene.RenderRegion(composite, outputWidth, outputHeight, stride, frame: 1, region);
+                Blitter.CopyToScanout(displayed, outputWidth, outputHeight, stride, composite, region, allowStreamingStores: false);
+            }
+            var expected = Frame(scene, outputWidth, outputHeight);
+            for (var y = labelArea.Y; y < labelArea.Y + labelArea.H; y++)
+            {
+                var offset = y * stride + labelArea.X * 4;
+                Assert.True(displayed.AsSpan(offset, labelArea.W * 4).SequenceEqual(expected.AsSpan(offset, labelArea.W * 4)),
+                    $"Dock label differs on scanline {y}");
+            }
+        }
     }
 
     [Theory]

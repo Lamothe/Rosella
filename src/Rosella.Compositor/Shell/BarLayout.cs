@@ -8,22 +8,62 @@ internal sealed record PinnedButton(Rect Rect, PinnedLauncher Launcher, bool Run
 
 internal sealed record BarLayout(Rect Bounds, Rect Clock, PinnedButton[] Pinned, (Rect Rect, BarTask Task)[] Tasks)
 {
-    internal Rect HoverBounds((int X, int Y) pointer)
-    {
-        if (Clock.Contains(pointer.X, pointer.Y))
-        {
-            return Clock;
-        }
+    internal Rect HoverBounds((int X, int Y) pointer) => Clock.Contains(pointer.X, pointer.Y)
+        ? Clock : HoveredIcon(pointer)?.Anchor ?? default;
 
+    internal (Rect Anchor, string Name)? HoveredIcon((int X, int Y) pointer)
+    {
         foreach (var button in Pinned)
         {
             if (button.Rect.Contains(pointer.X, pointer.Y))
             {
-                return button.Rect;
+                return (button.Rect, button.Launcher.Name);
+            }
+        }
+        foreach (var (rect, task) in Tasks)
+        {
+            if (rect.Contains(pointer.X, pointer.Y))
+            {
+                return (rect, task.Label);
             }
         }
 
-        return default;
+        return null;
+    }
+}
+
+internal readonly record struct DockLabel(string Text, Rect Bounds)
+{
+    private const int Em = 14;
+
+    internal static DockLabel? Create(Rect anchor, string name, int outputWidth)
+    {
+        const int padding = 12;
+        const int edge = 8;
+        const int height = 28;
+        const int gap = 8;
+        var text = ShellText.Fit(name, Em, Math.Min(280, outputWidth - 2 * (padding + edge)));
+        if (text.Length == 0 || anchor.Y < height + gap)
+        {
+            return null;
+        }
+        var width = ShellText.Measure(text, Em).Width + 2 * padding;
+        var x = Math.Clamp(anchor.X + (anchor.W - width) / 2, edge, outputWidth - width - edge);
+        return new DockLabel(text, new Rect(x, anchor.Y - height - gap, width, height));
+    }
+
+    internal void Draw(Span<byte> pixels, int stride, int scale, in DamageRect damage)
+    {
+        if (!damage.Intersects(Bounds.ToDamage(scale)))
+        {
+            return;
+        }
+        Chrome.BlendRoundedRect(pixels, stride, Bounds, 9, 0xFF505763, scale, damage);
+        var inset = new Rect(Bounds.X + 1, Bounds.Y + 1, Bounds.W - 2, Bounds.H - 2);
+        Chrome.BlendRoundedRect(pixels, stride, inset, 8, 0xFF252A32, scale, damage);
+        var x = (Bounds.X + (Bounds.W - ShellText.Measure(Text, Em).Width) / 2) * scale;
+        ShellText.DrawText(pixels, stride / 4, pixels.Length / stride, stride, Text, x,
+            ShellText.InkCenteredY(Text, Em, Bounds, scale), Chrome.PanelText, Em, scale);
     }
 }
 

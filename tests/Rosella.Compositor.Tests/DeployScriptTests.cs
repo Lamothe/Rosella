@@ -28,7 +28,7 @@ public sealed class DeployScriptTests : IDisposable
         // must be reviewed before redirecting its registration paths in tests.
         var deployBytes = File.ReadAllBytes(Path.Combine(RepoFiles.Root, "scripts", "deploy.sh"));
         var digest = Convert.ToHexString(SHA256.HashData(deployBytes));
-        Assert.Equal("9B52A00B7B8CA51EEFA57B7F8D934520AEFBA2BD80B1C56E62A52E88DEE9ABF2", digest);
+        Assert.Equal("47A611FEE4DD6CBD2A8F22F73823962849603040AEB522B1899C5BE2B1E1626F", digest);
         var deploy = System.Text.Encoding.UTF8.GetString(deployBytes)
             .Replace("installed_session=/usr/local/bin/rosella-session", $"installed_session='{_installedSession}'", StringComparison.Ordinal)
             .Replace("installed_desktop=/usr/share/wayland-sessions/rosella.desktop", $"installed_desktop='{_installedDesktop}'", StringComparison.Ordinal);
@@ -38,15 +38,20 @@ public sealed class DeployScriptTests : IDisposable
         File.Copy(Path.Combine(RepoFiles.Root, "scripts", "rosella-session"), Path.Combine(scripts, "rosella-session"));
         File.Copy(Path.Combine(RepoFiles.Root, "scripts", "rosella.desktop"), Path.Combine(scripts, "rosella.desktop"));
         var taskbarBytes = File.ReadAllBytes(Path.Combine(RepoFiles.Root, "scripts", "publish-taskbar.sh"));
-        Assert.Equal("7767828D554E39E006C5396D76992354C81E0E2B5D8D11412B1AE5144D974D7F",
+        Assert.Equal("14991C1C3F45B86552B221204B3F4FD34A382C09BACC907094A80E38807E91DA",
             Convert.ToHexString(SHA256.HashData(taskbarBytes)));
         WriteExecutable(Path.Combine(scripts, "publish-taskbar.sh"), System.Text.Encoding.UTF8.GetString(taskbarBytes));
+        var dashboardBytes = File.ReadAllBytes(Path.Combine(RepoFiles.Root, "scripts", "publish-dashboard.sh"));
+        Assert.Equal("26CA35F174BED750B978F6DF1990D081FC4BFD212127F14064C9D00FFB666912",
+            Convert.ToHexString(SHA256.HashData(dashboardBytes)));
+        WriteExecutable(Path.Combine(scripts, "publish-dashboard.sh"), System.Text.Encoding.UTF8.GetString(dashboardBytes));
         File.WriteAllText(Path.Combine(scripts, "rosella-dev.sh"), string.Empty);
         WriteExecutable(_dotnet, """
             #!/usr/bin/env bash
             if [ "$1" = build ]; then
+                project=$(basename "$2" .csproj)
                 while [ "$1" != -o ]; do shift; done
-                printf 'module' > "$2/Rosella.Taskbar.dll"
+                printf 'module' > "$2/$project.dll"
                 exit
             fi
             mkdir -p "$FAKE_PROJECT/build/publish"
@@ -68,6 +73,22 @@ public sealed class DeployScriptTests : IDisposable
         Assert.DoesNotContain("WARNING:", result.Error);
         Assert.True(File.Exists(Path.Combine(_project, "build", "publish", "libcoreclr.so")));
         Assert.True(File.Exists(TaskbarGeneration.PublishedPath(Path.Combine(_project, "build", "publish"))));
+        Assert.True(File.Exists(DashboardWidgetModules.PublishedPath(Path.Combine(_project, "build", "publish"))));
+    }
+
+    [Fact]
+    public void DashboardOnly_ReplacesWidgetsInAnExistingPublish()
+    {
+        var publish = Directory.CreateDirectory(Path.Combine(_project, "build", "publish")).FullName;
+        var host = Path.Combine(publish, "Rosella.Compositor.dll");
+        File.WriteAllText(host, "existing publish");
+
+        var result = Run(option: "--dashboard");
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.True(File.Exists(DashboardWidgetModules.PublishedPath(publish)));
+        Assert.False(File.Exists(TaskbarGeneration.PublishedPath(publish)));
+        Assert.Equal("existing publish", File.ReadAllText(host));
     }
 
     [Fact]
@@ -139,7 +160,7 @@ public sealed class DeployScriptTests : IDisposable
         }
     }
 
-    private (int ExitCode, string Error) Run(string? home = null)
+    private (int ExitCode, string Error) Run(string? home = null, string? option = null)
     {
         var start = new ProcessStartInfo("bash")
         {
@@ -152,6 +173,10 @@ public sealed class DeployScriptTests : IDisposable
         start.ArgumentList.Add("5s");
         start.ArgumentList.Add("bash");
         start.ArgumentList.Add(Path.Combine(_project, "scripts", "deploy.sh"));
+        if (option is not null)
+        {
+            start.ArgumentList.Add(option);
+        }
         start.Environment["HOME"] = home ?? _home;
         start.Environment["DOTNET"] = _dotnet;
         start.Environment["FAKE_PROJECT"] = _project;

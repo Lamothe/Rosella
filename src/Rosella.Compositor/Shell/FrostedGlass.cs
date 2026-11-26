@@ -2,8 +2,8 @@ using System.Runtime.InteropServices;
 
 namespace Rosella.Compositor;
 
-/// <summary>Blurs the scene behind a rounded shell panel, then applies a dark tint.</summary>
-internal sealed class FrostedGlass
+/// <summary>Blurs the scene behind a rounded shell panel.</summary>
+internal sealed class FrostedGlass(bool tinted = true)
 {
     internal const int BlurRadius = 12;
 
@@ -83,7 +83,7 @@ internal sealed class FrostedGlass
             for (var x = 0; x < area.W; x++)
             {
                 var average = Average(sums[x], kernelWidth);
-                _blurred[(y * area.W) + x] = DarkTint(average);
+                _blurred[(y * area.W) + x] = tinted ? DarkTint(average) : Pack(average);
                 if (!lastRow)
                 {
                     sums[x] = sums[x] - _horizontal[leaving + x] + _horizontal[entering + x];
@@ -93,15 +93,51 @@ internal sealed class FrostedGlass
     }
 
     internal void Draw(Span<byte> pixels, int stride, Rect panel, int cornerRadius, int scale)
+        => Draw(pixels, stride, panel, cornerRadius, scale, _area);
+
+    /// <summary>Copies the prepared blur into a tightly packed backdrop with neutral dimming.</summary>
+    internal void CopyDimmedBlur(Span<byte> pixels, uint opacity)
     {
-        var area = _area;
+        var destination = MemoryMarshal.Cast<byte, uint>(pixels);
+        for (var i = 0; i < destination.Length; i++)
+        {
+            var colour = _blurred[i];
+            var red = Tint((colour >> 16) & 0xFF, 0, opacity);
+            var green = Tint((colour >> 8) & 0xFF, 0, opacity);
+            var blue = Tint(colour & 0xFF, 0, opacity);
+            destination[i] = 0xFF000000u | (red << 16) | (green << 8) | blue;
+        }
+    }
+
+    internal void LightenBlur(byte opacity)
+    {
+        var white = opacity * 0x01010101u;
+        foreach (ref var pixel in _blurred.AsSpan(0, _area.W * _area.H))
+        {
+            Blitter.Blend(ref pixel, white);
+        }
+    }
+
+    internal void Draw(Span<byte> pixels, int stride, Rect panel, int cornerRadius, int scale, in DamageRect damage)
+        => Draw(pixels, stride, panel, cornerRadius, scale, damage, antialiasEdge: false);
+
+    internal void Draw(Span<byte> pixels, int stride, Rect panel, int cornerRadius, int scale, in DamageRect damage, bool antialiasEdge)
+    {
         var bounds = panel.Scaled(scale);
+        var area = _area.Intersect(damage).Intersect(bounds.ToDamage(1));
         var radius = Math.Min(cornerRadius * scale, Math.Min(bounds.W, bounds.H) / 2);
         var destination = MemoryMarshal.Cast<byte, uint>(pixels);
         var strideWords = stride / 4;
         for (var y = area.Y; y < area.Y + area.H; y++)
         {
             var row = y - bounds.Y;
+            if (antialiasEdge)
+            {
+                var edgeLine = destination.Slice(y * strideWords + area.X, area.W);
+                var blurred = _blurred.AsSpan((y - _area.Y) * _area.W + area.X - _area.X, area.W);
+                DrawAntialiasedRow(edgeLine, blurred, area.X - bounds.X, row, bounds.W, bounds.H, radius, scale);
+                continue;
+            }
             var inset = CornerInset(row, bounds.H, radius);
             var left = Math.Max(area.X, bounds.X + inset);
             var right = Math.Min(area.X + area.W, bounds.X + bounds.W - inset);
@@ -111,7 +147,7 @@ internal sealed class FrostedGlass
             }
 
             var line = destination.Slice((y * strideWords) + left, right - left);
-            _blurred.AsSpan(((y - area.Y) * area.W) + left - area.X, line.Length).CopyTo(line);
+            _blurred.AsSpan(((y - _area.Y) * _area.W) + left - _area.X, line.Length).CopyTo(line);
 
             if (row < scale || row >= bounds.H - scale)
             {
@@ -125,6 +161,54 @@ internal sealed class FrostedGlass
                 Highlight(line[Math.Clamp(bounds.X + bounds.W - innerInset - left, 0, line.Length)..]);
             }
         }
+    }
+
+    private static void DrawAntialiasedRow(Span<uint> line, ReadOnlySpan<uint> blurred, int x, int y,
+        int width, int height, int radius, int scale)
+    {
+        const uint rim = 0x24242424;
+        var distanceY = Math.Min(y, height - 1 - y);
+        var band = distanceY < radius ? Math.Max(radius, scale) : scale;
+        var middleStart = Math.Clamp(band - x, 0, line.Length);
+        var middleEnd = Math.Clamp(width - band - x, middleStart, line.Length);
+        blurred[middleStart..middleEnd].CopyTo(line[middleStart..middleEnd]);
+        if (distanceY < scale)
+        {
+            foreach (ref var pixel in line[middleStart..middleEnd])
+            {
+                Blitter.Blend(ref pixel, rim);
+            }
+        }
+
+        for (var i = 0; i < middleStart; i++)
+        {
+            DrawEdgePixel(ref line[i], blurred[i], x + i, distanceY, radius, scale, rim >> 24);
+        }
+        for (var i = middleEnd; i < line.Length; i++)
+        {
+            DrawEdgePixel(ref line[i], blurred[i], width - 1 - x - i, distanceY, radius, scale, rim >> 24);
+        }
+    }
+
+    private static void DrawEdgePixel(ref uint pixel, uint glass, int x, int y, int radius, int scale, uint rimAlpha)
+    {
+        var dx = radius - (x + 0.5);
+        var dy = radius - (y + 0.5);
+        // Signed distance to the outer edge, sampled at the pixel center.
+        var distance = dx > 0 && dy > 0 ? Math.Sqrt(dx * dx + dy * dy) - radius : -Math.Min(x, y) - 0.5;
+        var coverage = Math.Clamp(0.5 - distance, 0, 1);
+        if (coverage == 0)
+        {
+            return;
+        }
+
+        var border = Math.Clamp(distance + scale + 0.5, 0, 1);
+        Blitter.Blend(ref glass, (uint)Math.Round(border * rimAlpha) * 0x01010101);
+        var alpha = (uint)Math.Round(coverage * 256);
+        var red = Tint((pixel >> 16) & 0xFF, (glass >> 16) & 0xFF, alpha);
+        var green = Tint((pixel >> 8) & 0xFF, (glass >> 8) & 0xFF, alpha);
+        var blue = Tint(pixel & 0xFF, glass & 0xFF, alpha);
+        pixel = 0xFF000000 | (red << 16) | (green << 8) | blue;
     }
 
     private static int CornerInset(int row, int height, int radius)
@@ -154,6 +238,9 @@ internal sealed class FrostedGlass
         var red = Tint((uint)(colour >> 32), 21, tint);
         return 0xFF000000u | (red << 16) | (green << 8) | blue;
     }
+
+    private static uint Pack(ulong colour) =>
+        0xFF000000u | ((uint)(colour >> 16) & 0xFF0000u) | ((uint)(colour >> 8) & 0xFF00u) | ((uint)colour & 0xFFu);
 
     private static uint Tint(uint channel, uint tint, uint opacity) =>
         ((channel * (256 - opacity)) + (tint * opacity)) >> 8;

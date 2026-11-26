@@ -26,6 +26,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\Rosella.Compositor\Rosella.Compositor.csproj" />
     <ProjectReference Include="..\..\src\Rosella.Taskbar\Rosella.Taskbar.csproj" />
+    <ProjectReference Include="..\..\src\Rosella.DashboardWidgets\Rosella.DashboardWidgets.csproj" />
   </ItemGroup>
 
 </Project>

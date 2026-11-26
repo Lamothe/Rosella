@@ -89,6 +89,7 @@ using var renderReader = nativeDmaBuf || xWaylandHelper is not null
     : null;
 var dmaBuf = nativeDmaBuf ? renderReader : null;
 using var flips = displays.Outputs.Length > 1 ? new DrmFlipQueue(device) : null;
+IconLoader.InitializeLocalVfs();
 using var primary = new DesktopSession(device, ResolutionPicker.Select(displays.Outputs[0]), socketPath, cancellation.Cancel, dmaBuf, flips);
 
 DesktopSession? CreateDellDesktop(DrmOutput output)

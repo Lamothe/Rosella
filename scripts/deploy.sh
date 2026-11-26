@@ -29,11 +29,16 @@ if [ "${1:-}" = --taskbar ]; then
     DOTNET="$dotnet" "$root/scripts/publish-taskbar.sh"
     exit
 fi
+if [ "${1:-}" = --dashboard ]; then
+    DOTNET="$dotnet" "$root/scripts/publish-dashboard.sh"
+    exit
+fi
 
 "$dotnet" publish "$root/src/Rosella.Compositor/Rosella.Compositor.csproj" \
     -c Release --self-contained -o "$root/build/publish" --nologo
 
 DOTNET="$dotnet" "$root/scripts/publish-taskbar.sh"
+DOTNET="$dotnet" "$root/scripts/publish-dashboard.sh"
 
 # The artefact must stand alone: the session runs it on machines without
 # the SDK. A missing libcoreclr.so means the publish was not

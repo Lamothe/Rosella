@@ -304,7 +304,7 @@ public sealed class Scene
             // Include that edge before the scanout records damage for both buffers.
             var scale = Math.Max(1, Scale);
             var dock = layout.Bounds.ToDamage(scale);
-            var panel = shell.Settings.IsOpen
+            var panel = shell.Settings.IsOpen && !shell.Dashboard.IsOpen
                 ? shell.Settings.PanelRect(layout.Clock, width / scale, height / scale).ToDamage(scale)
                 : DamageRect.Empty;
             for (var i = 0; i < count; i++)
@@ -691,6 +691,7 @@ public sealed class Scene
             if (value is not null)
             {
                 value.Settings.Dirty = MarkDirty;
+                value.Dashboard.Dirty = MarkDirty;
                 value.Notifications.Dirty = MarkDirty;
                 value.Switcher.Dirty = MarkDirty;
                 // The spinner needs the scene's clock, its list of live app
@@ -778,7 +779,14 @@ public sealed class Scene
                     {
                         if (shell is { DockVisible: true, LastBarLayout: { } layout })
                         {
-                            DamageHoverChange(layout.HoverBounds(previous), layout.HoverBounds(value), scale);
+                            var previousTile = layout.HoverBounds(previous);
+                            var currentTile = layout.HoverBounds(value);
+                            if (previousTile != currentTile)
+                            {
+                                DamageHoverChange(previousTile, currentTile, scale);
+                                DamageHoverChange(shell.HoverLabel(layout, previous, OutputSize.Width)?.Bounds ?? default,
+                                    shell.HoverLabel(layout, value, OutputSize.Width)?.Bounds ?? default, scale);
+                            }
                         }
                         if (shell.DockMenu is { } menu)
                         {
@@ -1116,22 +1124,31 @@ public sealed class Scene
             return new RenderCost(region.Area, 0, 0);
         }
 
-        var cost = RenderWindows(pixels, width, height, stride, scale, region);
+        var dashboard = Shell is { Dashboard.IsOpen: true } dashboardShell ? dashboardShell : null;
+        var pointer = _desktopActive ? Cursor : ((int X, int Y)?)null;
+        var cost = dashboard is null
+            ? RenderWindows(pixels, width, height, stride, scale, region)
+            : new RenderCost(region.Area, 0, 0);
+        dashboard?.Dashboard.Draw(pixels, width, height, stride, scale, region, dashboard.Settings, dashboard.Notifications,
+            pointer);
 
-        if (Shell is { } shell && NeedsChrome(region, scale, width, height))
+        if (Shell is { } shell && NeedsChrome(region, scale, width, height, pointer))
         {
             var taskbar = shell.Taskbar;
             var clock = taskbar.Module.ClockString();
             var tasks = TaskWindows();
             var layout = taskbar.Module.ComputeLayout(width / scale, height / scale, clock, shell.OrderTasks(tasks), shell.Pinned);
-            var panel = taskbar.Settings.IsOpen ? taskbar.Settings.PanelRect(layout.Clock, width / scale, height / scale) : (Rect?)null;
+            var settingsPanel = shell.Settings;
+            var panel = settingsPanel.IsOpen && dashboard is null
+                ? settingsPanel.PanelRect(layout.Clock, width / scale, height / scale) : (Rect?)null;
             var dockVisible = shell.DockVisible || panel.HasValue;
 
             // Sample the freshly composited desktop, before either panel or
             // the pointer has been drawn. Clip blur work to the damaged area.
             if (dockVisible)
             {
-                var dockCost = PrepareGlass(shell.DockGlass, pixels, width, height, stride, scale, layout.Bounds, region);
+                var dockCost = PrepareGlass(shell.DockGlass, pixels, width, height, stride, scale, layout.Bounds, region,
+                    dashboard?.Dashboard);
                 cost = new RenderCost(cost.BackgroundPixels + dockCost.BackgroundPixels,
                     cost.SurfacePixels + dockCost.SurfacePixels, Math.Max(cost.Surfaces, dockCost.Surfaces));
             }
@@ -1143,9 +1160,12 @@ public sealed class Scene
             }
 
             shell.Draw(taskbar, pixels, width / scale, height / scale, stride, scale, clock, tasks, layout,
-                dockVisible, panel, FocusedWindow, _desktopActive ? Cursor : null);
+                dockVisible, panel, FocusedWindow, region, pointer);
         }
-        Shell?.Notifications.Draw(pixels, width, height, stride, scale, region);
+        if (dashboard is null)
+        {
+            Shell?.Notifications.Draw(pixels, width, height, stride, scale, region);
+        }
 
         // The cursor: the client's cursor surface when the focused client set
         // one (context shapes — text beam, hand — as the apps intend), hidden
@@ -1237,7 +1257,7 @@ public sealed class Scene
     private byte[] _glassBackdrop = [];
 
     private RenderCost PrepareGlass(FrostedGlass glass, ReadOnlySpan<byte> pixels,
-        int width, int height, int stride, int scale, Rect bounds, in DamageRect region)
+        int width, int height, int stride, int scale, Rect bounds, in DamageRect region, Dashboard? dashboard = null)
     {
         var radius = FrostedGlass.BlurRadius * scale;
         var area = bounds.ToDamage(scale).Intersect(region);
@@ -1256,7 +1276,10 @@ public sealed class Scene
             _glassBackdrop = GC.AllocateUninitializedArray<byte>(length);
         }
 
-        var cost = RenderWindows(_glassBackdrop, width, height, stride, scale, sample);
+        dashboard?.DrawBackdrop(_glassBackdrop, width, height, stride, scale, sample);
+        var cost = dashboard is null
+            ? RenderWindows(_glassBackdrop, width, height, stride, scale, sample)
+            : new RenderCost(sample.Area, 0, 0);
         glass.Prepare(_glassBackdrop, width, height, stride, radius, area);
         return cost;
     }
@@ -1416,7 +1439,7 @@ public sealed class Scene
     /// <summary>
     /// Whether a region intersects the dock band or another open shell panel.
     /// </summary>
-    private bool NeedsChrome(in DamageRect region, int scale, int width, int height)
+    private bool NeedsChrome(in DamageRect region, int scale, int width, int height, (int X, int Y)? pointer)
     {
         if (Shell is not { } shell)
         {
@@ -1434,6 +1457,12 @@ public sealed class Scene
             return true;
         }
 
+        if (shell.LastBarLayout is { } dock && shell.HoverLabel(dock, pointer, width / scale) is { } label &&
+            region.Intersects(label.Bounds.ToDamage(scale)))
+        {
+            return true;
+        }
+
         if (shell.DockMenu is { } menu)
         {
             var bounds = menu.Bounds.Scaled(scale);
@@ -1443,7 +1472,7 @@ public sealed class Scene
             }
         }
 
-        if (!shell.Settings.IsOpen)
+        if (!shell.Settings.IsOpen || shell.Dashboard.IsOpen)
         {
             return false;
         }

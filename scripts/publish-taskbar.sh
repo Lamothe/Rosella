@@ -14,7 +14,7 @@ stage="$(mktemp -d "$publish/.taskbar-XXXXXX")"
 trap 'rm -rf "$stage"' EXIT
 "${DOTNET:-dotnet}" build "$root/src/Rosella.Taskbar/Rosella.Taskbar.csproj" \
     -c Release -o "$stage" -p:RosellaHostDirectory="$publish" --nologo
-module_dir="$publish/modules/v2"
+module_dir="$publish/modules/v3"
 mkdir -p "$module_dir"
 mv -f "$stage/Rosella.Taskbar.dll" "$module_dir/Rosella.Taskbar.dll"
 echo "Published the taskbar module to $module_dir"

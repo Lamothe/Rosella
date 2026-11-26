@@ -2,6 +2,7 @@
   <Folder Name="/src/">
     <Project Path="src/Rosella.Compositor/Rosella.Compositor.csproj" />
     <Project Path="src/Rosella.Control/Rosella.Control.csproj" />
+    <Project Path="src/Rosella.DashboardWidgets/Rosella.DashboardWidgets.csproj" />
     <Project Path="src/Rosella.Drm/Rosella.Drm.csproj" />
     <Project Path="src/Rosella.Input/Rosella.Input.csproj" />
     <Project Path="src/Rosella.Protocol/Rosella.Protocol.csproj" />

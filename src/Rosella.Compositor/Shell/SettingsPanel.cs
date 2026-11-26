@@ -1,6 +1,10 @@
 using Rosella.Input;
 
-#if ROSSELLA_TASKBAR
+#if ROSELLA_DASHBOARD_WIDGETS
+using Rosella.Compositor;
+
+namespace Rosella.DashboardWidgets;
+#elif ROSSELLA_TASKBAR
 using Rosella.Compositor;
 
 namespace Rosella.Taskbar;
@@ -42,6 +46,7 @@ internal sealed class SettingsPanel : ISettingsPanel
     private readonly ISystemActions _systemActions;
     private readonly IVolumeControl _volume;
     private readonly AudioOutputPicker _outputs;
+    private readonly bool _fillWidth;
     private readonly object _volumeGate = new();
     private readonly AudioLevel[] _levels = [new(50, false), new(50, false)];
     private readonly long[] _levelGenerations = new long[SliderCount];
@@ -57,10 +62,11 @@ internal sealed class SettingsPanel : ISettingsPanel
     private volatile bool _modulesOpen;
     public bool ModulesOpen => _modulesOpen;
 
-    internal SettingsPanel(ISystemActions systemActions, IVolumeControl volume)
+    internal SettingsPanel(ISystemActions systemActions, IVolumeControl volume, bool fillWidth = false)
     {
         _systemActions = systemActions;
         _volume = volume;
+        _fillWidth = fillWidth;
         _outputs = new AudioOutputPicker(volume, RefreshOutputLevel, () => Dirty?.Invoke());
     }
 
@@ -265,8 +271,8 @@ internal sealed class SettingsPanel : ISettingsPanel
 
     public Rect PanelRect(Rect clock, int outputWidth, int outputHeight)
     {
-        var width = Math.Min(PanelWidth, outputWidth);
-        var detailHeight = _modulesOpen ? ModulePicker.Height :
+        var width = _fillWidth && clock == default ? outputWidth : Math.Min(PanelWidth, outputWidth);
+        var detailHeight = _modulesOpen ? ModulePicker.Height(Modules?.HasChoices == true) :
             Resolution is { IsOpen: true } resolution ? resolution.Height : _outputs.PanelHeight;
         var selectors = 1 + (Resolution is null ? 0 : 1) + (Modules is null ? 0 : 1);
         var height = detailHeight ?? (PanelPad * 2) + AudioSectionHeight + PanelGap +
@@ -322,13 +328,15 @@ internal sealed class SettingsPanel : ISettingsPanel
 
     /// <summary>Handles panel press and slider drag. True if the point was consumed.</summary>
     public bool HandlePointer(int x, int y, Rect clock, int outputWidth, int outputHeight, bool pressed)
+        => HandlePointer(x, y, PanelRect(clock, outputWidth, outputHeight), pressed);
+
+    public bool HandlePointer(int x, int y, Rect panel, bool pressed)
     {
         if (!IsOpen)
         {
             return false;
         }
 
-        var panel = PanelRect(clock, outputWidth, outputHeight);
         if (!panel.Contains(x, y))
         {
             if (pressed && !IsDraggingSlider)
@@ -351,9 +359,19 @@ internal sealed class SettingsPanel : ISettingsPanel
                 _modulesOpen = false;
                 Dirty?.Invoke();
             }
-            else if (pressed && ModulePicker.ReloadButton(panel).Contains(x, y))
+            else if (pressed && modules.HasChoices && ModulePicker.Previous(panel).Contains(x, y))
             {
-                modules.Reload();
+                modules.Step(-1);
+                Dirty?.Invoke();
+            }
+            else if (pressed && modules.HasChoices && ModulePicker.Next(panel).Contains(x, y))
+            {
+                modules.Step(1);
+                Dirty?.Invoke();
+            }
+            else if (pressed && ModulePicker.ReloadButton(panel, modules.HasChoices).Contains(x, y))
+            {
+                modules.Selected.Reload();
             }
             return true;
         }
@@ -433,6 +451,9 @@ internal sealed class SettingsPanel : ISettingsPanel
     }
 
     public void PointerMoved(int x, Rect clock, int outputWidth, int outputHeight)
+        => PointerMoved(x, PanelRect(clock, outputWidth, outputHeight));
+
+    public void PointerMoved(int x, Rect panel)
     {
         AudioEndpoint? dragging;
         lock (_volumeGate)
@@ -442,7 +463,6 @@ internal sealed class SettingsPanel : ISettingsPanel
 
         if (dragging is { } endpoint && IsOpen)
         {
-            var panel = PanelRect(clock, outputWidth, outputHeight);
             SetSliderFromX(endpoint, x, SliderTrackRect(panel, SliderIndex(endpoint)));
         }
     }
@@ -463,9 +483,16 @@ internal sealed class SettingsPanel : ISettingsPanel
             Chrome.DrawPanel(pixels, clipW, clipH, stride, panel, scale);
         }
 
+        DrawControls(pixels, stride, scale, panel, pointer);
+    }
+
+    public void DrawControls(Span<byte> pixels, int stride, int scale, Rect panel, (int X, int Y)? pointer)
+    {
+        var clipW = stride / 4;
+        var clipH = pixels.Length / stride;
         if (_modulesOpen && Modules is { } modules)
         {
-            ModulePicker.Draw(pixels, clipW, clipH, stride, scale, panel, pointer, modules.ReadStatus());
+            ModulePicker.Draw(pixels, clipW, clipH, stride, scale, panel, pointer, modules);
             return;
         }
 
@@ -492,7 +519,7 @@ internal sealed class SettingsPanel : ISettingsPanel
         if (Modules is not null)
         {
             SettingsSelector.Draw(pixels, clipW, clipH, stride, scale, ModulesRow(panel, Resolution is not null), pointer,
-                "Modules", "Taskbar & Quick Settings");
+                "Modules", Modules.HasChoices ? "Taskbar and dashboard" : Modules.Selected.Label);
         }
 
         for (var index = 0; index < Actions.Length; index++)

@@ -29,6 +29,32 @@ internal static class IconLoader
     /// <summary>False when libgdk_pixbuf cannot be loaded on this host.</summary>
     internal static bool Available { get; } = Probe();
 
+    internal static void InitializeLocalVfs()
+    {
+        const string variable = "GIO_USE_VFS";
+        if (!Available || Native.getenv(variable) != IntPtr.Zero || Native.setenv(variable, "local", 0) != 0)
+        {
+            return;
+        }
+
+        // Rosella decodes local files. Some pixbuf loaders use GIO to remove
+        // temporary files, which can otherwise block on the desktop metadata
+        // daemon. GIO caches the selected backend on first use. Restore the
+        // launch environment before any desktop applications are spawned.
+        try
+        {
+            Native.g_vfs_get_default();
+        }
+        catch (Exception exception) when (exception is DllNotFoundException or EntryPointNotFoundException)
+        {
+            // The optional decoder still handles its own load errors.
+        }
+        finally
+        {
+            Native.unsetenv(variable);
+        }
+    }
+
     private static bool Probe()
     {
         try
@@ -215,6 +241,18 @@ internal static class IconLoader
     private static class Native
     {
         private const string Library = "libgdk_pixbuf-2.0.so.0";
+
+        [DllImport("libgio-2.0.so.0")]
+        internal static extern IntPtr g_vfs_get_default();
+
+        [DllImport("libc")]
+        internal static extern IntPtr getenv(string name);
+
+        [DllImport("libc")]
+        internal static extern int setenv(string name, string value, int overwrite);
+
+        [DllImport("libc")]
+        internal static extern int unsetenv(string name);
 
         [DllImport(Library, EntryPoint = "gdk_pixbuf_new_from_file_at_scale")]
         internal static extern IntPtr gdk_pixbuf_new_from_file_at_scale(

@@ -38,7 +38,7 @@ if (argsList.Count == 0)
           blank                      force the screen dark (DPMS off)
           unblank                    force the screen lit
           modules                    list reloadable modules and active/installed builds
-          reload taskbar             reload the active desktop's taskbar and Quick Settings
+          reload <module>            reload taskbar, dashboard (all widgets), or a widget ID from modules
         """);
     return 2;
 }

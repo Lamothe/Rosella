@@ -12,13 +12,22 @@ internal static class Background
 {
     /// <summary>The wallpaper in output pixels, if one is loaded.</summary>
     private static readonly ConcurrentDictionary<(int Width, int Height), uint[]> Wallpapers = new();
+    private static long _version;
+    internal static long Version => Interlocked.Read(ref _version);
 
     /// <summary>Installs the wallpaper (already scaled to the output size).</summary>
-    internal static void SetWallpaper(uint[] pixels, int width, int height) =>
+    internal static void SetWallpaper(uint[] pixels, int width, int height)
+    {
         Wallpapers[(width, height)] = pixels;
+        Interlocked.Increment(ref _version);
+    }
 
     /// <summary>Back to the bare gradient.</summary>
-    internal static void ClearWallpaper() => Wallpapers.Clear();
+    internal static void ClearWallpaper()
+    {
+        Wallpapers.Clear();
+        Interlocked.Increment(ref _version);
+    }
 
     /// <summary>The gradient colour at a row: shared by drawing and tests.</summary>
     internal static uint ColourAt(int y, int height)

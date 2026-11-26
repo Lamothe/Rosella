@@ -37,6 +37,8 @@ public interface IControlTarget
 
     /// <summary>Reloads the active desktop's taskbar and Quick Settings module.</summary>
     string ReloadTaskbar();
+    string ReloadModule(string module) => module == "taskbar"
+        ? ReloadTaskbar() : throw new InvalidOperationException($"Unknown module: {module}");
 
     /// <summary>Reports the active desktop's reloadable modules and their builds.</summary>
     string Modules();

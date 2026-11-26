@@ -19,6 +19,7 @@
   <ItemGroup>
     <InternalsVisibleTo Include="Rosella.Compositor.Tests" />
     <InternalsVisibleTo Include="Rosella.Taskbar" />
+    <InternalsVisibleTo Include="Rosella.DashboardWidgets" />
     <None Update="private-app-bus.conf" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <None Update="rosella-portals.conf" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>

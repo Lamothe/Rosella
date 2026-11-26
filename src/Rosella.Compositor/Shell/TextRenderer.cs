@@ -217,6 +217,26 @@ internal sealed class TextRenderer : IDisposable
         }
     }
 
+    internal int InkCenterOffset(string text, int pixelSize)
+    {
+        lock (_gate)
+        {
+            var top = int.MaxValue;
+            var bottom = int.MinValue;
+            foreach (var character in text)
+            {
+                if (GlyphFor(character, pixelSize) is { Height: > 0 } glyph)
+                {
+                    top = Math.Min(top, -glyph.Top);
+                    bottom = Math.Max(bottom, glyph.Height - glyph.Top);
+                }
+            }
+            return top == int.MaxValue
+                ? LineHeightLocked(pixelSize) / 2
+                : AscentLocked(pixelSize) + (top + bottom) / 2;
+        }
+    }
+
     /// <summary>
     /// Draws text with the top of its line box at (x, y), clipped to the
     /// output — the same corner the old bitmap font used, so callers need no

@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <DefineConstants>$(DefineConstants);ROSELLA_DASHBOARD_WIDGETS</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Rosella.Compositor/Rosella.Compositor.csproj" Condition="'$(RosellaHostDirectory)' == ''" />
+    <Reference Include="Rosella.Compositor;Rosella.Input" Condition="'$(RosellaHostDirectory)' != ''">
+      <HintPath>$(RosellaHostDirectory)/%(Identity).dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Compile Include="../Rosella.Compositor/Shell/Dashboard*Widget.cs" />
+    <Compile Include="../Rosella.Compositor/Shell/DashboardWidgetChrome.cs" />
+    <Compile Include="../Rosella.Compositor/Shell/SettingsPanel.cs" />
+    <Compile Include="../Rosella.Compositor/Shell/AudioOutputPicker.cs" />
+    <Compile Include="../Rosella.Compositor/Shell/SettingsSelector.cs" />
+    <Compile Include="../Rosella.Compositor/Shell/ModulePicker.cs" />
+  </ItemGroup>
+</Project>

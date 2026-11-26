@@ -39,12 +39,15 @@ internal sealed class DesktopSession : IDisposable
             SocketName = Display,
             Windows = _windows,
             Pinned = ResolvePinned(),
+            Dashboard = new Dashboard(weather: new DashboardWeather(DashboardWeather.ConfigurationPath()),
+                updates: new DashboardUpdates(enabled: true)),
             ResolvePinned = ResolvePinned,
             SavePinRemoval = PinnedConfiguration.Remove,
             ResolvePin = id => PinnedApps.ResolvePin(id, Bar.IconSize * scale, Display, secondary),
             SavePinAddition = PinnedConfiguration.Add,
             SavePinMove = PinnedConfiguration.Move,
         };
+        Shell.ConfigureDashboardWidgets(DashboardWidgetModules.PublishedPath(AppContext.BaseDirectory));
         Scene.Shell = Shell;
         if (output.Connector.Modes.Select(mode => (mode.HDisplay, mode.VDisplay)).Distinct().Skip(1).Any())
         {
@@ -116,5 +119,6 @@ internal sealed class DesktopSession : IDisposable
         _server.Dispose();
         Scene.Seat = null;
         Scanout.Dispose();
+        Shell.Dashboard.Widgets.Unload();
     }
 }

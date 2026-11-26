@@ -52,6 +52,7 @@ internal sealed class ControlAdapter : IControlTarget
     public string SurfaceTable() => string.Join('\n', _desktop().Scene.DescribeSurfaces());
 
     public string ReloadTaskbar() => _input().Router.ReloadTaskbar();
+    public string ReloadModule(string module) => _input().Router.ReloadModule(module);
 
     public string Modules() => _input().Router.DescribeModules();
 

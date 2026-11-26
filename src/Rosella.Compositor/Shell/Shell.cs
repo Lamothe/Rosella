@@ -16,11 +16,11 @@ internal sealed class Shell
     private readonly ISystemActions _systemActions;
     private readonly IVolumeControl _volume;
     private readonly string? _taskbarPath;
-    private readonly TaskbarModuleControls? _moduleControls;
+    private TaskbarModuleControls? _moduleControls;
     private volatile TaskbarGeneration _taskbar;
     private volatile string? _lastReload;
 
-    internal bool DockVisible => _dockRevealed || Settings.IsOpen || DockMenu is not null || TaskbarPress is not null;
+    internal bool DockVisible => _dockRevealed || Dashboard.IsOpen || Settings.IsOpen || DockMenu is not null || TaskbarPress is not null;
 
     internal volatile DockMenu? DockMenu;
     internal volatile DockPress? TaskbarPress;
@@ -71,7 +71,7 @@ internal sealed class Shell
     }
 
     /// <summary>The clock-anchored system settings and power panel.</summary>
-    internal ISettingsPanel Settings => _taskbar.Settings;
+    internal ISettingsPanel Settings => Dashboard.Widgets.Active.Settings ?? _taskbar.Settings;
     internal TaskbarGeneration Taskbar => _taskbar;
     internal bool CanReloadTaskbar => _taskbarPath is not null;
 
@@ -90,10 +90,70 @@ internal sealed class Shell
                 installed = error.Message;
             }
         }
-        return $"taskbar  Taskbar & Quick Settings\n  display: {SocketName ?? "unknown"}\n  active: {build}\n" +
+        var status = $"taskbar  Taskbar & Quick Settings\n  display: {SocketName ?? "unknown"}\n  active: {build}\n" +
             $"  installed: {installed}\n" +
             $"  module file: {_taskbarPath ?? "unavailable"}\n" +
             $"  last reload: {_lastReload ?? "none"}";
+        return Dashboard.Widgets.Available ? status + "\n" + Dashboard.Widgets.Describe() : status;
+    }
+
+    internal void ConfigureDashboardWidgets(string path)
+    {
+        var widgets = Dashboard.Widgets;
+        var choices = new List<ModuleReloadChoice>();
+        if (_moduleControls is { } taskbar)
+        {
+            choices.Add(taskbar.Selected with { Label = "Taskbar" });
+        }
+        foreach (var (page, _, label) in DashboardWidgetModules.Entries)
+        {
+            choices.Add(new ModuleReloadChoice(label, () => widgets.ReadStatus(page),
+                () => ReloadFromSettings(() => ReloadDashboardWidgets(page))));
+        }
+        _moduleControls = new TaskbarModuleControls(choices);
+        Settings.Modules = _moduleControls;
+        widgets.Configure(path, _systemActions, _volume, PrepareDashboardSettings);
+        if (File.Exists(path))
+        {
+            ReloadFromSettings(() => ReloadDashboardWidgets(null));
+        }
+    }
+
+    private void PrepareDashboardSettings(ISettingsPanel next)
+    {
+        var previous = Settings;
+        next.Resolution = previous.Resolution;
+        next.Modules = _moduleControls;
+        if (previous.ModulesOpen)
+        {
+            next.OpenModules();
+        }
+        else if (previous.IsOpen)
+        {
+            next.Toggle();
+        }
+        next.Dirty = previous.Dirty;
+        previous.Dirty = null;
+        previous.Close();
+    }
+
+    internal string ReloadDashboardWidgets(DashboardPage? page)
+    {
+        try
+        {
+            var result = Dashboard.Widgets.Reload(page);
+            Console.WriteLine($"rosella: {SocketName ?? "startup"}: {result}");
+            return result;
+        }
+        catch (InvalidOperationException error)
+        {
+            Console.Error.WriteLine($"rosella: {error.Message}");
+            throw;
+        }
+        finally
+        {
+            Settings.Dirty?.Invoke();
+        }
     }
 
     // Called before input starts, or under the input router's gate. Paint
@@ -124,7 +184,7 @@ internal sealed class Shell
         {
             var message = $"Could not load taskbar module: {error.GetBaseException().Message}";
             _lastReload = "Reload failed · active build kept";
-            _taskbar.Settings.Dirty?.Invoke();
+            Settings.Dirty?.Invoke();
             Console.Error.WriteLine($"rosella: {message}");
             throw new InvalidOperationException(message, error);
         }
@@ -145,18 +205,24 @@ internal sealed class Shell
         {
             next.Settings.OpenModules();
         }
+        else if (Dashboard.IsOpen && Dashboard.Widgets.Active.Settings is null)
+        {
+            next.Settings.Toggle();
+        }
         previous.Context?.Unload();
-        next.Settings.Dirty?.Invoke();
+        Settings.Dirty?.Invoke();
         var result = $"{_lastReload} · {next.BuildLabel}";
         Console.WriteLine($"rosella: taskbar for {SocketName ?? "startup"}: {result}");
         return result;
     }
 
-    private void ReloadFromSettings()
+    private void ReloadFromSettings() => ReloadFromSettings(ReloadTaskbar);
+
+    private static void ReloadFromSettings(Func<string> reload)
     {
         try
         {
-            ReloadTaskbar();
+            reload();
         }
         catch (InvalidOperationException)
         {
@@ -165,7 +231,8 @@ internal sealed class Shell
     }
 
     internal FrostedGlass DockGlass { get; } = new();
-    internal FrostedGlass SettingsGlass { get; } = new();
+    internal FrostedGlass SettingsGlass { get; } = new(tinted: false);
+    internal Dashboard Dashboard { get; init; } = new();
 
     internal ScreenshotSelection Screenshot { get; } = new();
     internal NotificationStack Notifications { get; } = new();
@@ -309,6 +376,11 @@ internal sealed class Shell
         return module.ComputeLayout(width, height, module.ClockString(), OrderTasks(tasks), Pinned);
     }
 
+    internal DockLabel? HoverLabel(BarLayout layout, (int X, int Y)? pointer, int width) =>
+        DockVisible && DockMenu is null && TaskbarPress is null && !Switcher.IsOpen &&
+        pointer is { } point && layout.HoveredIcon(point) is { } icon
+            ? DockLabel.Create(icon.Anchor, icon.Name, width) : null;
+
     /// <summary>
     /// Draws the taskbar and, when open, the settings panel. Width and
     /// height are logical pixels; the chrome is drawn scaled onto the
@@ -316,7 +388,7 @@ internal sealed class Shell
     /// </summary>
     internal void Draw(TaskbarGeneration taskbar, Span<byte> pixels, int width, int height, int stride, int scale, string clock,
         IReadOnlyList<BarTask> tasks, BarLayout layout, bool dockVisible, Rect? settingsPanel, SurfaceHandler? focused,
-        (int X, int Y)? pointer = null)
+        in DamageRect damage, (int X, int Y)? pointer)
     {
         if (dockVisible && DockGlass.HasDamage)
         {
@@ -330,10 +402,11 @@ internal sealed class Shell
 
         if (settingsPanel is { } panel && SettingsGlass.HasDamage)
         {
-            taskbar.Settings.Draw(pixels, stride, scale, panel, pointer, SettingsGlass);
+            Settings.Draw(pixels, stride, scale, panel, pointer, SettingsGlass);
         }
 
         DockMenu?.Draw(pixels, stride, scale, pointer);
+        HoverLabel(layout, pointer, width)?.Draw(pixels, stride, scale, damage);
 
         if (Switcher.IsOpen)
         {
@@ -437,7 +510,7 @@ internal sealed record DockMenu(Rect Bounds, SurfaceHandler[] CloseWindows, Surf
             Chrome.FillRoundedRect(pixels, clipW, clipH, stride,
                 new Rect(row.X + 3, row.Y + 3, row.W - 6, row.H - 6), 7, 0xFF41434C, scale);
         }
-        var y = row.Y + (row.H - ShellText.LineHeight(ShellText.BarEm)) / 2;
-        ShellText.DrawText(pixels, clipW, clipH, stride, label, (row.X + 12) * scale, y * scale, 0xFFF4F4F5, ShellText.BarEm, scale);
+        var y = ShellText.InkCenteredY(label, ShellText.BarEm, row, scale);
+        ShellText.DrawText(pixels, clipW, clipH, stride, label, (row.X + 12) * scale, y, 0xFFF4F4F5, ShellText.BarEm, scale);
     }
 }

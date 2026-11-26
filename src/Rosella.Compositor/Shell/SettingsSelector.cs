@@ -1,4 +1,8 @@
-#if ROSSELLA_TASKBAR
+#if ROSELLA_DASHBOARD_WIDGETS
+using Rosella.Compositor;
+
+namespace Rosella.DashboardWidgets;
+#elif ROSSELLA_TASKBAR
 using Rosella.Compositor;
 
 namespace Rosella.Taskbar;

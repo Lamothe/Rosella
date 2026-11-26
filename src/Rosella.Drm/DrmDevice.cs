@@ -406,12 +406,16 @@ public sealed unsafe class DrmDevice : IDisposable
     /// token can interrupt; throws <see cref="OperationCanceledException"/> on
     /// cancellation.
     /// </summary>
-    public IReadOnlyList<DrmFlipEvent> ReadEvents(CancellationToken cancellationToken = default)
+    public IReadOnlyList<DrmFlipEvent> ReadEvents(CancellationToken cancellationToken = default) =>
+        ReadEvents(cancellationToken, long.MaxValue);
+
+    /// <summary>Waits for DRM events up to an absolute <see cref="Environment.TickCount64"/> deadline.</summary>
+    public IReadOnlyList<DrmFlipEvent> ReadEvents(CancellationToken cancellationToken, long deadline)
     {
         var buffer = stackalloc byte[128];
         while (true)
         {
-            WaitForReadable(cancellationToken);
+            WaitForReadable(cancellationToken, deadline);
 
             var received = Libc.read(_fd, (nint)buffer, 128);
             if (received >= 0)
@@ -480,7 +484,7 @@ public sealed unsafe class DrmDevice : IDisposable
         Ioctl(DrmConstants.IoctlModeDestroyDumb, ref native);
     }
 
-    private void WaitForReadable(CancellationToken cancellationToken)
+    private void WaitForReadable(CancellationToken cancellationToken, long deadline)
     {
         var descriptor = stackalloc PollFd[1];
         descriptor->Fd = _fd;
@@ -488,8 +492,13 @@ public sealed unsafe class DrmDevice : IDisposable
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            var remaining = deadline - Environment.TickCount64;
+            if (remaining <= 0)
+            {
+                throw new TimeoutException("Timed out waiting for DRM events");
+            }
             descriptor->Revents = 0;
-            var ready = Libc.poll(descriptor, 1, 250);
+            var ready = Libc.poll(descriptor, 1, (int)Math.Min(250, remaining));
             if (ready > 0)
             {
                 return;
